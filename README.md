@@ -11,7 +11,7 @@
 - 打开插件自带的界面窗口
 - 加载音频文件（WAV/FLAC/MP3/OGG 等）当信号源，输出电平表
 - 保存和打开 `.carxp` 工程（与 Carla 的工程格式兼容）
-- 音频驱动：Windows 上为 WASAPI/DirectSound/ASIO，Linux 上为 PulseAudio/JACK/ALSA，另有用于无声卡测试的 Dummy
+- 音频驱动：Windows 上为 DirectSound 和 ASIO（Carla 2.5 的 Windows 版没有 WASAPI），Linux 上为 PulseAudio/JACK/ALSA，另有用于无声卡测试的 Dummy
 
 ## Windows 下载
 
