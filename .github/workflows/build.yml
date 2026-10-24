@@ -1,0 +1,106 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y carla carla-dev qt6-base-dev cmake g++ pkg-config
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+
+      - name: Smoke test
+        run: |
+          python3 tests/make_tone.py tone.wav 48000
+          ./build/chost-cli drivers
+          ./build/chost-cli scan | head -20
+          # a 48 kHz file on the 44.1 kHz dummy engine exercises the resampling workaround,
+          # and the stereo gain plugin at 0.5 must halve the level
+          ./build/chost-cli run --driver Dummy --file tone.wav \
+              --plugin lv2:http://kxstudio.sf.net/carla/plugins/audiogain_s --set 1:Gain=0.5 \
+              --seconds 2 | tee run.log
+          grep -E '^\[1\] .*peak L/R: 0\.24' run.log
+          QT_QPA_PLATFORM=offscreen ./build/chost --file tone.wav --screenshot linux.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chost-linux-screenshot
+          path: linux.png
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git unzip curl
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-python
+
+      - name: Fetch Carla
+        run: scripts/fetch-carla-windows.sh "$PWD/carla-root"
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCARLA_ROOT="$PWD/carla-root"
+          cmake --build build
+
+      - name: Package
+        run: scripts/package-windows.sh build carla-root dist/chost
+
+      - name: Smoke test
+        run: |
+          python tests/make_tone.py tone.wav 48000
+          cd dist/chost
+          ./chost-cli.exe drivers
+          ./chost-cli.exe run --driver Dummy --file ../../tone.wav --seconds 2 | tee ../../run.log
+          grep -E '^\[0\] tone .*peak L/R: 0\.4' ../../run.log
+          ./chost.exe --file ../../tone.wav --screenshot ../../windows.png
+          ls -la ../../windows.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chost-windows-x64
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chost-windows-screenshot
+          path: windows.png
+
+      - name: Zip for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cd dist && zip -qr ../chost-windows-x64.zip chost
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: chost-windows-x64.zip
