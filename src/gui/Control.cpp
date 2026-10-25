@@ -6,6 +6,7 @@
 #include "MainWindow.h"
 #include "MasterDialog.h"
 #include "PianoRoll.h"
+#include "ScoreDialog.h"
 #include "PluginDiscovery.h"
 #include "PluginWindows.h"
 #include "ScriptJob.h"
@@ -708,6 +709,62 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             o.insert(QStringLiteral("moved"), moved);
             o.insert(QStringLiteral("notes"), static_cast<int>(clip.notes.size()));
             o.insert(QStringLiteral("file"), path(written));
+            result = o;
+        }
+        else if (tool == QLatin1String("export_score"))
+        {
+            const QString file = args.value(QStringLiteral("path")).toString();
+            if (file.isEmpty() || !QFileInfo(file).isAbsolute())
+                throw Fail{QStringLiteral("path: an absolute .pdf or .musicxml path")};
+            const std::vector<int> available = w.scoreTracks();
+            std::vector<int> chosen;
+            if (has("tracks"))
+            {
+                for (const QJsonValue& v : args.value(QStringLiteral("tracks")).toArray())
+                {
+                    const int t = v.toInt(-1);
+                    if (std::find(available.begin(), available.end(), t) == available.end())
+                        throw Fail{QStringLiteral("track %1 is not a MIDI track with notes (drum tracks can't be written as a score yet)").arg(t)};
+                    chosen.push_back(t);
+                }
+            }
+            else
+            {
+                chosen = available;
+            }
+            if (chosen.empty())
+                throw Fail{QStringLiteral("there are no MIDI tracks to write: ai_transcribe or add_chord_track make some")};
+            std::vector<ScoreDialog::Track> list;
+            for (int t : chosen)
+                list.push_back({QString::fromStdString(tracks[t].name), t, QString::fromStdString(tracks[t].file)});
+            chost::ScoreOptions options;
+            options.title = args.value(QStringLiteral("title")).toString(w.fSessionPath.isEmpty() ? QString() : w.projectName()).toStdString();
+            options.tempo = session.tempo();
+            options.grid = args.value(QStringLiteral("shortest")).toString() == QLatin1String("eighth") ? 2 : 1;
+            options.key = chost::parseKey(args.value(QStringLiteral("key")).toString(QString::fromStdString(session.key())).toStdString());
+            const QString staffText = args.value(QStringLiteral("staff")).toString();
+            const chost::StaffMode staff = staffText == QLatin1String("treble") ? chost::StaffMode::Treble
+                                           : staffText == QLatin1String("bass")  ? chost::StaffMode::Bass
+                                           : staffText == QLatin1String("grand") ? chost::StaffMode::Grand
+                                                                                 : chost::StaffMode::Auto;
+            std::string error;
+            const chost::Score score = ScoreDialog::build(list, options, staff, error);
+            if (score.parts.empty())
+                throw Fail{QString::fromStdString(error)};
+            QString writeError;
+            int pages = 0;
+            if (!ScoreDialog::write(score, file, writeError, &pages))
+                throw Fail{writeError};
+            QJsonArray parts;
+            for (const chost::ScorePart& part : score.parts)
+                parts.append(QJsonObject{{QStringLiteral("name"), QString::fromStdString(part.name)},
+                                         {QStringLiteral("staff"), part.staves.size() > 1 ? QStringLiteral("grand")
+                                                                   : part.staves[0].clef == chost::Clef::Treble ? QStringLiteral("treble")
+                                                                                                                : QStringLiteral("bass")}});
+            QJsonObject o{{QStringLiteral("file"), path(file)}, {QStringLiteral("key"), QString::fromStdString(chost::keyName(score.key))},
+                          {QStringLiteral("bars"), score.measures}, {QStringLiteral("parts"), parts}};
+            if (pages > 0)
+                o.insert(QStringLiteral("pages"), pages);
             result = o;
         }
         else if (tool == QLatin1String("get_parameters"))

@@ -154,6 +154,18 @@ static const char* const kTools = R"json([
   }, "required": ["track"]}
 },
 {
+  "name": "export_score",
+  "description": "Writes MIDI tracks as sheet music: a PDF (A4, to print or send) or MusicXML (for MuseScore, Sibelius, Finale, Dorico). Notes are quantized to sixteenths (or eighths), 4/4, one voice per staff; wide parts like piano get a grand staff. Drum tracks are left out. The user can also do this in File > 出谱.",
+  "inputSchema": {"type": "object", "properties": {
+    "path": {"type": "string", "description": "Absolute path ending in .pdf or .musicxml."},
+    "tracks": {"type": "array", "items": {"type": "integer"}, "description": "MIDI tracks, top to bottom; default every MIDI track that isn't drums."},
+    "title": {"type": "string", "description": "Default the project's name."},
+    "key": {"type": "string", "description": "The key signature, e.g. \"A minor\"; default the song's key, else guessed from the notes."},
+    "staff": {"type": "string", "enum": ["auto", "treble", "bass", "grand"], "description": "Default auto."},
+    "shortest": {"type": "string", "enum": ["sixteenth", "eighth"], "description": "The grid notes snap to; eighth reads more easily for transcribed parts. Default sixteenth."}
+  }, "required": ["path"]}
+},
+{
   "name": "get_parameters",
   "description": "The parameters of a plugin: an insert of a track, or its instrument. Each has its index, name, unit, range, default and current value; outputs (meters) are marked.",
   "inputSchema": {"type": "object", "properties": {

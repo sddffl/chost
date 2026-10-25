@@ -94,6 +94,14 @@ jobs:
               --screenshot scale.png --screenshot-delay 2500 | tee scale.log
           grep -q 'FITTED [1-9]' scale.log
           ./build/chost-cli scale --scale "D major" --fit prog_edit.mid | grep -q 'FIT 0 of'
+          # sheet music: MusicXML from the CLI, PDF and a preview from the GUI
+          ./build/chost-cli score --midi prog.mid --key "A minor" --title CI --output prog.musicxml | tee score.log
+          grep -P '^SCORE A minor\t2 bars\t1 parts' score.log
+          grep -q '<score-partwise' prog.musicxml
+          QT_QPA_PLATFORM=offscreen ./build/chost --file prog.mid --score $PWD/prog.pdf --screenshot score.png --screenshot-delay 2500 \
+              | tee scorepdf.log
+          grep -q 'SCORE WRITTEN .*(1 pages)' scorepdf.log
+          head -c 5 prog.pdf | grep -q '%PDF-'
           echo '{"mcpServers": {"other": {"command": "x"}}}' > claude.json
           QT_QPA_PLATFORM=offscreen ./build/chost --claude-config claude.json | grep -q 'CLAUDE CONFIG WRITTEN'
           python3 -c "import json; s = json.load(open('claude.json'))['mcpServers']; assert 'other' in s and s['chost']['command'].endswith('chost-mcp')"
@@ -128,6 +136,11 @@ jobs:
           QT_QPA_PLATFORM=offscreen ./build/chost --file midi/piano.mid --select 0 --edit-notes \
               --screenshot pianoroll.png --screenshot-delay 3000
           test -f pianoroll-1.png
+          # converted parts as sheet music, read back as a notation program would
+          ./build/chost-cli score --midi midi/lead.mid --midi midi/piano.mid --midi midi/bass.mid --tempo 120 --grid 8 \
+              --output midi/song.musicxml
+          ai-env/bin/pip install -q music21
+          ai-env/bin/python tests/check_score.py midi/song.musicxml 3
 
       - name: Tempo, key, mastering, arrangement and pitch correction test
         run: |
@@ -187,6 +200,7 @@ jobs:
             midi*.png
             pianoroll*.png
             scale*.png
+            score*.png
             master*.png
             arrange*.png
             tune*.png

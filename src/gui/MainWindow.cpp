@@ -11,6 +11,7 @@
 #include "Instruments.h"
 #include "MasterDialog.h"
 #include "PianoRoll.h"
+#include "ScoreDialog.h"
 #include "PluginDiscovery.h"
 #include "PluginWindows.h"
 #include "RenderJob.h"
@@ -244,6 +245,7 @@ MainWindow::~MainWindow()
     delete fMasterDialog;
     delete fArrangeDialog;
     delete fChordPad;
+    delete fScoreDialog;
     closeEditors();
     fHost.setEventCallback(nullptr);
     fHost.stop();
@@ -263,6 +265,7 @@ void MainWindow::buildMenus()
     file->addSeparator();
     file->addAction(QStringLiteral("导入音频 / MIDI 文件…"), QKeySequence(QStringLiteral("Ctrl+I")), this, &MainWindow::importAudio);
     file->addAction(QStringLiteral("导出混音（WAV）…"), QKeySequence(QStringLiteral("Ctrl+E")), this, [this] { exportMix(); });
+    file->addAction(QStringLiteral("出谱（五线谱 PDF / MusicXML）…"), QKeySequence(QStringLiteral("Ctrl+Shift+P")), this, [this] { scoreDialog(); });
     file->addSeparator();
     file->addAction(QStringLiteral("退出"), QKeySequence::Quit, this, &QWidget::close);
 
@@ -855,6 +858,13 @@ void MainWindow::refreshTracks()
     refreshMixState();
     refreshSelection();
     refreshChordPad();
+    if (fScoreDialog)
+    {
+        std::vector<ScoreDialog::Track> list;
+        for (int i : scoreTracks())
+            list.push_back({QString::fromStdString(tracks[i].name), i, QString::fromStdString(tracks[i].file)});
+        fScoreDialog->setTracks(list, fSelected);
+    }
 }
 
 void MainWindow::refreshSelection()
@@ -1007,15 +1017,13 @@ int MainWindow::addAudioTrack(const QString& path, const QString& name)
 int MainWindow::addMidiTrack(const QString& path, const QString& name, const QString& role)
 {
     QString trackName = name;
+    chost::MidiClip midi;
+    std::string readError;
+    const bool readable = chost::readMidiFile(path.toStdString(), midi, readError);
     if (trackName.isEmpty())
-    {
-        chost::MidiClip midi;
-        std::string error;
-        if (chost::readMidiFile(path.toStdString(), midi, error) && !midi.name.empty())
-            trackName = QString::fromStdString(midi.name);
-        else
-            trackName = QFileInfo(path).completeBaseName();
-    }
+        trackName = readable && !midi.name.empty() ? QString::fromStdString(midi.name) : QFileInfo(path).completeBaseName();
+    // the first track of a project sets its tempo: a MIDI file's bars are the song's
+    const bool first = fSession.tracks().empty();
     const int track = fSession.addTrack(trackName.toStdString(), chost::TrackKind::Instrument);
     if (track < 0)
     {
@@ -1034,6 +1042,12 @@ int MainWindow::addMidiTrack(const QString& path, const QString& name, const QSt
     }
     if (!loadInstrument(track, instruments::choiceFor(QString::fromStdString(fSession.tracks()[track].role))))
         statusBar()->showMessage(QStringLiteral("没有加载到乐器，请在检查器里选择一个乐器"), 8000);
+    if (first && readable && midi.tempo > 0.0 && std::abs(midi.tempo - fSession.tempo()) > 0.01)
+    {
+        fSession.setTempo(midi.tempo);
+        fArrange->setTempo(fSession.tempo());
+        refreshSongInfo();
+    }
     fSelected = track;
     refreshTracks();
     fHistory->record(QStringLiteral("添加乐器轨：%1").arg(trackName));
@@ -1323,6 +1337,11 @@ void MainWindow::trackMenu(int track, const QPoint& globalPos)
         if (t.kind == chost::TrackKind::Instrument)
         {
             menu.addAction(QStringLiteral("编辑音符…"), this, [this, track] { editNotes(track); })->setEnabled(!t.file.empty());
+            menu.addAction(QStringLiteral("出谱…"), this, [this, track] {
+                selectTrack(track);
+                ScoreDialog* dialog = scoreDialog();
+                dialog->setChosen({track});
+            })->setEnabled(!t.file.empty() && !isDrumTrack(track));
             menu.addAction(QStringLiteral("替换 MIDI…"), this, &MainWindow::replaceAudio);
             menu.addAction(QStringLiteral("换乐器…"), this, &MainWindow::chooseInstrument);
             menu.addAction(QStringLiteral("打开乐器界面"), this, &MainWindow::editInstrument)->setEnabled(t.instrument >= 0);
@@ -2024,6 +2043,8 @@ void MainWindow::refreshSongInfo()
                               : QStringLiteral("调性：%1（关系调 %2，用的音完全一样）").arg(keyText(fSession.key()), relativeKeyText(fSession.key())));
     if (fChordPad)
         fChordPad->setSong(QString::fromStdString(fSession.key()), fSession.tempo());
+    if (fScoreDialog)
+        fScoreDialog->setSong(QString::fromStdString(fSession.key()), fSession.tempo());
 }
 
 void MainWindow::analyzeSong(bool quiet)
@@ -2248,6 +2269,32 @@ QString MainWindow::chordFolder() const
     const QString base = fSessionPath.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
                                                 : QFileInfo(fSessionPath).absolutePath();
     return QDir(base).filePath(projectName() + QStringLiteral("_和弦"));
+}
+
+std::vector<int> MainWindow::scoreTracks()
+{
+    std::vector<int> list;
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    for (size_t i = 0; i < tracks.size(); ++i)
+        if (tracks[i].kind == chost::TrackKind::Instrument && !tracks[i].file.empty() && !isDrumTrack(static_cast<int>(i)))
+            list.push_back(static_cast<int>(i));
+    return list;
+}
+
+ScoreDialog* MainWindow::scoreDialog()
+{
+    if (!fScoreDialog)
+    {
+        const QString folder = fSessionPath.isEmpty() ? QString() : QFileInfo(fSessionPath).absolutePath();
+        fScoreDialog = new ScoreDialog(fSessionPath.isEmpty() ? QString() : projectName(), QString::fromStdString(fSession.key()),
+                                       fSession.tempo(), folder, this);
+        fScoreDialog->setAttribute(Qt::WA_DeleteOnClose);
+        refreshTracks();
+    }
+    fScoreDialog->show();
+    fScoreDialog->raise();
+    fScoreDialog->activateWindow();
+    return fScoreDialog;
 }
 
 ChordPadDialog* MainWindow::chordPad()

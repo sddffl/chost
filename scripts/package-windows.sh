@@ -32,6 +32,9 @@ cp tools/*.py "$out/tools/"
 mkdir -p "$out/tools/models" "$out/sounds"
 cp tools/models/* "$out/tools/models/"
 cp resources/sounds/*.sf2 resources/sounds/README.md "$out/sounds/"
+# the music font is built into chost.exe; its licence goes along
+mkdir -p "$out/licenses"
+cp resources/fonts/Bravura-LICENSE.txt "$out/licenses/"
 
 cp README.md "$out/README.md"
 echo "packaged into $out"

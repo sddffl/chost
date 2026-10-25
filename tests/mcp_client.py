@@ -134,6 +134,15 @@ check(call("fit_notes_to_scale", track=part["track"], scale="D major")["moved"] 
 call("undo")
 call("fit_notes_to_scale", track=part["track"], scale="H major", expect_error=True)
 
+# sheet music of the chord track, as PDF and MusicXML
+pdf = os.path.abspath("mcp_score.pdf")
+sheet = call("export_score", path=pdf, tracks=[part["track"]], title="MCP")
+check(os.path.getsize(pdf) > 1000 and sheet["pages"] == 1 and sheet["bars"] >= 2, "score PDF: %d bars, %s" % (sheet["bars"], sheet["parts"][0]["staff"]))
+xml = os.path.abspath("mcp_score.musicxml")
+call("export_score", path=xml, shortest="eighth")
+check("<score-partwise" in open(xml, encoding="utf-8").read(), "score MusicXML")
+call("export_score", path=pdf, tracks=[0], expect_error=True)  # an audio track
+
 proc.stdin.close()
 proc.wait(timeout=10)
 print("MCP TEST PASSED")

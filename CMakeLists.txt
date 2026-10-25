@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.13.0 LANGUAGES CXX)
+project(chost VERSION 0.14.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,7 +36,7 @@ endif()
 find_package(Threads REQUIRED)
 
 # the core is compiled once and linked against either flavour of carla
-add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp src/core/Chords.cpp src/core/Scales.cpp)
+add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp src/core/Chords.cpp src/core/Scales.cpp src/core/Score.cpp)
 target_include_directories(chost_core_objects PUBLIC src)
 target_include_directories(chost_core_objects PRIVATE third_party/dr_libs)
 target_compile_definitions(chost_core_objects PUBLIC REAL_BUILD)
@@ -75,7 +75,7 @@ if(CHOST_BUILD_GUI)
         enable_language(RC)
         list(APPEND CHOST_ICON resources/icons/chost.rc)
     endif()
-    add_executable(chost WIN32 ${CHOST_ICON}
+    add_executable(chost WIN32 ${CHOST_ICON} resources/fonts/fonts.qrc
         src/gui/main.cpp
         src/gui/MainWindow.cpp src/gui/MainWindow.h
         src/gui/PluginWindows.cpp src/gui/PluginWindows.h
@@ -99,6 +99,8 @@ if(CHOST_BUILD_GUI)
         src/gui/Control.cpp src/gui/Control.h
         src/gui/ClaudeConnect.cpp src/gui/ClaudeConnect.h
         src/gui/ChordPad.cpp src/gui/ChordPad.h
+        src/gui/ScoreView.cpp src/gui/ScoreView.h
+        src/gui/ScoreDialog.cpp src/gui/ScoreDialog.h
         src/control/Tools.cpp src/control/Tools.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}" CHOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(chost PRIVATE chost_core Qt6::Widgets Qt6::Network)

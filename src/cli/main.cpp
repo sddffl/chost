@@ -17,6 +17,7 @@
 #include "core/Chords.h"
 #include "core/HostEngine.h"
 #include "core/Scales.h"
+#include "core/Score.h"
 #include "core/Session.h"
 
 #include <algorithm>
@@ -446,6 +447,87 @@ static int cmdMix(int argc, char* argv[])
 
 // the chord pad's harmony, without the GUI: the pads of a key and what fits after a chord, or a
 // progression written as a MIDI part
+// chost-cli score: MIDI files as sheet music, written as MusicXML
+static int cmdScore(int argc, char* argv[])
+{
+    std::vector<chost::ScoreInput> inputs;
+    chost::ScoreOptions options;
+    std::string output, staff = "auto";
+    std::string error;
+    for (int i = 0; i < argc; ++i)
+    {
+        const std::string a = argv[i];
+        auto value = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+        if (a == "--staff")
+            staff = value();
+        else if (a == "--midi")
+        {
+            chost::ScoreInput input;
+            const std::string file = value();
+            if (!chost::readMidiFile(file, input.clip, error))
+            {
+                std::fprintf(stderr, "%s: %s\n", file.c_str(), error.c_str());
+                return 1;
+            }
+            input.name = input.clip.name.empty() ? file.substr(file.find_last_of("/\\") + 1) : input.clip.name;
+            input.staff = staff == "treble" ? chost::StaffMode::Treble : staff == "bass" ? chost::StaffMode::Bass
+                        : staff == "grand"  ? chost::StaffMode::Grand  : chost::StaffMode::Auto;
+            inputs.push_back(input);
+        }
+        else if (a == "--key")
+            options.key = chost::parseKey(value());
+        else if (a == "--tempo")
+            options.tempo = std::atof(value().c_str());
+        else if (a == "--grid")
+            options.grid = value() == "8" ? 2 : 1;
+        else if (a == "--title")
+            options.title = value();
+        else if (a == "--output")
+            output = value();
+    }
+    if (inputs.empty())
+    {
+        std::fprintf(stderr, "--midi F.mid is needed\n");
+        return 2;
+    }
+    const chost::Score score = chost::makeScore(inputs, options, error);
+    if (score.parts.empty())
+    {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return 1;
+    }
+    size_t notes = 0, rests = 0, ties = 0;
+    for (const chost::ScorePart& part : score.parts)
+        for (const chost::ScoreStaff& st : part.staves)
+            for (const chost::ScoreMeasure& m : st.measures)
+                for (const chost::ScoreEvent& e : m.events)
+                {
+                    e.rest ? ++rests : notes += e.notes.size();
+                    for (const chost::ScoreNote& n : e.notes)
+                        ties += n.tieStart ? 1 : 0;
+                }
+    std::printf("SCORE %s\t%d bars\t%zu parts\t%zu notes\t%zu rests\t%zu ties\n", chost::keyName(score.key).c_str(), score.measures,
+                score.parts.size(), notes, rests, ties);
+    for (const chost::ScorePart& part : score.parts)
+        std::printf("PART %s\t%s\n", part.name.c_str(),
+                    part.staves.size() > 1 ? "grand" : part.staves[0].clef == chost::Clef::Treble ? "treble" : "bass");
+    if (!output.empty())
+    {
+        FILE* f = std::fopen(output.c_str(), "wb");
+        const std::string xml = chost::musicXml(score);
+        if (f == nullptr || std::fwrite(xml.data(), 1, xml.size(), f) != xml.size())
+        {
+            std::fprintf(stderr, "can't write %s\n", output.c_str());
+            if (f)
+                std::fclose(f);
+            return 1;
+        }
+        std::fclose(f);
+        std::printf("MUSICXML %s\n", output.c_str());
+    }
+    return 0;
+}
+
 // chost-cli scale: a scale's notes, the key of a MIDI file, notes pulled into a scale
 static int cmdScale(int argc, char* argv[])
 {
@@ -605,6 +687,8 @@ int main(int argc, char* argv[])
         return cmdChords(argc - 2, argv + 2);
     if (cmd == "scale")
         return cmdScale(argc - 2, argv + 2);
+    if (cmd == "score")
+        return cmdScore(argc - 2, argv + 2);
 
     std::fprintf(stderr,
                  "usage:\n"
@@ -617,6 +701,8 @@ int main(int argc, char* argv[])
                  "                [--seconds S] [--save F.chost] [--open F.chost]\n"
                  "  chost-cli chords [--key \"A minor\"] [--sevenths] [--after CHORD]\n"
                  "  chost-cli chords [--key K] --progression \"C G | Am F\" [--output F.mid] [--pattern block|arpeggio|rhythm] [--tempo BPM]\n"
-                 "  chost-cli scale [--scale \"A minor\"] [--guess F.mid] [--fit F.mid [--output OUT.mid]]\n");
+                 "  chost-cli scale [--scale \"A minor\"] [--guess F.mid] [--fit F.mid [--output OUT.mid]]\n"
+                 "  chost-cli score [--staff auto|treble|bass|grand] --midi F.mid... [--key K] [--tempo BPM] [--grid 16|8]\n"
+                 "                  [--title T] [--output F.musicxml]\n");
     return 2;
 }

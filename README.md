@@ -127,13 +127,24 @@ chost 会在后台逐个识别 VST 插件（名称、厂商、是乐器还是效
 - **识别和弦**：听出一首歌每个小节的和弦，填进和弦进行。之后播放这首歌时，和弦板会跟着标出现在弹到哪个和弦，并提示接下来可以用什么
 - **写成 MIDI 轨**：可以选柱式和弦、分解和弦或流行钢琴节奏，写成一条乐器轨，之后可以在钢琴卷帘里改；**交给 AI 自动编曲** 会让鼓、贝斯、吉他、弦乐都跟着这串和弦
 
+## 出谱（五线谱）
+
+**文件 > 出谱**（Ctrl+Shift+P），或者在 MIDI 轨上右键 **出谱…**：把 MIDI 轨（转 MIDI、自动编曲、和弦板写出来的都行）排成五线谱，右边直接预览每一页。
+
+- 勾选要出谱的轨道，一轨一行；钢琴这类音域宽的自动用大谱表，其余按音高选高音或低音谱号，也可以手动指定
+- 调号默认用歌曲的调（没识别时按音符猜），升降号按调拼写（A 小调的导音写 G#，不写 Ab）
+- **最短音符** 选八分音符，转 MIDI 来的谱子会干净很多
+- **导出 PDF**：A4，可以直接打印或发给别人；**导出 MusicXML**：用 MuseScore、Sibelius、Finale、Dorico 打开，继续加歌词、表情记号、改排版
+- 目前是 4/4 拍、每行谱一个声部（重叠的音在下一个音开始处截断）；鼓轨暂时不能出谱
+- 乐谱字体是 Steinberg 的 Bravura（SIL 开放字体许可证）
+
 ## 让 Claude 操控 chost（MCP）
 
 chost 自带一个 MCP 服务器 `chost-mcp.exe`。连上以后，在 Claude 桌面版里直接说“把鼓调小 3 dB”“给人声加个压缩，阈值 -18”“把这首歌分轨，再转成 MIDI”“导出混音”，Claude 就会在 chost 里动手做，你在窗口里能看到每一步，不满意按 Ctrl+Z 撤销。
 
 - 连接：**AI > 连接 Claude…**，点“一键连接 Claude 桌面版”，然后完全退出 Claude 桌面版再打开。用 Claude Code 的话，对话框里有一行命令可以复制
 - chost 没开着时，Claude 第一次用工具会自动把 chost 打开
-- Claude 能做的事：给和弦建议、写和弦轨、把 MIDI 轨的调外音修正到调内；看工程（轨道、推子、插件、速度调性）；加删轨道、改名、推子、静音独奏、换音频；查找本机插件、加删和旁路插入效果、读写插件参数、打开插件窗口；换乐器；播放、停止、定位、看电平；撤销、重做、看操作历史；AI 识别速度调性、分轨、转 MIDI、修音、编曲、母带、导出混音（这些在后台运行，Claude 会等它们做完）；保存、打开、新建工程（有没保存的改动时，Claude 不会擅自丢掉）
+- Claude 能做的事：给和弦建议、写和弦轨、把 MIDI 轨的调外音修正到调内、出谱（PDF / MusicXML）；看工程（轨道、推子、插件、速度调性）；加删轨道、改名、推子、静音独奏、换音频；查找本机插件、加删和旁路插入效果、读写插件参数、打开插件窗口；换乐器；播放、停止、定位、看电平；撤销、重做、看操作历史；AI 识别速度调性、分轨、转 MIDI、修音、编曲、母带、导出混音（这些在后台运行，Claude 会等它们做完）；保存、打开、新建工程（有没保存的改动时，Claude 不会擅自丢掉）
 - 只有本机、你自己的账户能连 chost，别的电脑和别的用户连不上
 
 ## 撤销、自动备份
@@ -224,6 +235,12 @@ chost-cli scale --scale "A harmonic minor"
 chost-cli scale --guess melody.mid --fit melody.mid --output fixed.mid
 ```
 
+出谱（MusicXML）：
+
+```sh
+chost-cli score --midi melody.mid --midi piano.mid --key "A minor" --tempo 96 --grid 8 --output song.musicxml
+```
+
 图形界面版启动时也可以带参数：`chost --file a.wav --file b.mid --load <插件> --open <工程.chost>`。
 
 ## 已知问题
@@ -246,6 +263,7 @@ tools/                AI 辅助脚本（chost_separate.py：自动分轨，chost
                       chost_tune.py：修音）
 tools/models/         Basic Pitch 音高识别模型（Apache-2.0）
 resources/sounds/     自带的 General MIDI 音色 TimGM6mb（GPL-2）
+resources/fonts/      乐谱字体 Bravura（SIL OFL 1.1）
 tests/                测试用的音频生成，以及转 MIDI、编曲、修音的准确度检查脚本
 scripts/              Windows 下载 Carla 和打包脚本
 third_party/dr_libs/  WAV/FLAC/MP3 解码（公有领域 / MIT-0）

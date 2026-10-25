@@ -21,6 +21,7 @@ class ChordPadDialog;
 class Control;
 class History;
 class MasterDialog;
+class ScoreDialog;
 class ScriptJob;
 struct RenderSnapshot;
 class InsertRack;
@@ -79,6 +80,8 @@ public:
     void arrange(bool autoStart = false, const QString& chords = {}); // AI > auto-arrangement
     void tune(bool autoStart = false);        // AI > pitch correction of a vocal track
     ChordPadDialog* chordPad();               // AI > chord pad, opened (or raised)
+    ScoreDialog* scoreDialog();               // File > sheet music, opened (or raised)
+    std::vector<int> scoreTracks();           // the MIDI tracks sheet music can be made of (not drums)
     int testUndo(const QString& insertSpec);  // the self test of undo and redo (CI), 0 when it passes
 
 protected:
@@ -196,6 +199,7 @@ private:
     QPointer<ArrangeDialog> fArrangeDialog;
     QPointer<TuneDialog> fTuneDialog;
     QPointer<ChordPadDialog> fChordPad;
+    QPointer<ScoreDialog> fScoreDialog;
     History* fHistory = nullptr;
     Autosave* fAutosave = nullptr;
     Control* fControl = nullptr;

@@ -2,6 +2,7 @@
 #include "ClaudeConnect.h"
 #include "MainWindow.h"
 #include "PianoRoll.h"
+#include "ScoreDialog.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -55,8 +56,9 @@ int main(int argc, char* argv[])
     QCommandLineOption recogniseOpt(QStringLiteral("recognise-chords"), QStringLiteral("Open the chord pad and recognise the chords of the first audio track (tests)."));
     QCommandLineOption noteScaleOpt(QStringLiteral("note-scale"), QStringLiteral("With --edit-notes: show this scale (\"A minor\", \"D dorian\", \"off\")."), QStringLiteral("scale"));
     QCommandLineOption fitScaleOpt(QStringLiteral("fit-scale"), QStringLiteral("With --edit-notes: move the notes outside the scale into it (tests)."));
+    QCommandLineOption scoreOpt(QStringLiteral("score"), QStringLiteral("Open File > Sheet music (the selected track, else every MIDI track) and export it: .pdf or .musicxml (tests)."), QStringLiteral("path"));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -97,6 +99,17 @@ int main(int argc, char* argv[])
                 std::printf("FITTED %d notes into the scale\n", roll->fitToScale());
             std::fflush(stdout);
         }
+    }
+    if (parser.isSet(scoreOpt))
+    {
+        ScoreDialog* dialog = window.scoreDialog();
+        if (!parser.isSet(selectOpt))
+            dialog->setChosen(window.scoreTracks());
+        QString error;
+        const bool ok = dialog->exportTo(parser.value(scoreOpt), error);
+        std::printf("%s\n", ok ? qPrintable(QStringLiteral("SCORE WRITTEN %1 (%2 pages)").arg(parser.value(scoreOpt)).arg(dialog->pages()))
+                              : qPrintable(QStringLiteral("SCORE FAILED %1").arg(error)));
+        std::fflush(stdout);
     }
     if (parser.isSet(playOpt))
         window.play();
