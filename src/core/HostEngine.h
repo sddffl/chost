@@ -41,8 +41,10 @@ struct RackSlot {
     uint id = 0;
     std::string name;
     std::string maker;
+    std::string label;   // "audiofile" for carla's audio file player
     bool active = true;
     bool hasCustomUi = false;
+    float volume = 1.0f; // carla's post-plugin volume, 0 .. 1.27
 };
 
 // Events forwarded from Carla. Called from whichever thread Carla uses, so GUI code must queue them.
@@ -85,6 +87,8 @@ public:
     uint pluginCount() const;
     RackSlot slot(uint id) const;
     void setActive(uint id, bool active);
+    void setVolume(uint id, float volume);
+    std::string audioFilePath(uint id) const; // file played by an "audiofile" slot
     void showCustomUi(uint id, bool show);
     std::pair<float, float> outputPeaks(uint id) const;
 
@@ -98,6 +102,8 @@ public:
     void play();
     void pause();
     bool isPlaying() const;
+    uint64_t transportFrame() const;
+    void relocate(uint64_t frame);
     bool saveProject(const std::string& path);
     bool loadProject(const std::string& path);
 

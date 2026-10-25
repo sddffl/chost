@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.2.0 LANGUAGES CXX)
+project(chost VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,7 +43,12 @@ install(TARGETS chost-cli RUNTIME DESTINATION bin)
 if(CHOST_BUILD_GUI)
     find_package(Qt6 REQUIRED COMPONENTS Widgets)
     set(CMAKE_AUTOMOC ON)
-    add_executable(chost WIN32 src/gui/main.cpp src/gui/MainWindow.cpp src/gui/MainWindow.h)
+    add_executable(chost WIN32
+        src/gui/main.cpp
+        src/gui/MainWindow.cpp src/gui/MainWindow.h
+        src/gui/PluginWindows.cpp src/gui/PluginWindows.h
+        src/gui/Theme.cpp src/gui/Theme.h
+        src/gui/Widgets.cpp src/gui/Widgets.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}")
     target_link_libraries(chost PRIVATE chost_core Qt6::Widgets)
     install(TARGETS chost RUNTIME DESTINATION bin)

@@ -153,6 +153,25 @@ bool probeAudioFile(const std::string& path, AudioFileInfo& info)
     return true;
 }
 
+bool computePeaks(const std::string& path, size_t buckets, std::vector<float>& peaks, AudioFileInfo& info)
+{
+    Decoded d;
+    if (buckets == 0 || !decode(path, d, false) || d.info.channels == 0 || d.info.frames == 0)
+        return false;
+    info = d.info;
+
+    peaks.assign(buckets, 0.0f);
+    const uint32_t channels = d.info.channels;
+    for (uint64_t frame = 0; frame < d.info.frames; ++frame)
+    {
+        const size_t bucket = static_cast<size_t>(frame * buckets / d.info.frames);
+        float& peak = peaks[bucket];
+        for (uint32_t c = 0; c < channels; ++c)
+            peak = std::max(peak, std::fabs(d.samples[static_cast<size_t>(frame) * channels + c]));
+    }
+    return true;
+}
+
 std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const std::string& cacheDir, std::string& error)
 {
     AudioFileInfo info;

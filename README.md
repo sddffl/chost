@@ -2,6 +2,14 @@
 
 `chost` 是一个直接链接 libcarla 的独立插件宿主，有图形界面版（`chost`）和命令行版（`chost-cli`），支持 Windows 和 Linux。
 
+## 界面
+
+![chost 界面](docs/screenshot.png)
+
+仿照 Cubase 的布局：顶部是走带控制条（回到开头、停止、播放、时间和小节显示），左边是检查器，中间是音轨和时间线（可拖入音频文件，点击时间线定位，Ctrl+滚轮缩放），右边是插件浏览器，底部是调音台（插入效果插槽、静音、推子、电平表、Stereo Out）。空格键播放/暂停。
+
+目前只有一条音频轨，插入效果最多 8 个。
+
 ## 功能
 
 - 插件格式：VST3、VST2、LV2、LADSPA、SF2/SFZ（由 Carla 加载）

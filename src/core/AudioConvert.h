@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace chost {
 
@@ -19,6 +20,9 @@ struct AudioFileInfo {
 
 // WAV, FLAC and MP3 are understood; returns false for anything else.
 bool probeAudioFile(const std::string& path, AudioFileInfo& info);
+
+// Peak (max absolute sample over all channels) of `buckets` equal slices of the file, for drawing.
+bool computePeaks(const std::string& path, size_t buckets, std::vector<float>& peaks, AudioFileInfo& info);
 
 // Returns the path Carla should load: the original file when it is safe as is,
 // or a float WAV at `engineRate` written into `cacheDir`. Empty on failure, with `error` set.

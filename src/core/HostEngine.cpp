@@ -346,12 +346,21 @@ RackSlot HostEngine::slot(uint id) const
     s.id = id;
     s.name = info->name != nullptr ? info->name : "";
     s.maker = info->maker != nullptr ? info->maker : "";
+    s.label = info->label != nullptr ? info->label : "";
+    s.volume = carla_get_internal_parameter_value(fHandle, id, PARAMETER_VOLUME);
     s.hasCustomUi = (info->hints & PLUGIN_HAS_CUSTOM_UI) != 0;
     s.active = carla_get_internal_parameter_value(fHandle, id, PARAMETER_ACTIVE) >= 0.5f;
     return s;
 }
 
 void HostEngine::setActive(uint id, bool active) { carla_set_active(fHandle, id, active); }
+void HostEngine::setVolume(uint id, float volume) { carla_set_volume(fHandle, id, volume); }
+
+std::string HostEngine::audioFilePath(uint id) const
+{
+    const char* value = carla_get_custom_data_value(fHandle, id, CUSTOM_DATA_TYPE_STRING, "file");
+    return value != nullptr ? value : "";
+}
 void HostEngine::showCustomUi(uint id, bool show) { carla_show_custom_ui(fHandle, id, show); }
 
 std::pair<float, float> HostEngine::outputPeaks(uint id) const
@@ -424,6 +433,9 @@ bool HostEngine::isPlaying() const
     const CarlaTransportInfo* info = isRunning() ? carla_get_transport_info(fHandle) : nullptr;
     return info != nullptr && info->playing;
 }
+
+uint64_t HostEngine::transportFrame() const { return isRunning() ? carla_get_current_transport_frame(fHandle) : 0; }
+void HostEngine::relocate(uint64_t frame) { carla_transport_relocate(fHandle, frame); }
 
 bool HostEngine::saveProject(const std::string& path) { fError.clear(); return carla_save_project(fHandle, path.c_str()); }
 bool HostEngine::loadProject(const std::string& path) { fError.clear(); return carla_load_project(fHandle, path.c_str()); }

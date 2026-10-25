@@ -1,50 +1,80 @@
 #include "MainWindow.h"
 
+#include "PluginWindows.h"
+#include "Theme.h"
+#include "Widgets.h"
+#include "core/AudioConvert.h"
+
 #include <QApplication>
-#include <QCheckBox>
 #include <QComboBox>
+#include <QDragEnterEvent>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
+#include <QMenuBar>
 #include <QMessageBox>
-#include <QProgressBar>
+#include <QMimeData>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QSlider>
+#include <QShortcut>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 
 using chost::HostEvent;
 
-static constexpr int kSliderSteps = 1000;
+static const QString kTrackName = QStringLiteral("Audio 01");
+static constexpr double kTempo = 120.0;
 
-// peak (linear 0..1) to a 0..100 meter value over a 60 dB range
-static int peakToMeter(float peak)
+static QLabel* sectionTitle(const QString& text)
 {
-    if (peak <= 0.001f)
-        return 0;
-    const float db = 20.0f * std::log10(peak);
-    return std::clamp(static_cast<int>((db + 60.0f) / 60.0f * 100.0f), 0, 100);
+    auto* label = new QLabel(text);
+    label->setObjectName(QStringLiteral("sectionTitle"));
+    return label;
 }
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("chost 插件宿主"));
-    resize(1200, 720);
+    setWindowTitle(QStringLiteral("chost"));
+    resize(1400, 900);
+    setAcceptDrops(true);
 
-    buildUi();
+    buildMenus();
+    buildTransport();
+
+    auto* top = new QSplitter(Qt::Horizontal);
+    top->addWidget(buildInspector());
+    fArrange = new ArrangeView;
+    fArrange->setTempo(kTempo);
+    top->addWidget(fArrange);
+    top->addWidget(buildBrowser());
+    top->setStretchFactor(1, 1);
+    top->setSizes({220, 860, 320});
+
+    auto* main = new QSplitter(Qt::Vertical);
+    main->addWidget(top);
+    main->addWidget(buildMixConsole());
+    main->setStretchFactor(0, 1);
+    main->setSizes({400, 470});
+    setCentralWidget(main);
+
+    connect(fArrange, &ArrangeView::seekRequested, this, &MainWindow::seek);
+    connect(fArrange, &ArrangeView::muteToggled, this, &MainWindow::setTrackMuted);
+    connect(fArrange, &ArrangeView::fileDropped, this, &MainWindow::loadAudioFile);
+
+    auto* space = new QShortcut(QKeySequence(Qt::Key_Space), this);
+    connect(space, &QShortcut::activated, this, &MainWindow::togglePlay);
 
     fHost.setEventCallback([this](HostEvent event, uint pluginId, int index, float value, const std::string& text) {
         // carla may call this from its own threads, widgets are only touched on the GUI thread
@@ -63,6 +93,7 @@ MainWindow::MainWindow(QWidget* parent)
 MainWindow::~MainWindow()
 {
     fTimer->stop();
+    closeEditors();
     fHost.setEventCallback(nullptr);
     fHost.stop();
 }
@@ -70,116 +101,185 @@ MainWindow::~MainWindow()
 // ---------------------------------------------------------------------------------------------------------------------
 // layout
 
-void MainWindow::buildUi()
+void MainWindow::buildMenus()
 {
-    // toolbar: audio driver, transport, files
-    auto* toolbar = addToolBar(QStringLiteral("主工具栏"));
-    toolbar->setMovable(false);
+    QMenu* file = menuBar()->addMenu(QStringLiteral("文件"));
+    file->addAction(QStringLiteral("打开音频文件…"), QKeySequence(QStringLiteral("Ctrl+I")), this, &MainWindow::openAudioFile);
+    file->addSeparator();
+    file->addAction(QStringLiteral("打开工程…"), QKeySequence::Open, this, &MainWindow::openProject);
+    file->addAction(QStringLiteral("保存工程…"), QKeySequence::Save, this, &MainWindow::saveProject);
+    file->addSeparator();
+    file->addAction(QStringLiteral("退出"), QKeySequence::Quit, this, &QWidget::close);
 
-    toolbar->addWidget(new QLabel(QStringLiteral(" 音频驱动 ")));
+    QMenu* transport = menuBar()->addMenu(QStringLiteral("走带"));
+    transport->addAction(QStringLiteral("播放 / 暂停（空格）"), this, &MainWindow::togglePlay);
+    transport->addAction(QStringLiteral("停止"), this, &MainWindow::stop);
+    transport->addAction(QStringLiteral("回到开头"), this, [this] { seek(0.0); });
+
+    QMenu* plugins = menuBar()->addMenu(QStringLiteral("插件"));
+    plugins->addAction(QStringLiteral("添加插入效果…"), this, &MainWindow::addInsert);
+    plugins->addAction(QStringLiteral("重新扫描插件"), this, &MainWindow::rescanPlugins);
+}
+
+void MainWindow::buildTransport()
+{
+    auto* bar = addToolBar(QStringLiteral("走带控制"));
+    bar->setMovable(false);
+
+    auto transportButton = [&](const QString& text, const QString& tip) {
+        auto* b = new QToolButton;
+        b->setObjectName(QStringLiteral("transport"));
+        b->setText(text);
+        b->setToolTip(tip);
+        bar->addWidget(b);
+        return b;
+    };
+    connect(transportButton(QStringLiteral("⏮"), QStringLiteral("回到开头")), &QToolButton::clicked, this, [this] { seek(0.0); });
+    connect(transportButton(QStringLiteral("⏹"), QStringLiteral("停止")), &QToolButton::clicked, this, &MainWindow::stop);
+    fPlayButton = transportButton(QStringLiteral("▶"), QStringLiteral("播放（空格）"));
+    fPlayButton->setCheckable(true);
+    connect(fPlayButton, &QToolButton::clicked, this, &MainWindow::togglePlay);
+
+    bar->addSeparator();
+    fTimeLcd = new QLabel(QStringLiteral("00:00:00.000"));
+    fTimeLcd->setObjectName(QStringLiteral("lcdTime"));
+    fTimeLcd->setToolTip(QStringLiteral("时间（时:分:秒.毫秒）"));
+    bar->addWidget(fTimeLcd);
+    fBarsLcd = new QLabel;
+    fBarsLcd->setObjectName(QStringLiteral("lcdSmall"));
+    fBarsLcd->setToolTip(QStringLiteral("小节.拍.十六分音符"));
+    bar->addWidget(fBarsLcd);
+    auto* tempo = new QLabel(QStringLiteral("%1 BPM · 4/4").arg(kTempo, 0, 'f', 1));
+    tempo->setObjectName(QStringLiteral("lcdSmall"));
+    bar->addWidget(tempo);
+
+    auto* spacer = new QWidget;
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    bar->addWidget(spacer);
+
+    bar->addWidget(new QLabel(QStringLiteral("音频驱动 ")));
     fDriverBox = new QComboBox;
     for (const std::string& name : chost::audioDrivers())
         fDriverBox->addItem(QString::fromStdString(name));
-    toolbar->addWidget(fDriverBox);
+    bar->addWidget(fDriverBox);
     connect(fDriverBox, &QComboBox::textActivated, this, &MainWindow::startEngine);
 
-    toolbar->addSeparator();
-    fPlayButton = new QPushButton(QStringLiteral("▶ 播放"));
-    toolbar->addWidget(fPlayButton);
-    connect(fPlayButton, &QPushButton::clicked, this, &MainWindow::togglePlay);
+    fDspLabel = new QLabel;
+    fDspLabel->setObjectName(QStringLiteral("lcdSmall"));
+    fDspLabel->setMinimumWidth(110);
+    bar->addWidget(fDspLabel);
+}
 
-    toolbar->addSeparator();
-    toolbar->addAction(QStringLiteral("打开音频文件…"), this, &MainWindow::openAudioFile);
-    toolbar->addAction(QStringLiteral("打开工程…"), this, &MainWindow::openProject);
-    toolbar->addAction(QStringLiteral("保存工程…"), this, &MainWindow::saveProject);
+QWidget* MainWindow::buildInspector()
+{
+    auto* pane = new QWidget;
+    pane->setMinimumWidth(200);
+    auto* layout = new QVBoxLayout(pane);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+    layout->addWidget(sectionTitle(QStringLiteral("检查器")));
 
-    // left: plugin browser
-    auto* browserPane = new QWidget;
-    auto* browserLayout = new QVBoxLayout(browserPane);
-    browserLayout->addWidget(new QLabel(QStringLiteral("<b>插件浏览器</b>（双击加入机架）")));
+    auto* body = new QVBoxLayout;
+    body->setContentsMargins(8, 4, 8, 8);
+    fInspectorTrack = new QLabel;
+    fInspectorTrack->setObjectName(QStringLiteral("channelName"));
+    body->addWidget(fInspectorTrack);
+    fInspectorInfo = new QLabel;
+    fInspectorInfo->setWordWrap(true);
+    fInspectorInfo->setStyleSheet(QStringLiteral("color: #8b9096;"));
+    body->addWidget(fInspectorInfo);
+
+    auto* open = new QPushButton(QStringLiteral("打开音频文件…"));
+    body->addWidget(open);
+    connect(open, &QPushButton::clicked, this, &MainWindow::openAudioFile);
+
+    body->addSpacing(6);
+    auto* insertsTitle = new QLabel(QStringLiteral("插入效果"));
+    insertsTitle->setStyleSheet(QStringLiteral("color: #8b9096;"));
+    body->addWidget(insertsTitle);
+    fInspectorInserts = new InsertRack(8);
+    body->addWidget(fInspectorInserts);
+    connectInsertRack(fInspectorInserts);
+    body->addStretch();
+
+    layout->addLayout(body);
+    return pane;
+}
+
+QWidget* MainWindow::buildBrowser()
+{
+    auto* pane = new QWidget;
+    pane->setMinimumWidth(240);
+    auto* layout = new QVBoxLayout(pane);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    layout->addWidget(sectionTitle(QStringLiteral("插件（双击加到插入效果）")));
+
+    auto* body = new QVBoxLayout;
+    body->setContentsMargins(6, 2, 6, 6);
     fSearch = new QLineEdit;
     fSearch->setPlaceholderText(QStringLiteral("搜索名称、厂商或格式"));
     fSearch->setClearButtonEnabled(true);
-    browserLayout->addWidget(fSearch);
-    connect(fSearch, &QLineEdit::textChanged, this, &MainWindow::filterPlugins);
+    body->addWidget(fSearch);
 
     fBrowser = new QTreeWidget;
     fBrowser->setHeaderLabels({QStringLiteral("名称"), QStringLiteral("格式"), QStringLiteral("厂商")});
     fBrowser->setRootIsDecorated(false);
-    fBrowser->setSortingEnabled(true);
-    fBrowser->sortByColumn(0, Qt::AscendingOrder);
+    fBrowser->setAlternatingRowColors(true);
     fBrowser->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    browserLayout->addWidget(fBrowser);
+    fBrowser->sortByColumn(0, Qt::AscendingOrder);
+    body->addWidget(fBrowser);
+
+    auto* rescan = new QPushButton(QStringLiteral("重新扫描插件"));
+    body->addWidget(rescan);
+    layout->addLayout(body);
+
+    connect(fSearch, &QLineEdit::textChanged, this, [this](const QString& text) { filterPluginTree(fBrowser, text); });
     connect(fBrowser, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item) {
         addPluginSpec(item->data(0, Qt::UserRole).toString());
     });
-
-    auto* rescan = new QPushButton(QStringLiteral("重新扫描插件"));
-    browserLayout->addWidget(rescan);
     connect(rescan, &QPushButton::clicked, this, &MainWindow::rescanPlugins);
+    return pane;
+}
 
-    // middle: rack
-    auto* rackPane = new QWidget;
-    auto* rackLayout = new QVBoxLayout(rackPane);
-    rackLayout->addWidget(new QLabel(QStringLiteral("<b>机架</b>（从上到下串联处理，勾选框 = 启用）")));
-    fRack = new QListWidget;
-    rackLayout->addWidget(fRack);
-    connect(fRack, &QListWidget::currentRowChanged, this, &MainWindow::rebuildParameters);
-    connect(fRack, &QListWidget::itemChanged, this, [this](QListWidgetItem* item) {
-        if (!fRebuildingRack)
-            fHost.setActive(static_cast<uint>(fRack->row(item)), item->checkState() == Qt::Checked);
-    });
+QWidget* MainWindow::buildMixConsole()
+{
+    auto* pane = new QWidget;
+    auto* layout = new QVBoxLayout(pane);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(sectionTitle(QStringLiteral("调音台")));
 
-    auto* rackButtons = new QHBoxLayout;
-    auto* up = new QPushButton(QStringLiteral("上移"));
-    auto* down = new QPushButton(QStringLiteral("下移"));
-    auto* remove = new QPushButton(QStringLiteral("移除"));
-    fUiButton = new QPushButton(QStringLiteral("打开插件界面"));
-    for (QPushButton* b : {up, down, remove, fUiButton})
-        rackButtons->addWidget(b);
-    rackLayout->addLayout(rackButtons);
-    connect(up, &QPushButton::clicked, this, [this] { moveSelected(-1); });
-    connect(down, &QPushButton::clicked, this, [this] { moveSelected(+1); });
-    connect(remove, &QPushButton::clicked, this, &MainWindow::removeSelected);
-    connect(fUiButton, &QPushButton::clicked, this, &MainWindow::showSelectedUi);
+    auto* strips = new QWidget;
+    auto* row = new QHBoxLayout(strips);
+    row->setContentsMargins(8, 8, 8, 8);
+    row->setSpacing(6);
 
-    auto* meterBox = new QGridLayout;
-    fMeterL = new QProgressBar;
-    fMeterR = new QProgressBar;
-    for (QProgressBar* m : {fMeterL, fMeterR})
-    {
-        m->setRange(0, 100);
-        m->setTextVisible(false);
-        m->setMaximumHeight(12);
-    }
-    meterBox->addWidget(new QLabel(QStringLiteral("输出 L")), 0, 0);
-    meterBox->addWidget(fMeterL, 0, 1);
-    meterBox->addWidget(new QLabel(QStringLiteral("输出 R")), 1, 0);
-    meterBox->addWidget(fMeterR, 1, 1);
-    rackLayout->addLayout(meterBox);
+    fTrackStrip = new ChannelStrip(kTrackName, false);
+    row->addWidget(fTrackStrip);
+    connectInsertRack(fTrackStrip->inserts());
+    connect(fTrackStrip, &ChannelStrip::volumeChanged, this, &MainWindow::setTrackVolume);
+    connect(fTrackStrip, &ChannelStrip::muteToggled, this, &MainWindow::setTrackMuted);
 
-    // right: parameters of the selected plugin
-    auto* paramPane = new QWidget;
-    auto* paramPaneLayout = new QVBoxLayout(paramPane);
-    fParamTitle = new QLabel(QStringLiteral("<b>参数</b>"));
-    paramPaneLayout->addWidget(fParamTitle);
+    row->addStretch();
+    fOutputStrip = new ChannelStrip(QStringLiteral("Stereo Out"), true);
+    row->addWidget(fOutputStrip);
+
     auto* scroll = new QScrollArea;
+    scroll->setWidget(strips);
     scroll->setWidgetResizable(true);
-    fParamContainer = new QWidget;
-    fParamLayout = new QVBoxLayout(fParamContainer);
-    fParamLayout->addStretch();
-    scroll->setWidget(fParamContainer);
-    paramPaneLayout->addWidget(scroll);
+    scroll->setFrameShape(QFrame::NoFrame);
+    layout->addWidget(scroll);
+    return pane;
+}
 
-    auto* splitter = new QSplitter;
-    splitter->addWidget(browserPane);
-    splitter->addWidget(rackPane);
-    splitter->addWidget(paramPane);
-    splitter->setSizes({380, 360, 460});
-    setCentralWidget(splitter);
-
-    fEngineLabel = new QLabel;
-    statusBar()->addPermanentWidget(fEngineLabel);
+void MainWindow::connectInsertRack(InsertRack* rack)
+{
+    connect(rack, &InsertRack::addRequested, this, &MainWindow::addInsert);
+    connect(rack, &InsertRack::editRequested, this, &MainWindow::editInsert);
+    connect(rack, &InsertRack::activeToggled, this, &MainWindow::setInsertActive);
+    connect(rack, &InsertRack::removeRequested, this, &MainWindow::removeInsert);
+    connect(rack, &InsertRack::moveRequested, this, &MainWindow::moveInsert);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -187,7 +287,7 @@ void MainWindow::buildUi()
 
 void MainWindow::startEngine(const QString& driver)
 {
-    fParamPluginId = -1;
+    closeEditors();
     if (fHost.start(driver.toStdString()))
     {
         statusBar()->showMessage(QStringLiteral("音频引擎已启动：%1").arg(driver), 5000);
@@ -204,7 +304,8 @@ void MainWindow::startEngine(const QString& driver)
 
     const QSignalBlocker blocker(fDriverBox);
     fDriverBox->setCurrentText(QString::fromStdString(fHost.driverName()));
-    rebuildRack();
+    fTrackFile.clear();
+    refreshTrack();
 }
 
 void MainWindow::onHostEvent(HostEvent event, uint pluginId, int index, float value, const QString& text)
@@ -215,13 +316,11 @@ void MainWindow::onHostEvent(HostEvent event, uint pluginId, int index, float va
     case HostEvent::PluginRemoved:
     case HostEvent::PluginRenamed:
     case HostEvent::Reload:
-        rebuildRack();
+        refreshInserts();
         break;
     case HostEvent::ParameterChanged:
-        if (static_cast<int>(pluginId) == fParamPluginId)
-            for (ParamRow& row : fParamRows)
-                if (static_cast<int>(row.index) == index)
-                    updateParamRow(row, value);
+        if (auto it = fEditors.find(pluginId); it != fEditors.end() && it->second && index >= 0)
+            it->second->parameterChanged(static_cast<uint32_t>(index), value);
         break;
     case HostEvent::UiClosed:
         break;
@@ -230,7 +329,7 @@ void MainWindow::onHostEvent(HostEvent event, uint pluginId, int index, float va
         break;
     case HostEvent::EngineStopped:
         statusBar()->showMessage(QStringLiteral("音频引擎已停止"));
-        rebuildRack();
+        refreshTrack();
         break;
     }
 }
@@ -239,280 +338,266 @@ void MainWindow::tick()
 {
     fHost.idle();
 
+    // the end of the chain is both the track's post-insert signal and the output
     const uint count = fHost.pluginCount();
-    if (count > 0)
+    const auto [l, r] = count > 0 ? fHost.outputPeaks(count - 1) : std::pair<float, float>{0.0f, 0.0f};
+    fTrackStrip->setLevels(l, r);
+    fOutputStrip->setLevels(l, r);
+
+    const double rate = fHost.sampleRate();
+    const double seconds = rate > 0.0 ? static_cast<double>(fHost.transportFrame()) / rate : 0.0;
+    const bool playing = fHost.isPlaying();
+    fArrange->setPlayhead(seconds, playing);
+
+    const int ms = static_cast<int>(seconds * 1000.0);
+    fTimeLcd->setText(QStringLiteral("%1:%2:%3.%4")
+                          .arg(ms / 3600000, 2, 10, QLatin1Char('0'))
+                          .arg(ms / 60000 % 60, 2, 10, QLatin1Char('0'))
+                          .arg(ms / 1000 % 60, 2, 10, QLatin1Char('0'))
+                          .arg(ms % 1000, 3, 10, QLatin1Char('0')));
+    const double beats = seconds * kTempo / 60.0;
+    const int sixteenths = static_cast<int>(beats * 4.0);
+    fBarsLcd->setText(QStringLiteral("%1. %2. %3").arg(sixteenths / 16 + 1, 3).arg(sixteenths / 4 % 4 + 1).arg(sixteenths % 4 + 1));
+
     {
-        const auto [l, r] = fHost.outputPeaks(count - 1);
-        fMeterL->setValue(peakToMeter(l));
-        fMeterR->setValue(peakToMeter(r));
+        const QSignalBlocker blocker(fPlayButton);
+        fPlayButton->setChecked(playing);
     }
+
+    for (auto& [id, editor] : fEditors)
+        if (editor)
+            editor->refreshOutputs();
+
+    // the dummy driver has no real deadline, its load figure is meaningless
+    if (!fHost.isRunning())
+        fDspLabel->setText(QStringLiteral("引擎未运行"));
+    else if (fHost.driverName() == "Dummy")
+        fDspLabel->setText(QStringLiteral("DSP —"));
     else
-    {
-        fMeterL->setValue(0);
-        fMeterR->setValue(0);
-    }
-
-    // output parameters (meters, gain reduction, ...) only change from the plugin side
-    if (fParamPluginId >= 0)
-        for (ParamRow& row : fParamRows)
-            if (row.isOutput)
-                updateParamRow(row, fHost.parameterValue(static_cast<uint>(fParamPluginId), row.index));
-
-    fPlayButton->setText(fHost.isPlaying() ? QStringLiteral("⏸ 暂停") : QStringLiteral("▶ 播放"));
-    fEngineLabel->setText(fHost.isRunning()
-                              ? QStringLiteral("%1 · %2 Hz · 缓冲 %3 · DSP %4%")
-                                    .arg(QString::fromStdString(fHost.driverName()))
-                                    .arg(fHost.sampleRate(), 0, 'f', 0)
-                                    .arg(fHost.bufferSize())
-                                    .arg(fHost.dspLoad(), 0, 'f', 1)
-                              : QStringLiteral("引擎未运行"));
+        fDspLabel->setText(QStringLiteral("DSP %1%").arg(fHost.dspLoad(), 0, 'f', 0));
+    if (fHost.isRunning())
+        statusBar()->showMessage(QStringLiteral("%1 · %2 Hz · 缓冲 %3")
+                                     .arg(QString::fromStdString(fHost.driverName()))
+                                     .arg(rate, 0, 'f', 0)
+                                     .arg(fHost.bufferSize()));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// browser
+// track model
+
+int MainWindow::trackSlot() const
+{
+    for (uint id = 0; id < fHost.pluginCount(); ++id)
+        if (fHost.slot(id).label == "audiofile")
+            return static_cast<int>(id);
+    return -1;
+}
+
+std::vector<uint> MainWindow::insertIds() const
+{
+    std::vector<uint> ids;
+    const int track = trackSlot();
+    for (uint id = 0; id < fHost.pluginCount(); ++id)
+        if (static_cast<int>(id) != track)
+            ids.push_back(id);
+    return ids;
+}
+
+void MainWindow::refreshTrack()
+{
+    const int track = trackSlot();
+    fInspectorTrack->setText(kTrackName);
+
+    if (track < 0)
+    {
+        fArrange->clearTrack();
+        fInspectorInfo->setText(QStringLiteral("还没有音频，打开一个音频文件开始。"));
+        fTrackStrip->setFaderEnabled(false);
+        refreshInserts();
+        return;
+    }
+
+    // after loading a project only carla knows which file the player has
+    if (fTrackFile.isEmpty())
+        fTrackFile = QString::fromStdString(fHost.audioFilePath(static_cast<uint>(track)));
+
+    std::vector<float> peaks;
+    chost::AudioFileInfo info;
+    const bool decoded = chost::computePeaks(fTrackFile.toStdString(), 40000, peaks, info);
+    if (decoded && info.sampleRate > 0)
+    {
+        fTrackSeconds = static_cast<double>(info.frames) / info.sampleRate;
+    }
+    else
+    {
+        // a format chost can't decode (e.g. OGG): carla still plays it, ask the player for the length
+        const int length = fHost.findParameter(static_cast<uint>(track), "Length");
+        fTrackSeconds = length >= 0 ? fHost.parameterValue(static_cast<uint>(track), static_cast<uint32_t>(length)) : 0.0;
+    }
+
+    const QFileInfo file(fTrackFile);
+    fArrange->setTrack(kTrackName, file.completeBaseName(), peaks, fTrackSeconds);
+    fInspectorInfo->setText(decoded
+                                ? QStringLiteral("%1\n%2 Hz · %3 声道 · %4 秒")
+                                      .arg(file.fileName())
+                                      .arg(info.sampleRate)
+                                      .arg(info.channels)
+                                      .arg(fTrackSeconds, 0, 'f', 1)
+                                : file.fileName());
+
+    const chost::RackSlot slot = fHost.slot(static_cast<uint>(track));
+    fTrackStrip->setFaderEnabled(true);
+    fTrackStrip->setVolume(slot.volume);
+    fTrackStrip->setMuted(!slot.active);
+    fArrange->setMuted(!slot.active);
+    refreshInserts();
+}
+
+void MainWindow::refreshInserts()
+{
+    std::vector<InsertRack::Slot> items;
+    for (uint id : insertIds())
+    {
+        const chost::RackSlot s = fHost.slot(id);
+        items.push_back({QString::fromStdString(s.name), s.active});
+    }
+    fInspectorInserts->setSlots(items);
+    fTrackStrip->inserts()->setSlots(items);
+}
+
+void MainWindow::closeEditors()
+{
+    for (auto& [id, editor] : fEditors)
+        if (editor)
+            editor->close();
+    fEditors.clear();
+}
+
+void MainWindow::addInsert()
+{
+    PluginPicker picker(fPlugins, this);
+    if (picker.exec() == QDialog::Accepted && !picker.selectedSpec().isEmpty())
+        addPluginSpec(picker.selectedSpec());
+}
+
+bool MainWindow::addPluginSpec(const QString& spec)
+{
+    if (!fHost.addPlugin(spec.toStdString()))
+    {
+        showError(QStringLiteral("加载插件失败：%1\n\n%2").arg(spec, QString::fromStdString(fHost.lastError())));
+        return false;
+    }
+    refreshInserts();
+    return true;
+}
+
+void MainWindow::editInsert(int index)
+{
+    const std::vector<uint> ids = insertIds();
+    if (index < 0 || index >= static_cast<int>(ids.size()))
+        return;
+    const uint id = ids[static_cast<size_t>(index)];
+
+    // plugins with their own GUI open it, like double clicking an insert in Cubase
+    if (fHost.slot(id).hasCustomUi)
+    {
+        fHost.showCustomUi(id, true);
+        return;
+    }
+    QPointer<PluginEditor>& editor = fEditors[id];
+    if (!editor)
+        editor = new PluginEditor(fHost, id, this);
+    editor->show();
+    editor->raise();
+    editor->activateWindow();
+}
+
+void MainWindow::setInsertActive(int index, bool active)
+{
+    const std::vector<uint> ids = insertIds();
+    if (index >= 0 && index < static_cast<int>(ids.size()))
+        fHost.setActive(ids[static_cast<size_t>(index)], active);
+    refreshInserts();
+}
+
+void MainWindow::removeInsert(int index)
+{
+    const std::vector<uint> ids = insertIds();
+    if (index < 0 || index >= static_cast<int>(ids.size()))
+        return;
+    // plugin ids shift after a removal, open editors would point at the wrong plugin
+    closeEditors();
+    fHost.removePlugin(ids[static_cast<size_t>(index)]);
+    refreshInserts();
+}
+
+void MainWindow::moveInsert(int index, int delta)
+{
+    const std::vector<uint> ids = insertIds();
+    const int target = index + delta;
+    if (index < 0 || target < 0 || index >= static_cast<int>(ids.size()) || target >= static_cast<int>(ids.size()))
+        return;
+    closeEditors();
+    fHost.movePlugin(ids[static_cast<size_t>(index)], static_cast<int>(ids[static_cast<size_t>(target)]) - static_cast<int>(ids[static_cast<size_t>(index)]));
+    refreshInserts();
+}
+
+void MainWindow::setTrackMuted(bool muted)
+{
+    const int track = trackSlot();
+    if (track >= 0)
+        fHost.setActive(static_cast<uint>(track), !muted);
+    fTrackStrip->setMuted(muted);
+    fArrange->setMuted(muted);
+}
+
+void MainWindow::setTrackVolume(float volume)
+{
+    const int track = trackSlot();
+    if (track >= 0)
+        fHost.setVolume(static_cast<uint>(track), volume);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// files and transport
 
 void MainWindow::rescanPlugins()
 {
     QApplication::setOverrideCursor(Qt::WaitCursor);
     fPlugins = chost::scanPlugins();
     QApplication::restoreOverrideCursor();
-
-    fBrowser->setSortingEnabled(false);
-    fBrowser->clear();
-    for (const chost::PluginEntry& e : fPlugins)
-    {
-        auto* item = new QTreeWidgetItem(fBrowser);
-        item->setText(0, QString::fromStdString(e.name));
-        item->setText(1, QString::fromStdString(e.format) + (e.isSynth ? QStringLiteral(" · 乐器") : QString()));
-        item->setText(2, QString::fromStdString(e.maker));
-        item->setToolTip(0, QString::fromStdString(e.spec));
-        item->setData(0, Qt::UserRole, QString::fromStdString(e.spec));
-    }
-    fBrowser->setSortingEnabled(true);
-    filterPlugins(fSearch->text());
+    fillPluginTree(fBrowser, fPlugins);
+    filterPluginTree(fBrowser, fSearch->text());
     statusBar()->showMessage(QStringLiteral("找到 %1 个插件").arg(fPlugins.size()), 5000);
 }
 
-void MainWindow::filterPlugins(const QString& text)
+void MainWindow::play()
 {
-    for (int i = 0; i < fBrowser->topLevelItemCount(); ++i)
-    {
-        QTreeWidgetItem* item = fBrowser->topLevelItem(i);
-        const bool match = text.isEmpty()
-                           || item->text(0).contains(text, Qt::CaseInsensitive)
-                           || item->text(1).contains(text, Qt::CaseInsensitive)
-                           || item->text(2).contains(text, Qt::CaseInsensitive);
-        item->setHidden(!match);
-    }
+    fHost.play();
 }
-
-bool MainWindow::addPluginSpec(const QString& spec)
-{
-    if (fHost.addPlugin(spec.toStdString()))
-    {
-        rebuildRack();
-        selectRackSlot(static_cast<int>(fHost.pluginCount()) - 1);
-        return true;
-    }
-    showError(QStringLiteral("加载插件失败：%1\n\n%2").arg(spec, QString::fromStdString(fHost.lastError())));
-    return false;
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// rack
-
-void MainWindow::rebuildRack()
-{
-    const int previous = fRack->currentRow();
-    fRebuildingRack = true;
-    fRack->clear();
-    for (uint id = 0; id < fHost.pluginCount(); ++id)
-    {
-        const chost::RackSlot s = fHost.slot(id);
-        auto* item = new QListWidgetItem(QStringLiteral("%1.  %2").arg(id + 1).arg(QString::fromStdString(s.name)), fRack);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(s.active ? Qt::Checked : Qt::Unchecked);
-        item->setToolTip(QString::fromStdString(s.maker));
-    }
-    fRebuildingRack = false;
-
-    if (fRack->count() > 0)
-        fRack->setCurrentRow(std::clamp(previous, 0, fRack->count() - 1));
-    fParamPluginId = -1;
-    rebuildParameters();
-}
-
-void MainWindow::selectRackSlot(int row)
-{
-    fRack->setCurrentRow(row);
-}
-
-int MainWindow::selectedSlot() const
-{
-    return fRack->currentRow();
-}
-
-void MainWindow::moveSelected(int delta)
-{
-    const int row = selectedSlot();
-    if (row < 0 || !fHost.movePlugin(static_cast<uint>(row), delta))
-        return;
-    rebuildRack();
-    selectRackSlot(row + delta);
-}
-
-void MainWindow::removeSelected()
-{
-    const int row = selectedSlot();
-    if (row >= 0 && fHost.removePlugin(static_cast<uint>(row)))
-        rebuildRack();
-}
-
-void MainWindow::showSelectedUi()
-{
-    const int row = selectedSlot();
-    if (row < 0)
-        return;
-    if (!fHost.slot(static_cast<uint>(row)).hasCustomUi)
-    {
-        statusBar()->showMessage(QStringLiteral("这个插件没有自带界面，请用右侧参数面板调节"), 5000);
-        return;
-    }
-    fHost.showCustomUi(static_cast<uint>(row), true);
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// parameters
-
-void MainWindow::rebuildParameters()
-{
-    const int id = selectedSlot();
-    if (id == fParamPluginId)
-        return;
-    fParamPluginId = id;
-
-    // the trailing stretch stays, everything above it is replaced
-    while (fParamLayout->count() > 1)
-    {
-        QLayoutItem* item = fParamLayout->takeAt(0);
-        delete item->widget();
-        delete item;
-    }
-    fParamRows.clear();
-
-    if (id < 0)
-    {
-        fParamTitle->setText(QStringLiteral("<b>参数</b>"));
-        fUiButton->setEnabled(false);
-        return;
-    }
-
-    const chost::RackSlot slot = fHost.slot(static_cast<uint>(id));
-    fParamTitle->setText(QStringLiteral("<b>参数 · %1</b>").arg(QString::fromStdString(slot.name).toHtmlEscaped()));
-    fUiButton->setEnabled(slot.hasCustomUi);
-
-    const std::vector<chost::ParamInfo> params = fHost.parameters(static_cast<uint>(id));
-    fParamRows.reserve(params.size());
-
-    int insertAt = 0;
-    for (const chost::ParamInfo& p : params)
-    {
-        ParamRow row;
-        row.index = p.index;
-        row.min = p.min;
-        row.max = p.max;
-        row.isOutput = p.isOutput;
-        row.isBoolean = p.isBoolean;
-        row.isInteger = p.isInteger;
-        row.unit = QString::fromStdString(p.unit);
-
-        auto* line = new QWidget;
-        auto* layout = new QHBoxLayout(line);
-        layout->setContentsMargins(0, 0, 0, 0);
-
-        auto* name = new QLabel(QString::fromStdString(p.name));
-        name->setMinimumWidth(130);
-        name->setToolTip(QString::fromStdString(p.symbol));
-        layout->addWidget(name);
-
-        const uint32_t index = p.index;
-        if (p.isBoolean)
-        {
-            row.toggle = new QCheckBox;
-            row.toggle->setEnabled(!p.isOutput);
-            layout->addWidget(row.toggle, 1);
-            connect(row.toggle, &QCheckBox::toggled, this, [this, id, index, p](bool on) {
-                fHost.setParameter(static_cast<uint>(id), index, on ? p.max : p.min);
-            });
-        }
-        else
-        {
-            row.slider = new QSlider(Qt::Horizontal);
-            row.slider->setRange(0, kSliderSteps);
-            row.slider->setEnabled(!p.isOutput);
-            layout->addWidget(row.slider, 1);
-        }
-
-        row.valueLabel = new QLabel;
-        row.valueLabel->setMinimumWidth(90);
-        row.valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        layout->addWidget(row.valueLabel);
-
-        if (p.isOutput)
-            name->setText(name->text() + QStringLiteral(" (输出)"));
-
-        fParamLayout->insertWidget(insertAt++, line);
-        fParamRows.push_back(row);
-        updateParamRow(fParamRows.back(), p.value);
-
-        if (row.slider != nullptr && !p.isOutput)
-        {
-            const size_t rowIndex = fParamRows.size() - 1;
-            connect(row.slider, &QSlider::valueChanged, this, [this, id, rowIndex](int pos) {
-                ParamRow& r = fParamRows[rowIndex];
-                float value = r.min + (r.max - r.min) * static_cast<float>(pos) / kSliderSteps;
-                if (r.isInteger)
-                    value = std::round(value);
-                fHost.setParameter(static_cast<uint>(id), r.index, value);
-                r.valueLabel->setText(QStringLiteral("%1 %2").arg(value, 0, 'g', 4).arg(r.unit));
-            });
-            // double click resets to the default value
-            line->setToolTip(QStringLiteral("默认值：%1 %2").arg(p.def, 0, 'g', 4).arg(row.unit));
-        }
-    }
-
-    if (params.empty())
-        fParamLayout->insertWidget(0, new QLabel(QStringLiteral("这个插件没有可调参数")));
-}
-
-void MainWindow::updateParamRow(ParamRow& row, float value)
-{
-    if (row.toggle != nullptr)
-    {
-        const QSignalBlocker blocker(row.toggle);
-        row.toggle->setChecked(value > (row.min + row.max) * 0.5f);
-    }
-    if (row.slider != nullptr && !row.slider->isSliderDown())
-    {
-        const QSignalBlocker blocker(row.slider);
-        const float range = row.max - row.min;
-        row.slider->setValue(range > 0.0f ? static_cast<int>((value - row.min) / range * kSliderSteps) : 0);
-    }
-    row.valueLabel->setText(QStringLiteral("%1 %2").arg(value, 0, 'g', 4).arg(row.unit));
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// files and transport
 
 bool MainWindow::loadAudioFile(const QString& path)
 {
+    // one audio track: a new file replaces the old one, the inserts stay
+    closeEditors();
+    if (const int track = trackSlot(); track >= 0)
+        fHost.removePlugin(static_cast<uint>(track));
+
     if (!fHost.loadAudioFile(path.toStdString()))
     {
         showError(QStringLiteral("无法打开音频文件：%1\n\n%2").arg(path, QString::fromStdString(fHost.lastError())));
+        fTrackFile.clear();
+        refreshTrack();
         return false;
     }
-    rebuildRack();
-    fHost.play();
+
+    // play once along the timeline instead of looping
+    if (const int loop = fHost.findParameter(0, "Loop Mode"); loop >= 0)
+        fHost.setParameter(0, static_cast<uint32_t>(loop), 0.0f);
+
+    fTrackFile = path;
+    refreshTrack();
+    seek(0.0);
     return true;
 }
 
@@ -530,9 +615,11 @@ void MainWindow::openProject()
                                                       QStringLiteral("Carla 工程 (*.carxp)"));
     if (path.isEmpty())
         return;
+    closeEditors();
     if (!fHost.loadProject(path.toStdString()))
         showError(QStringLiteral("无法打开工程：%1").arg(QString::fromStdString(fHost.lastError())));
-    rebuildRack();
+    fTrackFile.clear();
+    refreshTrack();
 }
 
 void MainWindow::saveProject()
@@ -555,6 +642,30 @@ void MainWindow::togglePlay()
         fHost.pause();
     else
         fHost.play();
+}
+
+void MainWindow::stop()
+{
+    fHost.pause();
+    seek(0.0);
+}
+
+void MainWindow::seek(double seconds)
+{
+    fHost.relocate(static_cast<uint64_t>(std::max(0.0, seconds) * fHost.sampleRate()));
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event)
+{
+    if (event->mimeData()->hasUrls())
+        event->acceptProposedAction();
+}
+
+void MainWindow::dropEvent(QDropEvent* event)
+{
+    const QList<QUrl> urls = event->mimeData()->urls();
+    if (!urls.isEmpty() && urls.first().isLocalFile())
+        loadAudioFile(urls.first().toLocalFile());
 }
 
 void MainWindow::showError(const QString& what)
