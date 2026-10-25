@@ -1,6 +1,6 @@
 build/
 *.wav
 *.carxp
-*.png
+/*.png
 dist/
 carla-root/
