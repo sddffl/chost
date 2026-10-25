@@ -57,8 +57,10 @@ int main(int argc, char* argv[])
     QCommandLineOption noteScaleOpt(QStringLiteral("note-scale"), QStringLiteral("With --edit-notes: show this scale (\"A minor\", \"D dorian\", \"off\")."), QStringLiteral("scale"));
     QCommandLineOption fitScaleOpt(QStringLiteral("fit-scale"), QStringLiteral("With --edit-notes: move the notes outside the scale into it (tests)."));
     QCommandLineOption scoreOpt(QStringLiteral("score"), QStringLiteral("Open File > Sheet music (the selected track, else every MIDI track) and export it: .pdf or .musicxml (tests)."), QStringLiteral("path"));
+    QCommandLineOption markerOpt(QStringLiteral("marker"), QStringLiteral("Add a marker on the timeline (repeatable)."), QStringLiteral("seconds:name"));
+    QCommandLineOption rangeOpt(QStringLiteral("range"), QStringLiteral("Select a range of the timeline."), QStringLiteral("start:end"));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, markerOpt, rangeOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -85,6 +87,10 @@ int main(int argc, char* argv[])
         window.applyInstruments();
     if (parser.isSet(selectOpt))
         window.selectTrack(parser.value(selectOpt).toInt());
+    for (const QString& marker : parser.values(markerOpt))
+        window.addMarker(marker.section(QLatin1Char(':'), 0, 0).toDouble(), marker.section(QLatin1Char(':'), 1));
+    if (parser.isSet(rangeOpt))
+        window.setRange(parser.value(rangeOpt).section(QLatin1Char(':'), 0, 0).toDouble(), parser.value(rangeOpt).section(QLatin1Char(':'), 1).toDouble());
     window.show();
     if (parser.isSet(saveOpt))
         window.saveSessionNow();

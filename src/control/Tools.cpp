@@ -166,6 +166,38 @@ static const char* const kTools = R"json([
   }, "required": ["path"]}
 },
 {
+  "name": "edit_clip",
+  "description": "Edits the clip of a track (audio or MIDI) over a range of the song, as the track menu's 片段 actions do: move it later or earlier, silence the range (MIDI: delete its notes), keep only the range, fade in or out over it, change its gain (MIDI: velocities), or normalize its peak. Leave start and end out for the whole clip. The original file is kept; the track plays an edited copy. Undoable.",
+  "inputSchema": {"type": "object", "properties": {
+    "track": {"type": "integer", "minimum": 0},
+    "action": {"type": "string", "enum": ["move", "silence", "keep", "fade_in", "fade_out", "gain", "normalize"]},
+    "start": {"type": "number", "minimum": 0, "description": "Seconds in the song; default 0."},
+    "end": {"type": "number", "minimum": 0, "description": "Seconds in the song; default the clip's end."},
+    "seconds": {"type": "number", "description": "move: how far, later (> 0) or earlier (< 0)."},
+    "beats": {"type": "number", "description": "move: how far in beats at the song's tempo, instead of seconds."},
+    "db": {"type": "number", "description": "gain: the change in dB; normalize: the peak to bring the range to (default -1)."}
+  }, "required": ["track", "action"]}
+},
+{
+  "name": "add_marker",
+  "description": "Adds a marker on the timeline, e.g. where the chorus starts, so the song's parts can be found and jumped to (Alt+Left/Right). Give seconds, or bar (1 is the song's start) at the song's tempo in 4/4. Returns the markers.",
+  "inputSchema": {"type": "object", "properties": {
+    "seconds": {"type": "number", "minimum": 0},
+    "bar": {"type": "number", "minimum": 1},
+    "name": {"type": "string", "description": "e.g. 主歌, 副歌, 间奏; default 标记 N."}
+  }}
+},
+{
+  "name": "edit_marker",
+  "description": "Renames, moves or removes a marker; index is from get_project's markers.",
+  "inputSchema": {"type": "object", "properties": {
+    "index": {"type": "integer", "minimum": 0},
+    "name": {"type": "string"},
+    "seconds": {"type": "number", "minimum": 0},
+    "remove": {"type": "boolean"}
+  }, "required": ["index"]}
+},
+{
   "name": "get_parameters",
   "description": "The parameters of a plugin: an insert of a track, or its instrument. Each has its index, name, unit, range, default and current value; outputs (meters) are marked.",
   "inputSchema": {"type": "object", "properties": {

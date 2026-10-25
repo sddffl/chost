@@ -172,6 +172,46 @@ bool computePeaks(const std::string& path, size_t buckets, std::vector<float>& p
     return true;
 }
 
+bool readAudioFile(const std::string& path, std::vector<float>& samples, AudioFileInfo& info)
+{
+    Decoded d;
+    if (!decode(path, d, false) || d.info.channels == 0)
+        return false;
+    samples = std::move(d.samples);
+    info = d.info;
+    return true;
+}
+
+bool writeWavFile(const std::string& path, const std::vector<float>& samples, uint32_t channels, uint32_t sampleRate, std::string& error)
+{
+    drwav_data_format format{};
+    format.container = drwav_container_riff;
+    format.format = DR_WAVE_FORMAT_IEEE_FLOAT;
+    format.channels = channels;
+    format.sampleRate = sampleRate;
+    format.bitsPerSample = 32;
+    drwav wav;
+#ifdef _WIN32
+    const bool opened = drwav_init_file_write_w(&wav, fs::u8path(path).wstring().c_str(), &format, nullptr);
+#else
+    const bool opened = drwav_init_file_write(&wav, path.c_str(), &format, nullptr);
+#endif
+    if (!opened)
+    {
+        error = "could not write " + path;
+        return false;
+    }
+    const drwav_uint64 frames = samples.size() / channels;
+    const drwav_uint64 written = drwav_write_pcm_frames(&wav, frames, samples.data());
+    drwav_uninit(&wav);
+    if (written != frames)
+    {
+        error = "could not write " + path;
+        return false;
+    }
+    return true;
+}
+
 std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const std::string& cacheDir, std::string& error)
 {
     AudioFileInfo info;

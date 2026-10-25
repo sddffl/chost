@@ -24,6 +24,11 @@ bool probeAudioFile(const std::string& path, AudioFileInfo& info);
 // Peak (max absolute sample over all channels) of `buckets` equal slices of the file, for drawing.
 bool computePeaks(const std::string& path, size_t buckets, std::vector<float>& peaks, AudioFileInfo& info);
 
+// The whole file as interleaved float samples.
+bool readAudioFile(const std::string& path, std::vector<float>& samples, AudioFileInfo& info);
+// A 32-bit float WAV.
+bool writeWavFile(const std::string& path, const std::vector<float>& samples, uint32_t channels, uint32_t sampleRate, std::string& error);
+
 // Returns the path Carla should load: the original file when it is safe as is,
 // or a float WAV at `engineRate` written into `cacheDir`. Empty on failure, with `error` set.
 std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const std::string& cacheDir, std::string& error);

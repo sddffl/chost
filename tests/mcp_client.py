@@ -143,6 +143,40 @@ call("export_score", path=xml, shortest="eighth")
 check("<score-partwise" in open(xml, encoding="utf-8").read(), "score MusicXML")
 call("export_score", path=pdf, tracks=[0], expect_error=True)  # an audio track
 
+# clips: a fade on the audio track and a move of the chord part, each into a new file, undoable
+before = call("get_project")["tracks"][0]["file"]
+faded = call("edit_clip", track=0, action="fade_in", end=0.5)
+check("_编辑" in faded["file"] and faded["file"].endswith(".wav") and os.path.exists(faded["file"]), "fade into %s" % os.path.basename(faded["file"]))
+call("edit_clip", track=0, action="gain", db=-6, start=0.2, end=0.8)
+call("undo")
+call("undo")
+check(call("get_project")["tracks"][0]["file"] == before, "undo goes back to the original file")
+moved = call("edit_clip", track=part["track"], action="move", beats=4)
+check(moved["file"].endswith(".mid"), "chord part moved a bar later")
+call("edit_clip", track=part["track"], action="fade_in", expect_error=True)  # MIDI has no fades
+call("edit_clip", track=0, action="stretch", expect_error=True)
+call("edit_clip", track=0, action="keep", start=1.0, end=0.5, expect_error=True)
+
+# markers: added by bar, renamed, moved, removed
+added = call("add_marker", bar=2, name="副歌")
+check(added["markers"][added["index"]]["name"] == "副歌" and abs(added["markers"][added["index"]]["bar"] - 2) < 0.01, "a marker at bar 2")
+call("add_marker", seconds=0)
+markers = call("get_project")["markers"]
+check(len(markers) == 2 and markers[0]["seconds"] == 0 and markers[1]["name"] == "副歌", "markers in order: %s" % ", ".join(m["name"] for m in markers))
+call("edit_marker", index=0, name="前奏")
+check(call("edit_marker", index=1, seconds=10)["markers"][1]["seconds"] == 10, "marker moved")
+check(len(call("edit_marker", index=0, remove=True)["markers"]) == 1, "marker removed")
+call("undo")
+check(call("get_project")["markers"][0]["name"] == "前奏", "undo brings the marker back")
+call("edit_marker", index=5, remove=True, expect_error=True)
+path2 = os.path.abspath("mcp_markers.chost")
+call("save_project", path=path2)
+call("new_project")
+call("open_project", path=path2)
+reopened = call("get_project")
+check([m["name"] for m in reopened["markers"]] == ["前奏", "副歌"] and "_编辑" in reopened["tracks"][2]["file"],
+      "markers and the edited clip are saved with the project")
+
 proc.stdin.close()
 proc.wait(timeout=10)
 print("MCP TEST PASSED")

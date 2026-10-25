@@ -48,6 +48,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QShortcut>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QSplitter>
 #include <QStatusBar>
@@ -182,6 +183,36 @@ MainWindow::MainWindow(QWidget* parent)
     connect(fArrange, &ArrangeView::trackMenuRequested, this, &MainWindow::trackMenu);
     connect(fArrange, &ArrangeView::filesDropped, this, &MainWindow::dropFiles);
     connect(fArrange, &ArrangeView::clipDoubleClicked, this, &MainWindow::editNotes);
+    connect(fArrange, &ArrangeView::clipMoveRequested, this, [this](int lane, double seconds) {
+        chost::ClipEdit edit;
+        edit.kind = chost::ClipEditKind::Move;
+        edit.seconds = seconds;
+        const double beats = seconds * fSession.tempo() / 60.0;
+        editClip(lane, edit, QStringLiteral("移动片段 %1 拍").arg(beats > 0 ? QStringLiteral("+") + QString::number(beats, 'g', 3) : QString::number(beats, 'g', 3)));
+    });
+    connect(fArrange, &ArrangeView::rangeChanged, this, [this](double start, double end) {
+        if (end > start)
+        {
+            const double beat = 60.0 / fSession.tempo();
+            auto where = [beat](double t) {
+                const int sixteenths = static_cast<int>(std::lround(t / beat * 4.0));
+                return QStringLiteral("%1.%2").arg(sixteenths / 16 + 1).arg(sixteenths / 4 % 4 + 1);
+            };
+            statusBar()->showMessage(QStringLiteral("选区 %1 – %2（%3 秒）：右键轨道可以对选区淡入、淡出、静音、调音量；Esc 取消")
+                                         .arg(where(start), where(end)).arg(end - start, 0, 'f', 2), 10000);
+        }
+    });
+    connect(fArrange, &ArrangeView::markerMoved, this, [this](int marker, double seconds) {
+        std::vector<chost::Marker> markers = fSession.markers();
+        if (marker < 0 || marker >= static_cast<int>(markers.size()))
+            return;
+        markers[static_cast<size_t>(marker)].seconds = seconds;
+        fSession.setMarkers(markers);
+        refreshMarkers();
+        fHistory->record(QStringLiteral("移动标记"));
+    });
+    connect(fArrange, &ArrangeView::markerRenameRequested, this, &MainWindow::renameMarker);
+    connect(fArrange, &ArrangeView::markerMenuRequested, this, &MainWindow::markerMenu);
 
     auto* space = new QShortcut(QKeySequence(Qt::Key_Space), this);
     connect(space, &QShortcut::activated, this, &MainWindow::togglePlay);
@@ -305,6 +336,13 @@ void MainWindow::buildMenus()
     transport->addAction(QStringLiteral("播放 / 暂停（空格）"), this, &MainWindow::togglePlay);
     transport->addAction(QStringLiteral("停止"), this, &MainWindow::stop);
     transport->addAction(QStringLiteral("回到开头"), this, [this] { seek(0.0); });
+    transport->addSeparator();
+    transport->addAction(QStringLiteral("在播放位置添加标记"), QKeySequence(QStringLiteral("Ctrl+M")), this, [this] {
+        const int marker = addMarker(playhead());
+        renameMarker(marker);
+    });
+    transport->addAction(QStringLiteral("跳到上一个标记"), QKeySequence(QStringLiteral("Alt+Left")), this, [this] { jumpToMarker(-1); });
+    transport->addAction(QStringLiteral("跳到下一个标记"), QKeySequence(QStringLiteral("Alt+Right")), this, [this] { jumpToMarker(1); });
 
     QMenu* plugins = menuBar()->addMenu(QStringLiteral("插件"));
     plugins->addAction(QStringLiteral("给选中轨道添加插入效果…"), this, &MainWindow::addInsert);
@@ -858,6 +896,7 @@ void MainWindow::refreshTracks()
     refreshMixState();
     refreshSelection();
     refreshChordPad();
+    refreshMarkers();
     if (fScoreDialog)
     {
         std::vector<ScoreDialog::Track> list;
@@ -1353,6 +1392,11 @@ void MainWindow::trackMenu(int track, const QPoint& globalPos)
             menu.addAction(QStringLiteral("AI 转 MIDI…"), this, [this] { transcribe(false); })->setEnabled(!t.file.empty());
         }
         menu.addAction(QStringLiteral("添加插入效果…"), this, &MainWindow::addInsert);
+        if (!t.file.empty())
+        {
+            QMenu* clip = menu.addMenu(fArrange->hasRange() ? QStringLiteral("片段（选区）") : QStringLiteral("片段（整段）"));
+            addClipActions(clip, track);
+        }
         menu.addSeparator();
         menu.addAction(QStringLiteral("删除轨道"), this, &MainWindow::removeSelectedTrack);
         menu.addSeparator();
@@ -1361,6 +1405,243 @@ void MainWindow::trackMenu(int track, const QPoint& globalPos)
     menu.addAction(QStringLiteral("添加乐器轨（MIDI）"), this, &MainWindow::addInstrumentTrack);
     menu.addAction(QStringLiteral("导入音频 / MIDI 到新轨道…"), this, &MainWindow::importAudio);
     menu.exec(globalPos);
+}
+
+void MainWindow::addClipActions(QMenu* menu, int track)
+{
+    const chost::Track& t = fSession.tracks()[static_cast<size_t>(track)];
+    const bool midi = t.kind == chost::TrackKind::Instrument;
+    const bool range = fArrange->hasRange();
+    auto ranged = [this](chost::ClipEditKind kind) {
+        chost::ClipEdit edit;
+        edit.kind = kind;
+        if (fArrange->hasRange())
+        {
+            edit.start = fArrange->rangeStart();
+            edit.end = fArrange->rangeEnd();
+        }
+        return edit;
+    };
+    auto add = [&](const QString& text, chost::ClipEditKind kind, bool enabled, const QString& tip) {
+        QAction* a = menu->addAction(text, this, [this, track, kind, text, ranged] { editClip(track, ranged(kind), text); });
+        a->setEnabled(enabled);
+        a->setToolTip(tip);
+    };
+    if (!range)
+    {
+        QAction* hint = menu->addAction(QStringLiteral("（在标尺上拖出选区，就能只改其中一段）"));
+        hint->setEnabled(false);
+    }
+    add(midi ? QStringLiteral("删除选区里的音符") : QStringLiteral("静音选区"), chost::ClipEditKind::Silence, range, {});
+    add(QStringLiteral("只保留选区"), chost::ClipEditKind::Keep, range, {});
+    add(QStringLiteral("选区淡入"), chost::ClipEditKind::FadeIn, range && !midi, {});
+    add(QStringLiteral("选区淡出"), chost::ClipEditKind::FadeOut, range && !midi, {});
+    menu->addSeparator();
+    menu->addAction(midi ? QStringLiteral("力度…") : QStringLiteral("音量…"), this, [this, track, ranged, midi] {
+        bool ok = false;
+        const double db = QInputDialog::getDouble(this, midi ? QStringLiteral("力度") : QStringLiteral("音量"),
+                                                  midi ? QStringLiteral("把力度加大或减小多少 dB（每 6 dB 大约一倍）")
+                                                       : QStringLiteral("把音量加大或减小多少 dB（+6 dB 大约响一倍）"),
+                                                  -3.0, -48.0, 24.0, 1, &ok, Qt::WindowFlags(), 0.5);
+        if (!ok || db == 0.0)
+            return;
+        chost::ClipEdit edit = ranged(chost::ClipEditKind::Gain);
+        edit.db = db;
+        editClip(track, edit, QStringLiteral("片段音量 %1 dB").arg(db > 0 ? QStringLiteral("+") + QString::number(db) : QString::number(db)));
+    });
+    if (!midi)
+        menu->addAction(QStringLiteral("标准化（峰值到 -1 dB）"), this, [this, track, ranged] {
+            chost::ClipEdit edit = ranged(chost::ClipEditKind::Normalize);
+            edit.db = -1.0;
+            editClip(track, edit, QStringLiteral("标准化"));
+        });
+    menu->addAction(QStringLiteral("移动片段…"), this, [this, track] {
+        bool ok = false;
+        const double beats = QInputDialog::getDouble(this, QStringLiteral("移动片段"),
+                                                     QStringLiteral("往后移几拍（负数往前）；也可以直接用鼠标拖动片段"), 1.0, -256.0, 256.0, 2, &ok,
+                                                     Qt::WindowFlags(), 1.0);
+        if (!ok || beats == 0.0)
+            return;
+        chost::ClipEdit edit;
+        edit.kind = chost::ClipEditKind::Move;
+        edit.seconds = beats * 60.0 / fSession.tempo();
+        editClip(track, edit, QStringLiteral("移动片段 %1 拍").arg(beats));
+    });
+    if (range)
+    {
+        menu->addSeparator();
+        menu->addAction(QStringLiteral("取消选区"), this, [this] { fArrange->setRange(0.0, 0.0); });
+    }
+}
+
+QString MainWindow::editFolder() const
+{
+    const QString base = fSessionPath.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+                                                : QFileInfo(fSessionPath).absolutePath();
+    return QDir(base).filePath(projectName() + QStringLiteral("_编辑"));
+}
+
+bool MainWindow::editClip(int track, const chost::ClipEdit& edit, const QString& what)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (track < 0 || track >= static_cast<int>(tracks.size()) || tracks[static_cast<size_t>(track)].file.empty())
+    {
+        showError(QStringLiteral("这条轨道上没有片段"));
+        return false;
+    }
+    const chost::Track& t = tracks[static_cast<size_t>(track)];
+    const bool midi = t.kind == chost::TrackKind::Instrument;
+    const QString in = QString::fromStdString(t.file);
+    const QString folder = editFolder();
+    QDir().mkpath(folder);
+    // a new file each time, so undo can go back to the one before
+    QString stem = QFileInfo(in).completeBaseName();
+    stem.remove(QRegularExpression(QStringLiteral("_编辑\\d+$")));
+    QString out;
+    for (int n = 1; out.isEmpty() || QFileInfo::exists(out); ++n)
+        out = QDir(folder).filePath(QStringLiteral("%1_编辑%2.%3").arg(stem).arg(n).arg(midi ? QStringLiteral("mid") : QStringLiteral("wav")));
+
+    std::string error, note;
+    bool ok = false;
+    if (midi)
+    {
+        chost::MidiClip clip;
+        ok = chost::readMidiFile(in.toStdString(), clip, error) && chost::editMidiClip(clip, edit, error) &&
+             chost::writeMidiFile(out.toStdString(), clip, error);
+    }
+    else
+    {
+        ok = chost::editAudioFile(in.toStdString(), out.toStdString(), edit, error, &note);
+    }
+    if (!ok)
+    {
+        showError(QStringLiteral("%1没有做成：%2").arg(what, QString::fromStdString(error)));
+        return false;
+    }
+
+    if (midi)
+    {
+        if (fPianoRoll && fPianoRoll->midiPath() == in)
+            delete fPianoRoll; // it shows the notes as they were
+        midiFileEdited(in, out, what);
+    }
+    else
+    {
+        closeEditors();
+        if (!fSession.setTrackFile(track, out.toStdString()))
+        {
+            showError(QStringLiteral("无法打开音频文件：%1\n\n%2").arg(out, QString::fromStdString(fSession.lastError())));
+            return false;
+        }
+        fClips.remove(out);
+        refreshTracks();
+        selectTrack(track);
+        fHistory->record(what);
+    }
+    statusBar()->showMessage(note.empty() ? QStringLiteral("%1：完成（Ctrl+Z 撤销）").arg(what)
+                                          : QStringLiteral("%1：完成，但片段峰值超过 0 dB，会削波，最好把音量调小一点").arg(what),
+                             8000);
+    return true;
+}
+
+void MainWindow::setRange(double start, double end)
+{
+    fArrange->setRange(start, end);
+}
+
+double MainWindow::playhead() const
+{
+    const double rate = fHost.sampleRate();
+    return rate > 0.0 ? static_cast<double>(fHost.transportFrame()) / rate : 0.0;
+}
+
+int MainWindow::addMarker(double seconds, const QString& name)
+{
+    std::vector<chost::Marker> markers = fSession.markers();
+    QString text = name;
+    for (int n = static_cast<int>(markers.size()) + 1; text.isEmpty(); ++n)
+    {
+        const QString candidate = QStringLiteral("标记 %1").arg(n);
+        if (std::none_of(markers.begin(), markers.end(), [&](const chost::Marker& m) { return QString::fromStdString(m.name) == candidate; }))
+            text = candidate;
+    }
+    markers.push_back({std::max(0.0, seconds), text.toStdString()});
+    fSession.setMarkers(markers);
+    refreshMarkers();
+    fHistory->record(QStringLiteral("添加标记"));
+    const std::vector<chost::Marker>& sorted = fSession.markers();
+    for (size_t i = 0; i < sorted.size(); ++i)
+        if (sorted[i].name == text.toStdString() && std::abs(sorted[i].seconds - std::max(0.0, seconds)) < 1e-9)
+            return static_cast<int>(i);
+    return -1;
+}
+
+void MainWindow::renameMarker(int marker)
+{
+    std::vector<chost::Marker> markers = fSession.markers();
+    if (marker < 0 || marker >= static_cast<int>(markers.size()) || qApp->property("chost-noninteractive").toBool())
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, QStringLiteral("标记"), QStringLiteral("名字（比如 主歌、副歌、间奏）："), QLineEdit::Normal,
+                                               QString::fromStdString(markers[static_cast<size_t>(marker)].name), &ok).trimmed();
+    if (!ok || name.isEmpty() || name.toStdString() == markers[static_cast<size_t>(marker)].name)
+        return;
+    markers[static_cast<size_t>(marker)].name = name.toStdString();
+    fSession.setMarkers(markers);
+    refreshMarkers();
+    fHistory->record(QStringLiteral("标记改名"));
+}
+
+void MainWindow::markerMenu(int marker, const QPoint& globalPos)
+{
+    QMenu menu;
+    if (marker >= 0)
+    {
+        menu.addAction(QStringLiteral("改名…"), this, [this, marker] { renameMarker(marker); });
+        menu.addAction(QStringLiteral("删除标记"), this, [this, marker] {
+            std::vector<chost::Marker> markers = fSession.markers();
+            if (marker >= static_cast<int>(markers.size()))
+                return;
+            markers.erase(markers.begin() + marker);
+            fSession.setMarkers(markers);
+            refreshMarkers();
+            fHistory->record(QStringLiteral("删除标记"));
+        });
+    }
+    else
+    {
+        menu.addAction(QStringLiteral("在这里添加标记"), this, [this] { renameMarker(addMarker(playhead())); });
+        if (fArrange->hasRange())
+            menu.addAction(QStringLiteral("取消选区"), this, [this] { fArrange->setRange(0.0, 0.0); });
+    }
+    menu.exec(globalPos);
+}
+
+void MainWindow::jumpToMarker(int direction)
+{
+    const double now = playhead();
+    const std::vector<chost::Marker>& markers = fSession.markers();
+    double target = direction < 0 ? 0.0 : -1.0;
+    for (const chost::Marker& m : markers)
+    {
+        if (direction > 0 && m.seconds > now + 0.01)
+        {
+            target = m.seconds;
+            break;
+        }
+        if (direction < 0 && m.seconds < now - 0.25) // just after one, the one before it
+            target = m.seconds;
+    }
+    if (target >= 0.0)
+        seek(target);
+}
+
+void MainWindow::refreshMarkers()
+{
+    std::vector<ArrangeView::Marker> list;
+    for (const chost::Marker& m : fSession.markers())
+        list.push_back({m.seconds, QString::fromStdString(m.name)});
+    fArrange->setMarkers(list);
 }
 
 void MainWindow::dropFiles(const QStringList& paths, int track)
@@ -2491,6 +2772,14 @@ int MainWindow::testUndo(const QString& insertSpec)
     selectTrack(0);
     check(addPluginSpec(insertSpec), "insert added");
     states.push_back(fSession.state());
+    addMarker(1.0, QStringLiteral("副歌"));
+    states.push_back(fSession.state());
+    chost::ClipEdit fade;
+    fade.kind = chost::ClipEditKind::FadeIn;
+    fade.end = 0.5;
+    check(editClip(1, fade, QStringLiteral("选区淡入")), "clip edited into a new file");
+    states.push_back(fSession.state());
+    selectTrack(0); // the edit selected the clip's track
     setVolume(1, 0.5f);
     setVolume(1, 0.25f); // a drag: one step
     states.push_back(fSession.state());
@@ -2509,7 +2798,9 @@ int MainWindow::testUndo(const QString& insertSpec)
     {
         stack->undo();
         if (!(fSession.state() == states[static_cast<size_t>(i)]))
+        {
             check(false, qPrintable(QStringLiteral("undo back to state %1").arg(i)));
+        }
     }
     check(fSession.state() == states.front(), "everything undone");
     check(fHost.pluginCount() == live() + 1, "the removed insert is kept aside for redo");

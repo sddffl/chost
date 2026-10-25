@@ -14,7 +14,9 @@
 //
 // Without --seconds, run drops into an interactive shell (type "help").
 
+#include "core/AudioConvert.h"
 #include "core/Chords.h"
+#include "core/ClipEdit.h"
 #include "core/HostEngine.h"
 #include "core/Scales.h"
 #include "core/Score.h"
@@ -447,6 +449,73 @@ static int cmdMix(int argc, char* argv[])
 
 // the chord pad's harmony, without the GUI: the pads of a key and what fits after a chord, or a
 // progression written as a MIDI part
+// chost-cli clip: a clip edit on a file, the way the arrangement does it
+static int cmdClip(int argc, char* argv[])
+{
+    std::string in, out, kindText;
+    chost::ClipEdit edit;
+    for (int i = 0; i < argc; ++i)
+    {
+        const std::string a = argv[i];
+        auto value = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+        if (a == "--input")
+            in = value();
+        else if (a == "--output")
+            out = value();
+        else if (a == "--edit")
+            kindText = value();
+        else if (a == "--start")
+            edit.start = std::atof(value().c_str());
+        else if (a == "--end")
+            edit.end = std::atof(value().c_str());
+        else if (a == "--seconds")
+            edit.seconds = std::atof(value().c_str());
+        else if (a == "--db")
+            edit.db = std::atof(value().c_str());
+    }
+    bool ok = false;
+    edit.kind = chost::parseClipEditKind(kindText, ok);
+    if (!ok || in.empty() || out.empty())
+    {
+        std::fprintf(stderr, "--input, --output and --edit move|silence|keep|fade_in|fade_out|gain|normalize are needed\n");
+        return 2;
+    }
+    std::string error, note;
+    const bool midi = in.size() > 4 && (in.compare(in.size() - 4, 4, ".mid") == 0 || in.compare(in.size() - 4, 4, ".MID") == 0);
+    if (midi)
+    {
+        chost::MidiClip clip;
+        if (!chost::readMidiFile(in, clip, error) || !chost::editMidiClip(clip, edit, error) || !chost::writeMidiFile(out, clip, error))
+        {
+            std::fprintf(stderr, "%s\n", error.c_str());
+            return 1;
+        }
+        std::printf("CLIP %s\t%zu notes\t%.3f s\n", out.c_str(), clip.notes.size(), clip.seconds);
+        return 0;
+    }
+    if (!chost::editAudioFile(in, out, edit, error, &note))
+    {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return 1;
+    }
+    std::vector<float> samples;
+    chost::AudioFileInfo info;
+    chost::readAudioFile(out, samples, info);
+    std::printf("CLIP %s\t%.3f s\n", out.c_str(), static_cast<double>(info.frames) / info.sampleRate);
+    // the peak of each second, to see what the edit did
+    for (uint64_t s = 0; s * info.sampleRate < info.frames; ++s)
+    {
+        float peak = 0.0f;
+        for (uint64_t f = s * info.sampleRate; f < std::min<uint64_t>(info.frames, (s + 1) * info.sampleRate); ++f)
+            for (uint32_t c = 0; c < info.channels; ++c)
+                peak = std::max(peak, std::abs(samples[f * info.channels + c]));
+        std::printf("SECOND %llu\t%.3f\n", static_cast<unsigned long long>(s), peak);
+    }
+    if (!note.empty())
+        std::printf("NOTE %s\n", note.c_str());
+    return 0;
+}
+
 // chost-cli score: MIDI files as sheet music, written as MusicXML
 static int cmdScore(int argc, char* argv[])
 {
@@ -689,6 +758,8 @@ int main(int argc, char* argv[])
         return cmdScale(argc - 2, argv + 2);
     if (cmd == "score")
         return cmdScore(argc - 2, argv + 2);
+    if (cmd == "clip")
+        return cmdClip(argc - 2, argv + 2);
 
     std::fprintf(stderr,
                  "usage:\n"
@@ -703,6 +774,8 @@ int main(int argc, char* argv[])
                  "  chost-cli chords [--key K] --progression \"C G | Am F\" [--output F.mid] [--pattern block|arpeggio|rhythm] [--tempo BPM]\n"
                  "  chost-cli scale [--scale \"A minor\"] [--guess F.mid] [--fit F.mid [--output OUT.mid]]\n"
                  "  chost-cli score [--staff auto|treble|bass|grand] --midi F.mid... [--key K] [--tempo BPM] [--grid 16|8]\n"
-                 "                  [--title T] [--output F.musicxml]\n");
+                 "                  [--title T] [--output F.musicxml]\n"
+                 "  chost-cli clip --input F --output F2 --edit move|silence|keep|fade_in|fade_out|gain|normalize\n"
+                 "                 [--start S] [--end S] [--seconds S] [--db DB]\n");
     return 2;
 }

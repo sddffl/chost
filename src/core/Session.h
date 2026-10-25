@@ -38,6 +38,13 @@ struct Track {
     Uid uid = 0;
 };
 
+// A named place in the song (verse, chorus, ...), shown on the ruler.
+struct Marker {
+    double seconds = 0.0;
+    std::string name;
+    bool operator==(const Marker& o) const { return seconds == o.seconds && name == o.name; }
+};
+
 // Everything a user can change about a session, plugins by Uid: what undo goes back to.
 struct SessionState {
     struct TrackState {
@@ -56,6 +63,7 @@ struct SessionState {
     float masterVolume = 1.0f;
     double tempo = 120.0;
     std::string key;
+    std::vector<Marker> markers;
     bool operator==(const SessionState& o) const;
     bool operator!=(const SessionState& o) const { return !(*this == o); }
 };
@@ -102,6 +110,10 @@ public:
     const std::string& key() const { return fKey; }
     void setKey(const std::string& key) { fKey = key; }
 
+    // Markers, in time order.
+    const std::vector<Marker>& markers() const { return fMarkers; }
+    void setMarkers(std::vector<Marker> markers);
+
     // Undo. With keepRemoved, a removed track, insert or replaced instrument isn't deleted but set aside,
     // silent and switched off, so restore() can bring it back exactly as it was (the library loaded in
     // Kontakt, every knob); dropUnused() deletes what no state kept for undo refers to any more.
@@ -142,6 +154,7 @@ private:
     float fMasterVolume = 1.0f;
     double fTempo = 120.0;
     std::string fKey;
+    std::vector<Marker> fMarkers;
     bool fReady = false;
     std::string fError;
 };

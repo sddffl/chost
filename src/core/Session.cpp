@@ -26,6 +26,7 @@ bool Session::init()
     fParkedPlugins.clear();
     fTempo = 120.0;
     fKey.clear();
+    fMarkers.clear();
     fReady = false;
     fError.clear();
     if (!fHost.isRunning())
@@ -421,11 +422,20 @@ void Session::reroute()
 //   tempo <bpm>
 //   rate <Hz>                    the engine's, the rate the players' files were prepared at
 //   key <tonic> <major|minor>    once known
+//   marker <seconds> <name>      any number, in time order
 //   track <source> <fader> <volume> <muted> <solo> <insert count> <inserts...>
 //   name <track name>
 //   file <audio or MIDI file path>
 //   instrument <id>              only on instrument tracks, -1 without an instrument
 //   role <stem id>               optional
+
+void Session::setMarkers(std::vector<Marker> markers)
+{
+    for (Marker& m : markers)
+        m.seconds = std::max(0.0, m.seconds);
+    std::stable_sort(markers.begin(), markers.end(), [](const Marker& a, const Marker& b) { return a.seconds < b.seconds; });
+    fMarkers = markers;
+}
 
 void Session::setTempo(double bpm)
 {
@@ -457,6 +467,8 @@ bool Session::save(const std::string& path)
     out << "rate " << static_cast<long>(fHost.sampleRate()) << "\n";
     if (!fKey.empty())
         out << "key " << fKey << "\n";
+    for (const Marker& m : fMarkers)
+        out << "marker " << m.seconds << " " << m.name << "\n";
     for (const Track& t : fTracks)
     {
         out << "track " << t.source << " " << t.fader << " " << t.volume << " " << t.muted << " " << t.solo << " "
@@ -492,6 +504,7 @@ bool Session::load(const std::string& path)
     std::string carlaFile;
     double tempo = 120.0;
     std::string songKey;
+    std::vector<Marker> markers;
     while (std::getline(in, line))
     {
         const auto space = line.find(' ');
@@ -507,6 +520,13 @@ bool Session::load(const std::string& path)
             fields >> tempo;
         else if (key == "key")
             songKey = rest;
+        else if (key == "marker")
+        {
+            Marker m;
+            fields >> m.seconds;
+            std::getline(fields >> std::ws, m.name);
+            markers.push_back(m);
+        }
         else if (key == "track")
         {
             Track t;
@@ -549,6 +569,7 @@ bool Session::load(const std::string& path)
     fMasterVolume = masterVolume;
     setTempo(tempo);
     fKey = songKey;
+    setMarkers(markers);
     fParkedTracks.clear();
     fParkedPlugins.clear();
     fUids.clear();
@@ -591,7 +612,7 @@ bool SessionState::TrackState::operator==(const TrackState& o) const
 
 bool SessionState::operator==(const SessionState& o) const
 {
-    return tracks == o.tracks && masterVolume == o.masterVolume && tempo == o.tempo && key == o.key;
+    return tracks == o.tracks && masterVolume == o.masterVolume && tempo == o.tempo && key == o.key && markers == o.markers;
 }
 
 SessionState Session::state() const
@@ -600,6 +621,7 @@ SessionState Session::state() const
     s.masterVolume = fMasterVolume;
     s.tempo = fTempo;
     s.key = fKey;
+    s.markers = fMarkers;
     for (const Track& t : fTracks)
     {
         SessionState::TrackState ts;
@@ -723,6 +745,7 @@ void Session::restore(const SessionState& s)
     fMasterVolume = s.masterVolume;
     setTempo(s.tempo);
     fKey = s.key;
+    fMarkers = s.markers;
     reroute();
 }
 

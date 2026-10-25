@@ -55,9 +55,20 @@ public:
         QColor colour;
     };
 
+    struct Marker {
+        double seconds = 0.0;
+        QString name;
+    };
+
     explicit ArrangeView(QWidget* parent = nullptr);
 
     void setLanes(const std::vector<Lane>& lanes);
+    void setMarkers(const std::vector<Marker>& markers);
+    // the range dragged out on the ruler, which clip edits work on; end <= start: none
+    void setRange(double start, double end);
+    bool hasRange() const { return fRangeEnd > fRangeStart; }
+    double rangeStart() const { return fRangeStart; }
+    double rangeEnd() const { return fRangeEnd; }
     void setLaneState(int lane, bool muted, bool solo);
     void setSelected(int lane);
     void setPlayhead(double seconds, bool followPlayback);
@@ -71,11 +82,19 @@ signals:
     void soloToggled(int lane, bool solo);
     void trackMenuRequested(int lane, const QPoint& globalPos); // lane -1: the empty area below the tracks
     void filesDropped(const QStringList& paths, int lane);       // lane -1: make new tracks
+    void rangeChanged(double start, double end);
+    void clipMoveRequested(int lane, double seconds);            // a clip dragged later (> 0) or earlier
+    void markerMoved(int marker, double seconds);
+    void markerRenameRequested(int marker);
+    void markerMenuRequested(int marker, const QPoint& globalPos);
 
 protected:
     void paintEvent(QPaintEvent*) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void resizeEvent(QResizeEvent*) override;
@@ -84,7 +103,8 @@ protected:
 
 private:
     static constexpr int kHeaderWidth = 230;
-    static constexpr int kRulerHeight = 30;
+    static constexpr int kMarkerBand = 15; // the markers, above the bars
+    static constexpr int kRulerHeight = 30 + kMarkerBand;
     static constexpr int kLaneHeight = 60;
 
     double xToSeconds(int x) const;
@@ -95,6 +115,9 @@ private:
     QRect soloRect(int lane) const;
     void updateScrollRange();
     void paintLane(QPainter& p, int lane);
+    double snap(double seconds, Qt::KeyboardModifiers modifiers) const; // to the beat, unless Shift
+    int markerAt(const QPoint& pos) const;
+    QRect markerRect(int marker) const;
 
     QScrollBar* fScroll = nullptr;
     QScrollBar* fVScroll = nullptr;
@@ -104,6 +127,18 @@ private:
     double fPlayhead = 0.0;
     double fBpm = 120.0;
     double fPixelsPerSecond = 60.0;
+    std::vector<Marker> fMarkers;
+    double fRangeStart = 0.0;
+    double fRangeEnd = 0.0;
+
+    enum class Drag { None, Range, Clip, Marker };
+    Drag fDrag = Drag::None;
+    bool fDragging = false; // moved far enough to be a drag, not a click
+    QPoint fPressPos;
+    double fPressSeconds = 0.0;
+    int fDragLane = -1;
+    int fDragMarker = -1;
+    double fDragDelta = 0.0;
 };
 
 // A column of insert slots (Cubase "Inserts"), each with a power button and the plugin name.

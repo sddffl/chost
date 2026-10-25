@@ -6,6 +6,7 @@
 #include <QDragEnterEvent>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLinearGradient>
 #include <QMenu>
@@ -117,6 +118,8 @@ ArrangeView::ArrangeView(QWidget* parent)
     : QWidget(parent)
 {
     setAcceptDrops(true);
+    setFocusPolicy(Qt::ClickFocus);
+    setMouseTracking(true);
     setMinimumHeight(kRulerHeight + kLaneHeight + 30);
     fScroll = new QScrollBar(Qt::Horizontal, this);
     fVScroll = new QScrollBar(Qt::Vertical, this);
@@ -135,6 +138,46 @@ void ArrangeView::setLanes(const std::vector<Lane>& lanes)
         fSelected = static_cast<int>(fLanes.size()) - 1;
     updateScrollRange();
     update();
+}
+
+void ArrangeView::setMarkers(const std::vector<Marker>& markers)
+{
+    fMarkers = markers;
+    update();
+}
+
+void ArrangeView::setRange(double start, double end)
+{
+    fRangeStart = std::max(0.0, std::min(start, end));
+    fRangeEnd = std::max(0.0, std::max(start, end));
+    update();
+}
+
+double ArrangeView::snap(double seconds, Qt::KeyboardModifiers modifiers) const
+{
+    if (modifiers & Qt::ShiftModifier)
+        return seconds;
+    const double beat = 60.0 / fBpm;
+    const double step = beat * fPixelsPerSecond >= 8.0 ? beat : beat * 4.0;
+    return std::round(seconds / step) * step;
+}
+
+QRect ArrangeView::markerRect(int marker) const
+{
+    const Marker& m = fMarkers[static_cast<size_t>(marker)];
+    const int x = secondsToX(m.seconds);
+    const int w = fontMetrics().horizontalAdvance(m.name) * 85 / 100 + 12;
+    return {x, 1, w, kMarkerBand - 2};
+}
+
+int ArrangeView::markerAt(const QPoint& pos) const
+{
+    if (pos.y() >= kMarkerBand || pos.x() < kHeaderWidth)
+        return -1;
+    for (int i = static_cast<int>(fMarkers.size()) - 1; i >= 0; --i)
+        if (markerRect(i).adjusted(-3, 0, 0, 0).contains(pos))
+            return i;
+    return -1;
 }
 
 void ArrangeView::setLaneState(int lane, bool muted, bool solo)
@@ -286,7 +329,21 @@ void ArrangeView::paintEvent(QPaintEvent*)
     }
 
     for (int i = 0; i < static_cast<int>(fLanes.size()); ++i)
+    {
+        if (fDrag == Drag::Clip && fDragging && i == fDragLane)
+        {
+            // the clip where it was, faint, and where it goes
+            p.setOpacity(0.3);
+            paintLane(p, i);
+            p.setOpacity(1.0);
+            p.save();
+            p.translate(fDragDelta * fPixelsPerSecond, 0.0);
+            paintLane(p, i);
+            p.restore();
+            continue;
+        }
         paintLane(p, i);
+    }
 
     if (fLanes.empty())
     {
@@ -304,13 +361,43 @@ void ArrangeView::paintEvent(QPaintEvent*)
             continue;
         const int x = secondsToX(b * beat);
         p.setPen(isBar ? theme::text : theme::textDim);
-        p.drawLine(x, isBar ? 12 : 22, x, kRulerHeight - 1);
+        p.drawLine(x, kMarkerBand + (isBar ? 12 : 22), x, kRulerHeight - 1);
         if (isBar && bar * fPixelsPerSecond > 26.0)
-            p.drawText(x + 4, 13, QString::number(b / 4 + 1));
+            p.drawText(x + 4, kMarkerBand + 13, QString::number(b / 4 + 1));
     }
     p.setPen(theme::textDim);
     for (int s = static_cast<int>(firstSecond / 10.0) * 10; s <= lastSecond; s += 10)
         p.drawText(secondsToX(s) + 4, kRulerHeight - 4, formatTime(s));
+
+    // ---- the range: on the ruler, and over the lanes (the selected one most)
+    if (hasRange())
+    {
+        const int r0 = secondsToX(fRangeStart), r1 = secondsToX(fRangeEnd);
+        p.fillRect(QRect(r0, kMarkerBand, r1 - r0, kRulerHeight - kMarkerBand), QColor(0x4a, 0x90, 0xd9, 110));
+        p.setClipRect(content);
+        p.fillRect(QRect(r0, kRulerHeight, r1 - r0, content.height()), QColor(0x4a, 0x90, 0xd9, 28));
+        if (fSelected >= 0)
+            p.fillRect(QRect(r0, laneRect(fSelected).top(), r1 - r0, kLaneHeight), QColor(0x4a, 0x90, 0xd9, 60));
+        p.setPen(QColor(0x6f, 0xa8, 0xe6));
+        p.drawLine(r0, kMarkerBand, r0, content.bottom());
+        p.drawLine(r1, kMarkerBand, r1, content.bottom());
+        p.setClipRect(QRect(kHeaderWidth, 0, right - kHeaderWidth, height() - scrollH));
+    }
+
+    // ---- markers: a flag on the band above the bars, a line down through the tracks
+    p.fillRect(QRect(kHeaderWidth, 0, right - kHeaderWidth, kMarkerBand), theme::panel);
+    for (int i = 0; i < static_cast<int>(fMarkers.size()); ++i)
+    {
+        const double at = fDrag == Drag::Marker && fDragging && i == fDragMarker ? fMarkers[i].seconds + fDragDelta : fMarkers[i].seconds;
+        const int x = secondsToX(at);
+        p.setPen(QPen(QColor(0xe8, 0xa8, 0x38, 150), 1, Qt::DashLine));
+        p.drawLine(x, kMarkerBand, x, content.bottom());
+        QRect flag = markerRect(i);
+        flag.moveLeft(x);
+        p.fillRect(flag, QColor(0xe8, 0xa8, 0x38));
+        p.setPen(Qt::black);
+        p.drawText(flag.adjusted(5, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, fMarkers[i].name);
+    }
 
     // ---- project cursor
     const int cx = secondsToX(fPlayhead);
@@ -319,7 +406,7 @@ void ArrangeView::paintEvent(QPaintEvent*)
         p.setPen(QPen(theme::cursor, 1));
         p.drawLine(cx, 0, cx, content.bottom());
         QPolygon tri;
-        tri << QPoint(cx - 6, 0) << QPoint(cx + 6, 0) << QPoint(cx, 8);
+        tri << QPoint(cx - 6, kMarkerBand) << QPoint(cx + 6, kMarkerBand) << QPoint(cx, kMarkerBand + 8);
         p.setBrush(theme::cursor);
         p.drawPolygon(tri);
         p.setBrush(Qt::NoBrush);
@@ -472,20 +559,114 @@ void ArrangeView::mousePressEvent(QMouseEvent* event)
     }
     if (pos.x() >= kHeaderWidth && pos.y() < height() - fScroll->height())
     {
-        if (lane >= 0 && lane != fSelected && event->button() == Qt::LeftButton && pos.y() >= kRulerHeight)
+        if (event->button() != Qt::LeftButton)
+            return;
+        fPressPos = pos;
+        fPressSeconds = xToSeconds(pos.x());
+        fDragging = false;
+        fDragDelta = 0.0;
+        const int marker = markerAt(pos);
+        if (marker >= 0)
+        {
+            fDrag = Drag::Marker;
+            fDragMarker = marker;
+            emit seekRequested(fMarkers[static_cast<size_t>(marker)].seconds);
+            return;
+        }
+        if (pos.y() < kRulerHeight)
+        {
+            fDrag = Drag::Range; // a click seeks, a drag marks a range
+            emit seekRequested(fPressSeconds);
+            return;
+        }
+        if (lane >= 0 && lane != fSelected)
         {
             fSelected = lane;
             emit trackSelected(lane);
         }
-        if (event->button() == Qt::LeftButton)
-            emit seekRequested(xToSeconds(pos.x()));
+        // on a clip: a drag moves it
+        if (lane >= 0 && !fLanes[lane].clipName.isEmpty() && fPressSeconds <= fLanes[lane].seconds)
+        {
+            fDrag = Drag::Clip;
+            fDragLane = lane;
+        }
+        emit seekRequested(fPressSeconds);
     }
+}
+
+void ArrangeView::mouseMoveEvent(QMouseEvent* event)
+{
+    const QPoint pos = event->position().toPoint();
+    if (fDrag == Drag::None)
+    {
+        setCursor(markerAt(pos) >= 0 ? Qt::SizeHorCursor : pos.y() < kRulerHeight && pos.x() >= kHeaderWidth ? Qt::IBeamCursor : Qt::ArrowCursor);
+        return;
+    }
+    if (!fDragging && std::abs(pos.x() - fPressPos.x()) < 4)
+        return;
+    fDragging = true;
+    const double at = xToSeconds(pos.x());
+    switch (fDrag)
+    {
+    case Drag::Range:
+        setRange(snap(fPressSeconds, event->modifiers()), snap(at, event->modifiers()));
+        break;
+    case Drag::Clip:
+    {
+        // whole beats, so the music stays on the grid; never all the way out of the song
+        const Lane& l = fLanes[fDragLane];
+        fDragDelta = std::max(snap(at - fPressSeconds, event->modifiers()), -std::max(0.0, l.seconds - 0.05));
+        break;
+    }
+    case Drag::Marker:
+        fDragDelta = snap(fMarkers[static_cast<size_t>(fDragMarker)].seconds + at - fPressSeconds, event->modifiers()) -
+                     fMarkers[static_cast<size_t>(fDragMarker)].seconds;
+        fDragDelta = std::max(fDragDelta, -fMarkers[static_cast<size_t>(fDragMarker)].seconds);
+        break;
+    default:
+        break;
+    }
+    update();
+}
+
+void ArrangeView::mouseReleaseEvent(QMouseEvent*)
+{
+    const Drag drag = fDrag;
+    fDrag = Drag::None;
+    if (fDragging)
+    {
+        if (drag == Drag::Range)
+            emit rangeChanged(fRangeStart, fRangeEnd);
+        else if (drag == Drag::Clip && std::abs(fDragDelta) > 1e-6)
+            emit clipMoveRequested(fDragLane, fDragDelta);
+        else if (drag == Drag::Marker && std::abs(fDragDelta) > 1e-6)
+            emit markerMoved(fDragMarker, fMarkers[static_cast<size_t>(fDragMarker)].seconds + fDragDelta);
+    }
+    fDragging = false;
+    fDragDelta = 0.0;
+    update();
+}
+
+void ArrangeView::keyPressEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Escape && hasRange())
+    {
+        setRange(0.0, 0.0);
+        emit rangeChanged(0.0, 0.0);
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 void ArrangeView::mouseDoubleClickEvent(QMouseEvent* event)
 {
     // double click below the tracks adds one, as in Cubase
     const QPoint pos = event->position().toPoint();
+    if (const int marker = markerAt(pos); marker >= 0)
+    {
+        emit markerRenameRequested(marker);
+        return;
+    }
     const int lane = pos.y() > kRulerHeight ? laneAt(pos.y()) : -2;
     if (lane == -1)
         emit trackMenuRequested(-1, mapToGlobal(pos));
@@ -495,9 +676,18 @@ void ArrangeView::mouseDoubleClickEvent(QMouseEvent* event)
 
 void ArrangeView::contextMenuEvent(QContextMenuEvent* event)
 {
+    if (const int marker = markerAt(event->pos()); marker >= 0)
+    {
+        emit markerMenuRequested(marker, event->globalPos());
+        return;
+    }
     const int lane = event->pos().y() > kRulerHeight ? laneAt(event->pos().y()) : -2;
     if (lane == -2)
+    {
+        if (event->pos().x() >= kHeaderWidth)
+            emit markerMenuRequested(-1, event->globalPos()); // the ruler: add a marker, the range
         return;
+    }
     if (lane >= 0)
     {
         fSelected = lane;

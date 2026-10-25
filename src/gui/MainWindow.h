@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/ClipEdit.h"
 #include "core/HostEngine.h"
 #include "core/MidiFile.h"
 #include "core/Session.h"
@@ -81,6 +82,12 @@ public:
     void tune(bool autoStart = false);        // AI > pitch correction of a vocal track
     ChordPadDialog* chordPad();               // AI > chord pad, opened (or raised)
     ScoreDialog* scoreDialog();               // File > sheet music, opened (or raised)
+    // a clip edit on a track (its range from the arrangement's), into a new file the track then plays;
+    // false, said in an error, when it can't be done
+    bool editClip(int track, const chost::ClipEdit& edit, const QString& what);
+    int addMarker(double seconds, const QString& name = {}); // its index
+    void setRange(double start, double end);                  // the timeline's selection; equal: none
+    double playhead() const;
     std::vector<int> scoreTracks();           // the MIDI tracks sheet music can be made of (not drums)
     int testUndo(const QString& insertSpec);  // the self test of undo and redo (CI), 0 when it passes
 
@@ -138,6 +145,12 @@ private:
     int trackOfFile(const QString& path) const;
     void placeMidiTrack(const QStringList& sources, const QString& midiPath, const QString& name, const QString& role);
     void trackMenu(int track, const QPoint& globalPos);
+    void addClipActions(QMenu* menu, int track); // the clip edits of a track, for its range
+    void markerMenu(int marker, const QPoint& globalPos);
+    void renameMarker(int marker);
+    void jumpToMarker(int direction);            // the next (1) or previous (-1) one from the playhead
+    void refreshMarkers();
+    QString editFolder() const;                  // where edited clips are written
     void dropFiles(const QStringList& paths, int track);
 
     void addInsert();

@@ -16,6 +16,7 @@
 #include "Widgets.h"
 #include "control/Tools.h"
 #include "core/Chords.h"
+#include "core/ClipEdit.h"
 #include "core/Scales.h"
 
 #include <QDir>
@@ -277,6 +278,16 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
     auto okTrack = [&](int track) {
         return QJsonObject{{QStringLiteral("track"), track}, {QStringLiteral("name"), QString::fromStdString(tracks[track].name)}};
     };
+    auto markersJson = [&] {
+        QJsonArray list;
+        const std::vector<chost::Marker>& markers = session.markers();
+        for (size_t i = 0; i < markers.size(); ++i)
+            list.append(QJsonObject{{QStringLiteral("index"), static_cast<int>(i)},
+                                    {QStringLiteral("name"), QString::fromStdString(markers[i].name)},
+                                    {QStringLiteral("seconds"), std::round(markers[i].seconds * 1000.0) / 1000.0},
+                                    {QStringLiteral("bar"), std::round(markers[i].seconds * session.tempo() / 240.0 * 100.0) / 100.0 + 1.0}});
+        return list;
+    };
     // the AI dialogs come up fresh for the track asked for, never with the choice of an earlier one
     auto freshDialog = [&](QWidget* dialog, const QString& what) {
         if (!dialog)
@@ -341,7 +352,8 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                                 {QStringLiteral("position_seconds"), rate > 0.0 ? std::round(host.transportFrame() / rate * 100.0) / 100.0 : 0.0},
                                 {QStringLiteral("selected_track"), w.fSelected},
                                 {QStringLiteral("audio_driver"), QString::fromStdString(host.driverName())},
-                                {QStringLiteral("tracks"), list}};
+                                {QStringLiteral("tracks"), list},
+                                {QStringLiteral("markers"), markersJson()}};
             if (!session.isRouted())
                 project.insert(QStringLiteral("warning"), QStringLiteral("this audio driver plays no multitrack mix: choose another driver in chost"));
             result = project;
@@ -766,6 +778,107 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             if (pages > 0)
                 o.insert(QStringLiteral("pages"), pages);
             result = o;
+        }
+        else if (tool == QLatin1String("edit_clip"))
+        {
+            const int track = trackArg();
+            if (tracks[track].file.empty())
+                throw Fail{QStringLiteral("track %1 has no clip").arg(track)};
+            bool ok = false;
+            chost::ClipEdit edit;
+            edit.kind = chost::parseClipEditKind(args.value(QStringLiteral("action")).toString().toStdString(), ok);
+            if (!ok)
+                throw Fail{QStringLiteral("action: move, silence, keep, fade_in, fade_out, gain or normalize")};
+            const bool midi = tracks[track].kind == chost::TrackKind::Instrument;
+            if (midi && (edit.kind == chost::ClipEditKind::FadeIn || edit.kind == chost::ClipEditKind::FadeOut ||
+                         edit.kind == chost::ClipEditKind::Normalize))
+                throw Fail{QStringLiteral("fades and normalize are for audio tracks; on MIDI use gain (velocities)")};
+            edit.start = std::max(0.0, args.value(QStringLiteral("start")).toDouble(0.0));
+            edit.end = has("end") ? args.value(QStringLiteral("end")).toDouble() : -1.0;
+            if (edit.end >= 0.0 && edit.end <= edit.start)
+                throw Fail{QStringLiteral("end must be after start")};
+            QString what;
+            switch (edit.kind)
+            {
+            case chost::ClipEditKind::Move:
+                edit.seconds = has("beats") ? args.value(QStringLiteral("beats")).toDouble() * 60.0 / session.tempo()
+                                            : args.value(QStringLiteral("seconds")).toDouble();
+                if (edit.seconds == 0.0)
+                    throw Fail{QStringLiteral("move: give seconds or beats (not 0)")};
+                what = QStringLiteral("移动片段");
+                break;
+            case chost::ClipEditKind::Silence: what = midi ? QStringLiteral("删除选区里的音符") : QStringLiteral("静音选区"); break;
+            case chost::ClipEditKind::Keep: what = QStringLiteral("只保留选区"); break;
+            case chost::ClipEditKind::FadeIn: what = QStringLiteral("选区淡入"); break;
+            case chost::ClipEditKind::FadeOut: what = QStringLiteral("选区淡出"); break;
+            case chost::ClipEditKind::Gain:
+                if (!has("db"))
+                    throw Fail{QStringLiteral("gain: give db")};
+                edit.db = args.value(QStringLiteral("db")).toDouble();
+                what = midi ? QStringLiteral("片段力度") : QStringLiteral("片段音量");
+                break;
+            case chost::ClipEditKind::Normalize:
+                edit.db = args.value(QStringLiteral("db")).toDouble(-1.0);
+                what = QStringLiteral("标准化");
+                break;
+            }
+            const bool done = w.editClip(track, edit, what);
+            check();
+            if (!done)
+                throw Fail{QStringLiteral("the clip was not edited")};
+            QJsonObject o = okTrack(track);
+            o.insert(QStringLiteral("file"), path(QString::fromStdString(tracks[track].file)));
+            if (w.statusBar()->currentMessage().contains(QStringLiteral("削波")))
+                o.insert(QStringLiteral("warning"), QStringLiteral("the clip now peaks above 0 dB and will clip: lower its gain"));
+            result = o;
+        }
+        else if (tool == QLatin1String("add_marker"))
+        {
+            double seconds = 0.0;
+            if (has("bar"))
+                seconds = (args.value(QStringLiteral("bar")).toDouble(1.0) - 1.0) * 240.0 / session.tempo();
+            else if (has("seconds"))
+                seconds = args.value(QStringLiteral("seconds")).toDouble();
+            else
+                throw Fail{QStringLiteral("give seconds or bar")};
+            const int index = w.addMarker(seconds, args.value(QStringLiteral("name")).toString().trimmed());
+            result = QJsonObject{{QStringLiteral("index"), index}, {QStringLiteral("markers"), markersJson()}};
+        }
+        else if (tool == QLatin1String("edit_marker"))
+        {
+            std::vector<chost::Marker> markers = session.markers();
+            const int index = args.value(QStringLiteral("index")).toInt(-1);
+            if (index < 0 || index >= static_cast<int>(markers.size()))
+                throw Fail{QStringLiteral("there is no marker %1: the project has %2").arg(index).arg(markers.size())};
+            chost::Marker& m = markers[static_cast<size_t>(index)];
+            QString what;
+            if (args.value(QStringLiteral("remove")).toBool())
+            {
+                markers.erase(markers.begin() + index);
+                what = QStringLiteral("删除标记");
+            }
+            else
+            {
+                if (has("name"))
+                {
+                    const QString name = args.value(QStringLiteral("name")).toString().trimmed();
+                    if (name.isEmpty())
+                        throw Fail{QStringLiteral("name is empty")};
+                    m.name = name.toStdString();
+                    what = QStringLiteral("标记改名");
+                }
+                if (has("seconds"))
+                {
+                    m.seconds = std::max(0.0, args.value(QStringLiteral("seconds")).toDouble());
+                    what = QStringLiteral("移动标记");
+                }
+                if (what.isEmpty())
+                    throw Fail{QStringLiteral("give name, seconds or remove: true")};
+            }
+            session.setMarkers(markers);
+            w.refreshMarkers();
+            w.fHistory->record(what);
+            result = QJsonObject{{QStringLiteral("markers"), markersJson()}};
         }
         else if (tool == QLatin1String("get_parameters"))
         {

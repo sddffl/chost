@@ -102,6 +102,15 @@ jobs:
               | tee scorepdf.log
           grep -q 'SCORE WRITTEN .*(1 pages)' scorepdf.log
           head -c 5 prog.pdf | grep -q '%PDF-'
+          # clip edits: moved a second later the clip starts with silence; keeping 1-2 s leaves the rest silent
+          ./build/chost-cli clip --input a.wav --output moved.wav --edit move --seconds 1 | tee clip.log
+          grep -P '^SECOND 0\t0\.000' clip.log && grep -P '^SECOND 1\t0\.[1-9]' clip.log
+          ./build/chost-cli clip --input a.wav --output kept.wav --edit keep --start 1 --end 2 | tee keep.log
+          grep -P '^SECOND 0\t0\.000' keep.log && grep -P '^SECOND 1\t0\.[1-9]' keep.log && grep -P '^SECOND 2\t0\.000' keep.log
+          ./build/chost-cli clip --input a.wav --output loud.wav --edit gain --db 40 | grep -q '^NOTE peaks at'
+          if ./build/chost-cli clip --input a.wav --output x.wav --edit stretch; then exit 1; fi
+          QT_QPA_PLATFORM=offscreen ./build/chost --file a.wav --file b.wav --marker "0.5:主歌" --marker "1.5:副歌" --range 0.6:1.2 \
+              --screenshot markers.png --screenshot-delay 1500
           echo '{"mcpServers": {"other": {"command": "x"}}}' > claude.json
           QT_QPA_PLATFORM=offscreen ./build/chost --claude-config claude.json | grep -q 'CLAUDE CONFIG WRITTEN'
           python3 -c "import json; s = json.load(open('claude.json'))['mcpServers']; assert 'other' in s and s['chost']['command'].endswith('chost-mcp')"
