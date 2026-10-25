@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.17.0 LANGUAGES CXX)
+project(chost VERSION 0.18.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,7 +36,7 @@ endif()
 find_package(Threads REQUIRED)
 
 # the core is compiled once and linked against either flavour of carla
-add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp src/core/Chords.cpp src/core/Scales.cpp src/core/Score.cpp src/core/ClipEdit.cpp src/core/Click.cpp)
+add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp src/core/Chords.cpp src/core/Scales.cpp src/core/Score.cpp src/core/ClipEdit.cpp src/core/Click.cpp src/core/Loudness.cpp src/core/MixBalance.cpp)
 target_include_directories(chost_core_objects PUBLIC src)
 target_include_directories(chost_core_objects PRIVATE third_party/dr_libs)
 target_compile_definitions(chost_core_objects PUBLIC REAL_BUILD)
@@ -91,6 +91,7 @@ if(CHOST_BUILD_GUI)
         src/gui/RenderJob.cpp src/gui/RenderJob.h
         src/gui/ScriptJob.cpp src/gui/ScriptJob.h
         src/gui/ExportDialog.cpp src/gui/ExportDialog.h
+        src/gui/BalanceDialog.cpp src/gui/BalanceDialog.h
         src/gui/MasterDialog.cpp src/gui/MasterDialog.h
         src/gui/ArrangeDialog.cpp src/gui/ArrangeDialog.h
         src/gui/TuneDialog.cpp src/gui/TuneDialog.h

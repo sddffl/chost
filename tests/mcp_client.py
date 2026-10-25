@@ -202,6 +202,20 @@ call("set_send", track=g, bus=room, remove=True, expect_error=True)  # the group
 call("set_output", track=room, bus=g)
 call("set_send", track=g, bus=room, expect_error=True)  # Room goes into the group: a loop
 
+# AI mix balance: each playing track measured and its fader set by its part, one undo step
+call("set_track", track=members[0], role="bass")
+call("set_track", track=members[0], role="tuba", expect_error=True)
+before = [t["volume_db"] for t in call("get_project")["tracks"]]
+call("ai_mix_balance", vocals="loud", expect_error=True)
+call("ai_mix_balance", vocals="forward")
+waited = call("wait_for_jobs", timeout_seconds=110)
+job = [j for j in waited["jobs"] if j["job"] == "balance"][-1]
+after = [t["volume_db"] for t in call("get_project")["tracks"]]
+check(not job["running"] and "完成" in job["message"] and after != before, "mix balanced: %s" % job["message"])
+check(call("get_project")["tracks"][members[0]]["role"] == "bass", "the role stays with the track")
+call("undo")
+check([t["volume_db"] for t in call("get_project")["tracks"]] == before, "one undo puts every fader back")
+
 # the metronome: on, not part of the project's tracks or its export, off again
 check(call("set_metronome", on=True, volume_db=-6)["metronome"], "metronome on")
 check(call("get_project")["metronome"], "get_project says so")

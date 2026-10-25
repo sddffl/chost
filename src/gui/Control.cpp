@@ -1,6 +1,7 @@
 #include "Control.h"
 
 #include "ArrangeDialog.h"
+#include "BalanceDialog.h"
 #include "ExportDialog.h"
 #include "History.h"
 #include "MainWindow.h"
@@ -473,6 +474,21 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                 w.selectTrack(track);
                 w.renameSelectedTrack(args.value(QStringLiteral("name")).toString());
             }
+            if (has("role"))
+            {
+                if (tracks[track].role == "master")
+                    throw Fail{QStringLiteral("track %1 holds the AI master; its role stays").arg(track)};
+                static const QStringList roles{QStringLiteral("lead"),   QStringLiteral("vocals"), QStringLiteral("backing"), QStringLiteral("drums"),
+                                               QStringLiteral("kick"),   QStringLiteral("snare"),  QStringLiteral("toms"),    QStringLiteral("hh"),
+                                               QStringLiteral("ride"),   QStringLiteral("crash"),  QStringLiteral("bass"),    QStringLiteral("guitar"),
+                                               QStringLiteral("piano"),  QStringLiteral("keys"),   QStringLiteral("strings"), QStringLiteral("pad"),
+                                               QStringLiteral("chords"), QStringLiteral("other")};
+                const QString role = args.value(QStringLiteral("role")).toString();
+                if (!roles.contains(role))
+                    throw Fail{QStringLiteral("role is one of %1").arg(roles.join(QStringLiteral(", ")))};
+                session.setRole(track, role.toStdString());
+                w.fHistory->record(QStringLiteral("轨道角色"));
+            }
             if (has("muted"))
                 w.setMuted(track, args.value(QStringLiteral("muted")).toBool());
             if (has("solo"))
@@ -487,6 +503,8 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             o.insert(QStringLiteral("volume_db"), toDb(tracks[track].volume));
             o.insert(QStringLiteral("muted"), tracks[track].muted);
             o.insert(QStringLiteral("solo"), tracks[track].solo);
+            if (!tracks[track].role.empty())
+                o.insert(QStringLiteral("role"), QString::fromStdString(tracks[track].role));
             result = o;
         }
         else if (tool == QLatin1String("set_master"))
@@ -1169,6 +1187,21 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             check();
             startJob(QStringLiteral("arrange"), what, w.fArrangeDialog);
             result = QJsonObject{{QStringLiteral("started"), QStringLiteral("arrange")}};
+        }
+        else if (tool == QLatin1String("ai_mix_balance"))
+        {
+            const QString vocals = args.value(QStringLiteral("vocals")).toString(QStringLiteral("normal"));
+            if (vocals != QLatin1String("forward") && vocals != QLatin1String("normal") && vocals != QLatin1String("blend"))
+                throw Fail{QStringLiteral("vocals is forward, normal or blend")};
+            freshDialog(w.fBalanceDialog, QStringLiteral("a mix balance"));
+            BalanceDialog* dialog = w.mixBalance(false);
+            dialog->setVocalStyle(vocals == QLatin1String("forward") ? chost::VocalStyle::Forward
+                                  : vocals == QLatin1String("blend") ? chost::VocalStyle::Blend
+                                                                     : chost::VocalStyle::Normal);
+            dialog->setAutoStart(true);
+            check();
+            startJob(QStringLiteral("balance"), w.projectName(), dialog);
+            result = QJsonObject{{QStringLiteral("started"), QStringLiteral("balance")}};
         }
         else if (tool == QLatin1String("ai_master") || tool == QLatin1String("export_mix"))
         {

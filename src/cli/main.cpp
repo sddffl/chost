@@ -19,6 +19,7 @@
 #include "core/ClipEdit.h"
 #include "core/Click.h"
 #include "core/HostEngine.h"
+#include "core/Loudness.h"
 #include "core/Scales.h"
 #include "core/Score.h"
 #include "core/Session.h"
@@ -514,6 +515,31 @@ static int cmdMix(int argc, char* argv[])
 // the chord pad's harmony, without the GUI: the pads of a key and what fits after a chord, or a
 // progression written as a MIDI part
 // chost-cli clip: a clip edit on a file, the way the arrangement does it
+// chost-cli loudness FILE...: integrated loudness (LUFS) and sample peak of each file
+static int cmdLoudness(int argc, char* argv[])
+{
+    if (argc < 1)
+    {
+        std::fprintf(stderr, "usage: chost-cli loudness FILE...\n");
+        return 2;
+    }
+    int failed = 0;
+    for (int i = 0; i < argc; ++i)
+    {
+        std::vector<float> samples;
+        chost::AudioFileInfo info;
+        if (!chost::readAudioFile(argv[i], samples, info))
+        {
+            std::fprintf(stderr, "cannot read %s\n", argv[i]);
+            ++failed;
+            continue;
+        }
+        const chost::Loudness l = chost::measureLoudness(samples, info.channels, info.sampleRate);
+        std::printf("LOUDNESS %s\t%.1f LUFS\tpeak %.1f dBFS\n", argv[i], l.integrated, l.peak);
+    }
+    return failed ? 1 : 0;
+}
+
 static int cmdClip(int argc, char* argv[])
 {
     std::string in, out, kindText;
@@ -824,6 +850,8 @@ int main(int argc, char* argv[])
         return cmdScore(argc - 2, argv + 2);
     if (cmd == "clip")
         return cmdClip(argc - 2, argv + 2);
+    if (cmd == "loudness")
+        return cmdLoudness(argc - 2, argv + 2);
 
     std::fprintf(stderr,
                  "usage:\n"
@@ -841,6 +869,7 @@ int main(int argc, char* argv[])
                  "  chost-cli score [--staff auto|treble|bass|grand] --midi F.mid... [--key K] [--tempo BPM] [--grid 16|8]\n"
                  "                  [--title T] [--output F.musicxml]\n"
                  "  chost-cli clip --input F --output F2 --edit move|silence|keep|fade_in|fade_out|gain|normalize\n"
-                 "                 [--start S] [--end S] [--seconds S] [--db DB]\n");
+                 "                 [--start S] [--end S] [--seconds S] [--db DB]\n"
+                 "  chost-cli loudness FILE...\n");
     return 2;
 }

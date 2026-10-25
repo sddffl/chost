@@ -98,6 +98,15 @@ jobs:
           # an AI assistant working chost through chost-mcp, which starts chost (offscreen here) itself
           QT_QPA_PLATFORM=offscreen timeout 300 python3 tests/mcp_client.py ./build/chost-mcp $PWD/a.wav $PWD/b.wav $gain | tee mcp.log
           grep -q 'MCP TEST PASSED' mcp.log
+          # loudness by ITU BS.1770: a -23 dBFS 1 kHz sine on both channels is -23 LUFS
+          python3 -c "import math, struct, wave; w = wave.open('ref.wav', 'wb'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(48000); a = 10 ** (-23 / 20) * 32767; w.writeframes(b''.join(struct.pack('<hh', *(2 * [round(a * math.sin(2 * math.pi * 1000 * i / 48000))])) for i in range(480000))); w.close()"
+          ./build/chost-cli loudness ref.wav | tee loudness.log
+          grep -qP '\t-23\.0 LUFS' loudness.log
+          # AI mix balance: both tones measured and their faders set, the whole mix checked for headroom
+          QT_QPA_PLATFORM=offscreen timeout 150 ./build/chost --file a.wav --file b.wav --mix-balance forward \
+              --screenshot balance.png --screenshot-delay 60000 | tee balance.log
+          test "$(grep -c '^BALANCE .*LUFS.* dB$' balance.log)" = 2
+          grep -q '^BALANCED ' balance.log
           pkill -x chost || true
           # the chord pad's harmony: G7 goes home to C, and a progression becomes a MIDI part
           ./build/chost-cli chords --key "C major" --after G7 | tee chords.log

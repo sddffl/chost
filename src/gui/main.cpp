@@ -1,3 +1,4 @@
+#include "BalanceDialog.h"
 #include "ChordPad.h"
 #include "ClaudeConnect.h"
 #include "MainWindow.h"
@@ -6,10 +7,13 @@
 #include "Theme.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QCommandLineParser>
 #include <QDialog>
 #include <QIcon>
+#include <QLabel>
 #include <QTimer>
+#include <QTreeWidget>
 
 #include <cstdio>
 
@@ -42,6 +46,7 @@ int main(int argc, char* argv[])
     QCommandLineOption instrumentsOpt(QStringLiteral("instrument-settings"), QStringLiteral("Open the instrument settings."));
     QCommandLineOption notesOpt(QStringLiteral("edit-notes"), QStringLiteral("Open the MIDI editor of the selected track."));
     QCommandLineOption exportOpt(QStringLiteral("export-mix"), QStringLiteral("Open File > Export mixdown and start it."));
+    QCommandLineOption balanceOpt(QStringLiteral("mix-balance"), QStringLiteral("Run AI auto mix balance; vocals forward, normal or blend."), QStringLiteral("vocals"));
     QCommandLineOption masterOpt(QStringLiteral("master"), QStringLiteral("Open AI mastering and start it."));
     QCommandLineOption analyzeOpt(QStringLiteral("analyze"), QStringLiteral("Find the tempo and key of the selected (or first) audio track."));
     QCommandLineOption undoOpt(QStringLiteral("test-undo"), QStringLiteral("Self test of undo and redo on the loaded tracks, with this insert plugin."), QStringLiteral("spec"));
@@ -63,7 +68,7 @@ int main(int argc, char* argv[])
     QCommandLineOption reverbOpt(QStringLiteral("reverb"), QStringLiteral("Send these tracks to a new reverb bus (e.g. 0,1)."), QStringLiteral("tracks"));
     QCommandLineOption foldOpt(QStringLiteral("fold"), QStringLiteral("Fold the groups."));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, markerOpt, rangeOpt, groupOpt, reverbOpt, foldOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, balanceOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, markerOpt, rangeOpt, groupOpt, reverbOpt, foldOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -144,6 +149,28 @@ int main(int argc, char* argv[])
         window.analyzeSong();
     if (parser.isSet(exportOpt))
         window.exportMix(true);
+    if (parser.isSet(balanceOpt))
+    {
+        BalanceDialog* dialog = window.mixBalance(false);
+        const QString vocals = parser.value(balanceOpt);
+        dialog->setVocalStyle(vocals == QLatin1String("forward") ? chost::VocalStyle::Forward
+                              : vocals == QLatin1String("blend") ? chost::VocalStyle::Blend
+                                                                 : chost::VocalStyle::Normal);
+        QObject::connect(dialog, &BalanceDialog::balanced, dialog, [dialog](bool ok) {
+            const auto* results = dialog->findChild<QTreeWidget*>(QStringLiteral("results"));
+            for (int i = 0; results && i < results->topLevelItemCount(); ++i)
+            {
+                const QTreeWidgetItem* item = results->topLevelItem(i);
+                const auto* role = qobject_cast<QComboBox*>(results->itemWidget(const_cast<QTreeWidgetItem*>(item), 1));
+                std::printf("BALANCE %s\t%s\t%s\t%s\n", qPrintable(item->text(0)), role ? qPrintable(role->currentText()) : "", qPrintable(item->text(2)),
+                            qPrintable(item->text(3)));
+            }
+            const auto* status = dialog->findChild<QLabel*>(QStringLiteral("status"));
+            std::printf("%s %s\n", ok ? "BALANCED" : "BALANCE FAILED", status ? qPrintable(status->text()) : "");
+            std::fflush(stdout);
+        });
+        dialog->setAutoStart(true);
+    }
     if (parser.isSet(masterOpt))
         window.masterMix(true);
     if (parser.isSet(arrangeOpt) || parser.isSet(chordsOpt))

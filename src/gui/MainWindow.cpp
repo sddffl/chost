@@ -10,6 +10,7 @@
 #include "History.h"
 #include "Instruments.h"
 #include "MasterDialog.h"
+#include "BalanceDialog.h"
 #include "PianoRoll.h"
 #include "ScoreDialog.h"
 #include "PluginDiscovery.h"
@@ -280,6 +281,7 @@ MainWindow::~MainWindow()
     delete fPianoRoll;
     delete fExportDialog;
     delete fMasterDialog;
+    delete fBalanceDialog;
     delete fArrangeDialog;
     delete fChordPad;
     delete fScoreDialog;
@@ -387,6 +389,7 @@ void MainWindow::buildMenus()
     ai->addAction(QStringLiteral("和弦板（和弦提示）…"), QKeySequence(QStringLiteral("Ctrl+Shift+K")), this, [this] { chordPad(); });
     ai->addSeparator();
     ai->addAction(QStringLiteral("识别速度和调性"), this, [this] { analyzeSong(); });
+    ai->addAction(QStringLiteral("AI 自动混音平衡…"), QKeySequence(QStringLiteral("Ctrl+Shift+B")), this, [this] { mixBalance(); });
     ai->addAction(QStringLiteral("AI 母带…"), QKeySequence(QStringLiteral("Ctrl+Shift+E")), this, [this] { masterMix(); });
     ai->addSeparator();
     ai->addAction(QStringLiteral("连接 Claude（让 Claude 操控 chost）…"), this, [this] { claude::showDialog(this); });
@@ -466,6 +469,11 @@ void MainWindow::buildTransport()
     tuning->setToolTip(QStringLiteral("把人声里跑调的音逐个修准，颤音和滑音都保留"));
     bar->addWidget(tuning);
     connect(tuning, &QToolButton::clicked, this, [this] { tune(); });
+    auto* balancing = new QToolButton;
+    balancing->setText(QStringLiteral("AI 平衡"));
+    balancing->setToolTip(QStringLiteral("听每条轨道有多响，把推子调到一个好的起点：人声在前，鼓和贝斯紧跟"));
+    bar->addWidget(balancing);
+    connect(balancing, &QToolButton::clicked, this, [this] { mixBalance(); });
     auto* mastering = new QToolButton;
     mastering->setText(QStringLiteral("AI 母带"));
     mastering->setToolTip(QStringLiteral("把整首混音做成可以发布的母带：音色平衡、压缩、响度标准"));
@@ -2964,6 +2972,60 @@ void MainWindow::masterMix(bool autoStart)
     fMasterDialog->raise();
     fMasterDialog->activateWindow();
     fMasterDialog->setAutoStart(autoStart);
+}
+
+BalanceDialog* MainWindow::mixBalance(bool autoStart)
+{
+    if (!fBalanceDialog)
+    {
+        // what gets balanced: every track that plays, but no buses (they're mixed through) and no masters
+        auto tracks = [this] {
+            ++fBalanceRun;
+            std::vector<BalanceDialog::Track> list;
+            const std::vector<chost::Track>& all = fSession.tracks();
+            for (size_t i = 0; i < all.size(); ++i)
+            {
+                const chost::Track& t = all[i];
+                if (t.kind == chost::TrackKind::Bus || t.muted || t.role == kMasterRole || t.file.empty())
+                    continue;
+                const QString name = QString::fromStdString(t.name);
+                QString role = QString::fromStdString(t.role);
+                if (role.isEmpty())
+                    role = isDrumTrack(static_cast<int>(i)) ? QStringLiteral("drums") : guessRole(name + QLatin1Char(' ') + QFileInfo(QString::fromStdString(t.file)).completeBaseName());
+                if (role.isEmpty())
+                    role = QStringLiteral("other");
+                list.push_back({t.uid, static_cast<int>(i), name, role, t.volume});
+            }
+            return list;
+        };
+        auto apply = [this](const std::vector<std::pair<chost::Uid, float>>& volumes) {
+            for (const auto& [uid, volume] : volumes)
+            {
+                const int track = fSession.trackOf(uid);
+                if (track >= 0)
+                    fSession.setVolume(track, volume);
+            }
+            refreshMixState();
+            fHistory->record(QStringLiteral("AI 混音平衡"), QStringLiteral("ai-balance %1").arg(fBalanceRun));
+        };
+        // a part set by hand stays with the track; the fader move after it records it too
+        auto role = [this](chost::Uid uid, const QString& part) {
+            const int track = fSession.trackOf(uid);
+            if (track >= 0)
+                fSession.setRole(track, part.toStdString());
+        };
+        fBalanceDialog = new BalanceDialog(tracks, [this] { return renderSnapshot(QStringLiteral("balance")); }, apply, role, this);
+        fBalanceDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(fBalanceDialog, &BalanceDialog::balanced, this, [this](bool ok) {
+            if (ok)
+                statusBar()->showMessage(QStringLiteral("混音平衡完成，不满意按 Ctrl+Z 撤销"), 8000);
+        });
+    }
+    fBalanceDialog->show();
+    fBalanceDialog->raise();
+    fBalanceDialog->activateWindow();
+    fBalanceDialog->setAutoStart(autoStart);
+    return fBalanceDialog;
 }
 
 void MainWindow::arrange(bool autoStart, const QString& chords)

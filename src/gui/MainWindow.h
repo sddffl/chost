@@ -22,6 +22,7 @@ class ChordPadDialog;
 class Control;
 class History;
 class MasterDialog;
+class BalanceDialog;
 class ScoreDialog;
 class ScriptJob;
 struct RenderSnapshot;
@@ -77,6 +78,7 @@ public:
     void instrumentSettings();
     void exportMix(bool autoStart = false);   // File > Export mixdown
     void masterMix(bool autoStart = false);   // AI > AI mastering
+    BalanceDialog* mixBalance(bool autoStart = false); // AI > auto mix balance
     void analyzeSong(bool quiet = false);     // tempo and key of the selected (or first) audio track
     void arrange(bool autoStart = false, const QString& chords = {}); // AI > auto-arrangement
     void tune(bool autoStart = false);        // AI > pitch correction of a vocal track
@@ -231,6 +233,8 @@ private:
     QPointer<PianoRollDialog> fPianoRoll;
     QPointer<ExportDialog> fExportDialog;
     QPointer<MasterDialog> fMasterDialog;
+    QPointer<BalanceDialog> fBalanceDialog;
+    int fBalanceRun = 0; // both fader moves of one balance are one undo step
     QPointer<ArrangeDialog> fArrangeDialog;
     QPointer<TuneDialog> fTuneDialog;
     QPointer<ChordPadDialog> fChordPad;
