@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.8.0 LANGUAGES CXX)
+project(chost VERSION 0.9.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -85,7 +85,8 @@ if(CHOST_BUILD_GUI)
         src/gui/ScriptJob.cpp src/gui/ScriptJob.h
         src/gui/ExportDialog.cpp src/gui/ExportDialog.h
         src/gui/MasterDialog.cpp src/gui/MasterDialog.h
-        src/gui/ArrangeDialog.cpp src/gui/ArrangeDialog.h)
+        src/gui/ArrangeDialog.cpp src/gui/ArrangeDialog.h
+        src/gui/TuneDialog.cpp src/gui/TuneDialog.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}" CHOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(chost PRIVATE chost_core Qt6::Widgets)
     install(TARGETS chost RUNTIME DESTINATION bin)

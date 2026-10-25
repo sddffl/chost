@@ -14,6 +14,7 @@
 #include "StemDialog.h"
 #include "Theme.h"
 #include "TranscribeDialog.h"
+#include "TuneDialog.h"
 #include "Widgets.h"
 #include "core/AudioConvert.h"
 
@@ -273,6 +274,7 @@ void MainWindow::buildMenus()
     ai->addAction(QStringLiteral("转 MIDI（多条轨道）…"), this, [this] { transcribe(true); });
     ai->addAction(QStringLiteral("MIDI 轨全部换成真实音源"), this, &MainWindow::applyInstruments);
     ai->addAction(QStringLiteral("自动编曲…"), QKeySequence(QStringLiteral("Ctrl+Shift+A")), this, [this] { arrange(); });
+    ai->addAction(QStringLiteral("AI 修音…"), QKeySequence(QStringLiteral("Ctrl+Shift+T")), this, [this] { tune(); });
     ai->addSeparator();
     ai->addAction(QStringLiteral("识别速度和调性"), this, [this] { analyzeSong(); });
     ai->addAction(QStringLiteral("AI 母带…"), QKeySequence(QStringLiteral("Ctrl+Shift+E")), this, [this] { masterMix(); });
@@ -341,6 +343,11 @@ void MainWindow::buildTransport()
     arranging->setToolTip(QStringLiteral("按风格自动写出鼓、贝斯、键盘、吉他和弦乐"));
     bar->addWidget(arranging);
     connect(arranging, &QToolButton::clicked, this, [this] { arrange(); });
+    auto* tuning = new QToolButton;
+    tuning->setText(QStringLiteral("AI 修音"));
+    tuning->setToolTip(QStringLiteral("把人声里跑调的音逐个修准，颤音和滑音都保留"));
+    bar->addWidget(tuning);
+    connect(tuning, &QToolButton::clicked, this, [this] { tune(); });
     auto* mastering = new QToolButton;
     mastering->setText(QStringLiteral("AI 母带"));
     mastering->setToolTip(QStringLiteral("把整首混音做成可以发布的母带：音色平衡、压缩、响度标准"));
@@ -394,6 +401,10 @@ QWidget* MainWindow::buildInspector()
     fInspectorMidi->setToolTip(QStringLiteral("把这条音轨转成 MIDI，放到下面一条新的乐器轨上"));
     body->addWidget(fInspectorMidi);
     connect(fInspectorMidi, &QPushButton::clicked, this, [this] { transcribe(false); });
+    fInspectorTune = new QPushButton(QStringLiteral("AI 修音…"));
+    fInspectorTune->setToolTip(QStringLiteral("把这条人声里跑调的音修准"));
+    body->addWidget(fInspectorTune);
+    connect(fInspectorTune, &QPushButton::clicked, this, [this] { tune(); });
 
     // instrument tracks: which instrument plays the MIDI, and its sound
     fInstrumentBox = new QWidget;
@@ -807,6 +818,7 @@ void MainWindow::refreshSelection()
         fInspectorInfo->setText(QStringLiteral("还没有轨道。把音频或 MIDI 文件拖进来，或用 文件 → 导入。"));
         fInspectorStems->setEnabled(false);
         fInspectorMidi->setEnabled(false);
+        fInspectorTune->setEnabled(false);
         fInstrumentBox->hide();
         refreshInserts();
         return;
@@ -819,8 +831,10 @@ void MainWindow::refreshSelection()
     fInspectorReplace->setText(instrument ? QStringLiteral("替换 MIDI…") : QStringLiteral("替换音频…"));
     fInspectorStems->setVisible(!instrument);
     fInspectorMidi->setVisible(!instrument);
+    fInspectorTune->setVisible(!instrument);
     fInspectorStems->setEnabled(!t.file.empty());
     fInspectorMidi->setEnabled(!t.file.empty());
+    fInspectorTune->setEnabled(!t.file.empty() && t.role != kMasterRole);
     if (t.file.empty())
     {
         fInspectorInfo->setText(instrument ? QStringLiteral("这条乐器轨还没有 MIDI。") : QStringLiteral("这条轨道还没有音频。"));
@@ -2034,6 +2048,77 @@ void MainWindow::arrange(bool autoStart, const QString& chords)
     fArrangeDialog->raise();
     fArrangeDialog->activateWindow();
     fArrangeDialog->setAutoStart(autoStart);
+}
+
+void MainWindow::tune(bool autoStart)
+{
+    if (!fTuneDialog)
+    {
+        // the audio tracks, by their original takes: a track playing its tuned take is tuned again from scratch
+        std::vector<TuneDialog::Source> sources;
+        int selected = -1;
+        const std::vector<chost::Track>& tracks = fSession.tracks();
+        for (size_t i = 0; i < tracks.size(); ++i)
+        {
+            const chost::Track& t = tracks[i];
+            if (t.kind != chost::TrackKind::Audio || t.file.empty() || t.role == kMasterRole)
+                continue;
+            if (static_cast<int>(i) == fSelected)
+                selected = static_cast<int>(sources.size());
+            const QString name = QString::fromStdString(t.name);
+            const QString role = t.role.empty() ? guessRole(name) : QString::fromStdString(t.role);
+            const bool vocal = role == QLatin1String("vocals") || role == QLatin1String("lead") || role == QLatin1String("backing");
+            sources.push_back({name, originalOf(QString::fromStdString(t.file)), vocal});
+        }
+        fTuneDialog = new TuneDialog(sources, selected, QString::fromStdString(fSession.key()), this);
+        fTuneDialog->setAttribute(Qt::WA_DeleteOnClose);
+        // the tuned file is about to be written again: the track plays the original meanwhile
+        connect(fTuneDialog, &TuneDialog::aboutToStart, this, [this](const QString& original) { playTake(original, false); });
+        connect(fTuneDialog, &TuneDialog::tuned, this, [this](const QString& original, const QString& tunedFile) {
+            QFile source(tunedFile + QStringLiteral(".source"));
+            if (source.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                source.write(original.toUtf8());
+            fClips.remove(tunedFile); // a new waveform
+            playTake(original, true);
+            statusBar()->showMessage(QStringLiteral("修音完成：轨道已换成修好的声音，A/B 按钮可以切回原声"), 8000);
+        });
+        connect(fTuneDialog, &TuneDialog::listen, this, &MainWindow::playTake);
+        connect(fTuneDialog, &TuneDialog::playToggled, this, &MainWindow::togglePlay);
+    }
+    fTuneDialog->show();
+    fTuneDialog->raise();
+    fTuneDialog->activateWindow();
+    fTuneDialog->setAutoStart(autoStart);
+}
+
+QString MainWindow::originalOf(const QString& file) const
+{
+    QFile source(file + QStringLiteral(".source"));
+    if (source.open(QIODevice::ReadOnly))
+    {
+        const QString original = QString::fromUtf8(source.readAll()).trimmed();
+        if (QFileInfo::exists(original))
+            return original;
+    }
+    return file;
+}
+
+int MainWindow::trackPlaying(const QString& original) const
+{
+    const int track = trackOfFile(original);
+    return track >= 0 ? track : trackOfFile(TuneDialog::tunedFileFor(original));
+}
+
+void MainWindow::playTake(const QString& original, bool tuned)
+{
+    const int track = trackPlaying(original);
+    const QString file = tuned ? TuneDialog::tunedFileFor(original) : original;
+    if (track < 0 || QString::fromStdString(fSession.tracks()[track].file) == file || !QFileInfo::exists(file))
+        return;
+    if (!fSession.setTrackFile(track, file.toStdString()))
+        showError(QStringLiteral("无法打开音频文件：%1\n\n%2").arg(file, QString::fromStdString(fSession.lastError())));
+    refreshTracks();
+    selectTrack(track);
 }
 
 // A/B: the master alone (soloed), or the mix as it was (master muted, the solo off)

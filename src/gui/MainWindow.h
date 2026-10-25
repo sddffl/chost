@@ -34,6 +34,7 @@ class QToolButton;
 class QTreeWidget;
 class StemDialog;
 class TranscribeDialog;
+class TuneDialog;
 
 // Cubase-style main window: transport bar on top, inspector on the left, the project's audio tracks in
 // the middle, the plugin browser on the right and the MixConsole below.
@@ -64,6 +65,7 @@ public:
     void masterMix(bool autoStart = false);   // AI > AI mastering
     void analyzeSong(bool quiet = false);     // tempo and key of the selected (or first) audio track
     void arrange(bool autoStart = false, const QString& chords = {}); // AI > auto-arrangement
+    void tune(bool autoStart = false);        // AI > pitch correction of a vocal track
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -149,6 +151,9 @@ private:
     void setTempo(double bpm);
     void refreshSongInfo();          // tempo and key in the transport bar
     void listenToMaster(bool master);
+    QString originalOf(const QString& file) const;          // the take a tuned file was made from, else the file
+    int trackPlaying(const QString& original) const;        // the track with this take or its tuned one
+    void playTake(const QString& original, bool tuned);     // swaps a track between the take and its tuned one
 
     chost::HostEngine fHost;
     chost::Session fSession{fHost};
@@ -167,6 +172,7 @@ private:
     QPointer<ExportDialog> fExportDialog;
     QPointer<MasterDialog> fMasterDialog;
     QPointer<ArrangeDialog> fArrangeDialog;
+    QPointer<TuneDialog> fTuneDialog;
     ScriptJob* fAnalysis = nullptr;
     bool fAnalysisTried = false; // the automatic analysis of the first audio file, once per project
     bool fAnalysisQuiet = false;
@@ -186,6 +192,7 @@ private:
     QPushButton* fInspectorReplace = nullptr;
     QPushButton* fInspectorStems = nullptr;
     QPushButton* fInspectorMidi = nullptr;
+    QPushButton* fInspectorTune = nullptr;
     QWidget* fInstrumentBox = nullptr;
     QLabel* fInstrumentName = nullptr;
     QPushButton* fInstrumentEdit = nullptr;

@@ -92,7 +92,7 @@ jobs:
               --screenshot pianoroll.png --screenshot-delay 3000
           test -f pianoroll-1.png
 
-      - name: Tempo, key, mastering and arrangement test
+      - name: Tempo, key, mastering, arrangement and pitch correction test
         run: |
           py=$PWD/ai-env/bin/python
           python3 tests/make_song.py fast 137
@@ -119,6 +119,17 @@ jobs:
           CHOST_AI_PYTHON=$py HOME=$PWD/home QT_QPA_PLATFORM=offscreen \
               ./build/chost --file song/mysong.wav --arrange --screenshot arrange.png --screenshot-delay 25000
           test "$(ls home/.local/share/chost/chost/mysong_编曲/1/*.mid | wc -l)" = 5
+          # pitch correction: every note in tune, the vibrato kept (or gone, the Auto-Tune effect), the key heard
+          python3 tests/make_vocal.py vocal
+          $py tools/chost_tune.py --input vocal/vocal.wav --output tuned.wav --key auto | tee tune.log
+          grep -E '^KEY A minor$' tune.log
+          $py tests/check_tuning.py vocal tuned.wav
+          $py tools/chost_tune.py --input vocal/vocal.wav --output hard.wav --key "A minor" --hard > /dev/null
+          $py tests/check_tuning.py vocal hard.wav --hard
+          CHOST_AI_PYTHON=$py HOME=$PWD/home QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file song/mysong.wav --file vocal/vocal.wav --select 1 --tune --screenshot tune.png --screenshot-delay 30000
+          test -f vocal/vocal_修音.wav
+          test -f vocal/vocal_修音.wav.source
 
       - name: Plugin discovery test
         run: |
@@ -137,6 +148,7 @@ jobs:
             pianoroll*.png
             master*.png
             arrange*.png
+            tune*.png
 
   windows:
     runs-on: windows-latest
@@ -196,6 +208,7 @@ jobs:
           test -f tools/chost_analyze.py
           test -f tools/chost_master.py
           test -f tools/chost_arrange.py
+          test -f tools/chost_tune.py
 
       - uses: actions/upload-artifact@v4
         with:
