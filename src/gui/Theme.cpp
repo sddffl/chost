@@ -82,6 +82,9 @@ void apply(QApplication& app)
         QPushButton#insertSlot { text-align: left; padding: 2px 6px; background: #24282c; border-radius: 2px; }
         QPushButton#insertSlot[filled="true"] { background: #2f4a63; }
         QPushButton#insertSlot[bypassed="true"] { color: #6c7176; background: #2a2e33; }
+        QToolButton#sendSlot { text-align: left; padding: 0 4px; background: #24282c; border-radius: 2px; border: none; }
+        QToolButton#sendSlot[filled="true"] { background: #3d5a3a; }
+        QToolButton#channelOutput { padding: 1px 4px; background: #24282c; color: #9fb7cf; border-radius: 2px; border: none; }
         QWidget#channelStrip { background: #2a2e33; border: 1px solid #14161a; border-radius: 3px; }
         QLabel#channelName { background: #3d7fc4; color: white; padding: 3px; border-radius: 2px; }
         QToolButton#channelName { background: #3d7fc4; color: white; padding: 3px; border-radius: 2px; border: none; }

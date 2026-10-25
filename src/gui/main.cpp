@@ -59,8 +59,11 @@ int main(int argc, char* argv[])
     QCommandLineOption scoreOpt(QStringLiteral("score"), QStringLiteral("Open File > Sheet music (the selected track, else every MIDI track) and export it: .pdf or .musicxml (tests)."), QStringLiteral("path"));
     QCommandLineOption markerOpt(QStringLiteral("marker"), QStringLiteral("Add a marker on the timeline (repeatable)."), QStringLiteral("seconds:name"));
     QCommandLineOption rangeOpt(QStringLiteral("range"), QStringLiteral("Select a range of the timeline."), QStringLiteral("start:end"));
+    QCommandLineOption groupOpt(QStringLiteral("group"), QStringLiteral("Put these tracks into a new group (e.g. 0,1)."), QStringLiteral("tracks"));
+    QCommandLineOption reverbOpt(QStringLiteral("reverb"), QStringLiteral("Send these tracks to a new reverb bus (e.g. 0,1)."), QStringLiteral("tracks"));
+    QCommandLineOption foldOpt(QStringLiteral("fold"), QStringLiteral("Fold the groups."));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, markerOpt, rangeOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, markerOpt, rangeOpt, groupOpt, reverbOpt, foldOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -87,6 +90,18 @@ int main(int argc, char* argv[])
         window.applyInstruments();
     if (parser.isSet(selectOpt))
         window.selectTrack(parser.value(selectOpt).toInt());
+    auto trackList = [](const QString& text) {
+        std::vector<int> list;
+        for (const QString& t : text.split(QLatin1Char(','), Qt::SkipEmptyParts))
+            list.push_back(t.toInt());
+        return list;
+    };
+    if (parser.isSet(groupOpt))
+        window.addBus(MainWindow::BusKind::Group, trackList(parser.value(groupOpt)));
+    if (parser.isSet(reverbOpt))
+        window.addBus(MainWindow::BusKind::Reverb, trackList(parser.value(reverbOpt)));
+    if (parser.isSet(foldOpt))
+        window.foldGroups();
     for (const QString& marker : parser.values(markerOpt))
         window.addMarker(marker.section(QLatin1Char(':'), 0, 0).toDouble(), marker.section(QLatin1Char(':'), 1));
     if (parser.isSet(rangeOpt))

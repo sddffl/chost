@@ -180,6 +180,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(fArrange, &ArrangeView::trackSelected, this, &MainWindow::selectTrack);
     connect(fArrange, &ArrangeView::muteToggled, this, &MainWindow::setMuted);
     connect(fArrange, &ArrangeView::soloToggled, this, &MainWindow::setSolo);
+    connect(fArrange, &ArrangeView::foldToggled, this, &MainWindow::setFolded);
     connect(fArrange, &ArrangeView::trackMenuRequested, this, &MainWindow::trackMenu);
     connect(fArrange, &ArrangeView::filesDropped, this, &MainWindow::dropFiles);
     connect(fArrange, &ArrangeView::clipDoubleClicked, this, &MainWindow::editNotes);
@@ -329,6 +330,16 @@ void MainWindow::buildMenus()
     track->addAction(QStringLiteral("导入音频 / MIDI 到新轨道…"), this, &MainWindow::importAudio);
     track->addAction(QStringLiteral("替换选中轨道的文件…"), this, &MainWindow::replaceAudio);
     track->addAction(QStringLiteral("选择乐器…"), this, &MainWindow::chooseInstrument);
+    track->addSeparator();
+    // with a track selected, it goes into the new group or sends to the new effect
+    auto selectedOnly = [this] {
+        const bool real = fSelected >= 0 && fSelected < static_cast<int>(fSession.tracks().size());
+        return real ? std::vector<int>{fSelected} : std::vector<int>{};
+    };
+    track->addAction(QStringLiteral("新建编组（文件夹），放入选中轨道"), QKeySequence(QStringLiteral("Ctrl+G")), this,
+                     [this, selectedOnly] { addBus(BusKind::Group, selectedOnly()); });
+    track->addAction(QStringLiteral("新建混响效果轨，选中轨道发送过去"), this, [this, selectedOnly] { addBus(BusKind::Reverb, selectedOnly()); });
+    track->addAction(QStringLiteral("新建延迟效果轨，选中轨道发送过去"), this, [this, selectedOnly] { addBus(BusKind::Delay, selectedOnly()); });
     track->addSeparator();
     track->addAction(QStringLiteral("删除选中轨道"), QKeySequence(QStringLiteral("Ctrl+Del")), this, &MainWindow::removeSelectedTrack);
 
@@ -838,6 +849,35 @@ void MainWindow::refreshTracks()
         lane.colour = trackColour(static_cast<int>(i));
         lane.midi = t.kind == chost::TrackKind::Instrument;
         lane.kindText = lane.midi ? instrumentText(static_cast<int>(i)) : QStringLiteral("音频");
+        lane.depth = depthOf(static_cast<int>(i));
+        for (int up = fSession.trackOf(t.output), steps = 0; up >= 0 && steps < 64; up = fSession.trackOf(tracks[static_cast<size_t>(up)].output), ++steps)
+            lane.hidden = lane.hidden || tracks[static_cast<size_t>(up)].folded;
+        if (t.kind == chost::TrackKind::Bus)
+        {
+            lane.folder = true;
+            lane.folded = t.folded;
+            int members = 0, senders = 0;
+            for (const chost::Track& other : tracks)
+            {
+                if (other.output == t.uid)
+                {
+                    ++members;
+                    if (!other.file.empty())
+                        lane.seconds = std::max(lane.seconds, clip(QString::fromStdString(other.file)).seconds);
+                }
+                senders += static_cast<int>(std::count_if(other.sends.begin(), other.sends.end(), [&](const chost::Send& x) { return x.bus == t.uid; }));
+            }
+            // a group's band covers its groups' tracks too
+            for (size_t k = 0; k < tracks.size(); ++k)
+                if (k != i && fSession.feeds(tracks[k].uid, t.uid) && !tracks[k].file.empty())
+                    lane.seconds = std::max(lane.seconds, clip(QString::fromStdString(tracks[k].file)).seconds);
+            QStringList parts;
+            if (members > 0 || senders == 0)
+                parts << QStringLiteral("编组 · %1 条轨道").arg(members);
+            if (senders > 0)
+                parts << QStringLiteral("效果 · %1 个发送").arg(senders);
+            lane.kindText = parts.join(QStringLiteral(" · "));
+        }
         if (!t.file.empty())
         {
             const QString path = QString::fromStdString(t.file);
@@ -885,6 +925,13 @@ void MainWindow::refreshTracks()
         connect(strip, &ChannelStrip::volumeChanged, this, [this, index](float v) { setVolume(index, v); });
         connect(strip, &ChannelStrip::muteToggled, this, [this, index](bool m) { setMuted(index, m); });
         connect(strip, &ChannelStrip::soloToggled, this, [this, index](bool s) { setSolo(index, s); });
+        connect(strip, &ChannelStrip::outputMenuRequested, this, [this, index](const QPoint& at) { outputMenu(index, at); });
+        connect(strip, &ChannelStrip::sendMenuRequested, this, [this, index](int slot, const QPoint& at) { sendMenu(index, slot, at); });
+        connect(strip, &ChannelStrip::sendLevelChanged, this, [this, index](int slot, float level) {
+            const std::vector<chost::Send>& sends = fSession.tracks()[static_cast<size_t>(index)].sends;
+            if (slot < static_cast<int>(sends.size()))
+                setTrackSend(index, fSession.trackOf(sends[static_cast<size_t>(slot)].bus), level);
+        });
         fStrips.push_back(strip);
     }
     fOutputStrip->setVolume(fSession.masterVolume());
@@ -931,16 +978,37 @@ void MainWindow::refreshSelection()
 
     const chost::Track& t = tracks[fSelected];
     const bool instrument = t.kind == chost::TrackKind::Instrument;
+    const bool bus = t.kind == chost::TrackKind::Bus;
+    fInspectorReplace->setVisible(!bus);
     fInspectorName->setText(QString::fromStdString(t.name));
     fInspectorName->setStyleSheet(QStringLiteral("QLineEdit { background: %1; color: white; font-weight: bold; }").arg(trackColour(fSelected).name()));
     fInspectorReplace->setText(instrument ? QStringLiteral("替换 MIDI…") : QStringLiteral("替换音频…"));
-    fInspectorStems->setVisible(!instrument);
-    fInspectorMidi->setVisible(!instrument);
-    fInspectorTune->setVisible(!instrument);
+    fInspectorStems->setVisible(!instrument && !bus);
+    fInspectorMidi->setVisible(!instrument && !bus);
+    fInspectorTune->setVisible(!instrument && !bus);
     fInspectorStems->setEnabled(!t.file.empty());
     fInspectorMidi->setEnabled(!t.file.empty());
     fInspectorTune->setEnabled(!t.file.empty() && t.role != kMasterRole);
-    if (t.file.empty())
+    if (bus)
+    {
+        QStringList members, senders;
+        for (const chost::Track& other : tracks)
+        {
+            if (other.output == t.uid)
+                members << QString::fromStdString(other.name);
+            if (std::any_of(other.sends.begin(), other.sends.end(), [&](const chost::Send& x) { return x.bus == t.uid; }))
+                senders << QString::fromStdString(other.name);
+        }
+        QString info = QStringLiteral("编组 / 效果轨");
+        if (!members.isEmpty())
+            info += QStringLiteral("\n编组里的轨道：%1").arg(members.join(QStringLiteral("、")));
+        if (!senders.isEmpty())
+            info += QStringLiteral("\n发送到这里：%1").arg(senders.join(QStringLiteral("、")));
+        if (members.isEmpty() && senders.isEmpty())
+            info += QStringLiteral("\n还没有轨道送到这里：在轨道的“输出”或“发送”里选它");
+        fInspectorInfo->setText(info);
+    }
+    else if (t.file.empty())
     {
         fInspectorInfo->setText(instrument ? QStringLiteral("这条乐器轨还没有 MIDI。") : QStringLiteral("这条轨道还没有音频。"));
     }
@@ -989,6 +1057,13 @@ void MainWindow::refreshMixState()
             fStrips[i]->setMuted(tracks[i].muted);
             fStrips[i]->setSolo(tracks[i].solo);
             fStrips[i]->setVolume(tracks[i].volume);
+            const int out = fSession.trackOf(tracks[i].output);
+            fStrips[i]->setOutput(out >= 0 ? QString::fromStdString(tracks[static_cast<size_t>(out)].name) : QStringLiteral("Stereo Out"));
+            std::vector<ChannelStrip::SendSlot> sends;
+            for (const chost::Send& send : tracks[i].sends)
+                if (const int bus = fSession.trackOf(send.bus); bus >= 0)
+                    sends.push_back({QString::fromStdString(tracks[static_cast<size_t>(bus)].name), send.level});
+            fStrips[i]->setSends(sends);
         }
     }
 }
@@ -1021,7 +1096,7 @@ void MainWindow::selectTrack(int track)
 bool MainWindow::fits(int track, const QString& path) const
 {
     const std::vector<chost::Track>& tracks = fSession.tracks();
-    return track >= 0 && track < static_cast<int>(tracks.size()) &&
+    return track >= 0 && track < static_cast<int>(tracks.size()) && tracks[track].kind != chost::TrackKind::Bus &&
            (tracks[track].kind == chost::TrackKind::Instrument) == isMidiFile(path);
 }
 
@@ -1320,7 +1395,7 @@ void MainWindow::importAudio()
 
 void MainWindow::replaceAudio()
 {
-    if (fSelected < 0)
+    if (fSelected < 0 || fSession.tracks()[fSelected].kind == chost::TrackKind::Bus)
         return;
     const bool instrument = fSession.tracks()[fSelected].kind == chost::TrackKind::Instrument;
     const QString path = QFileDialog::getOpenFileName(this, instrument ? QStringLiteral("替换 MIDI") : QStringLiteral("替换音频"), {},
@@ -1373,7 +1448,12 @@ void MainWindow::trackMenu(int track, const QPoint& globalPos)
             fInspectorName->selectAll();
         });
         const chost::Track& t = fSession.tracks()[track];
-        if (t.kind == chost::TrackKind::Instrument)
+        if (t.kind == chost::TrackKind::Bus)
+        {
+            menu.addAction(t.folded ? QStringLiteral("展开文件夹") : QStringLiteral("折叠文件夹"), this,
+                           [this, track, folded = t.folded] { setFolded(track, !folded); });
+        }
+        else if (t.kind == chost::TrackKind::Instrument)
         {
             menu.addAction(QStringLiteral("编辑音符…"), this, [this, track] { editNotes(track); })->setEnabled(!t.file.empty());
             menu.addAction(QStringLiteral("出谱…"), this, [this, track] {
@@ -1392,6 +1472,16 @@ void MainWindow::trackMenu(int track, const QPoint& globalPos)
             menu.addAction(QStringLiteral("AI 转 MIDI…"), this, [this] { transcribe(false); })->setEnabled(!t.file.empty());
         }
         menu.addAction(QStringLiteral("添加插入效果…"), this, &MainWindow::addInsert);
+        QMenu* routing = menu.addMenu(QStringLiteral("输出和发送"));
+        routing->addAction(QStringLiteral("输出到…"), this, [this, track, globalPos] { outputMenu(track, globalPos); });
+        if (static_cast<int>(t.sends.size()) < ChannelStrip::kSendSlots)
+            routing->addAction(QStringLiteral("发送到…"), this, [this, track, globalPos, slot = static_cast<int>(t.sends.size())] { sendMenu(track, slot, globalPos); });
+        for (size_t k = 0; k < t.sends.size(); ++k)
+            if (const int bus = fSession.trackOf(t.sends[k].bus); bus >= 0)
+                routing->addAction(QStringLiteral("去掉发送到 %1").arg(QString::fromStdString(fSession.tracks()[static_cast<size_t>(bus)].name)), this,
+                                   [this, track, bus] { setTrackSend(track, bus, -1.0f); });
+        routing->addSeparator();
+        addBusMenu(routing, track);
         if (!t.file.empty())
         {
             QMenu* clip = menu.addMenu(fArrange->hasRange() ? QStringLiteral("片段（选区）") : QStringLiteral("片段（整段）"));
@@ -1404,6 +1494,7 @@ void MainWindow::trackMenu(int track, const QPoint& globalPos)
     menu.addAction(QStringLiteral("添加音轨"), this, &MainWindow::addEmptyTrack);
     menu.addAction(QStringLiteral("添加乐器轨（MIDI）"), this, &MainWindow::addInstrumentTrack);
     menu.addAction(QStringLiteral("导入音频 / MIDI 到新轨道…"), this, &MainWindow::importAudio);
+    addBusMenu(&menu, -1);
     menu.exec(globalPos);
 }
 
@@ -1763,6 +1854,314 @@ void MainWindow::setVolume(int track, float volume)
 {
     fSession.setVolume(track, volume);
     fHistory->record(QStringLiteral("音量"), QStringLiteral("volume %1").arg(track));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// buses: groups (folders of tracks) and effect returns
+
+namespace {
+constexpr float kDefaultSend = 0.316f; // -10 dB
+}
+
+int MainWindow::depthOf(int track) const
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    int depth = 0;
+    for (int up = fSession.trackOf(tracks[static_cast<size_t>(track)].output); up >= 0 && depth < 64;
+         up = fSession.trackOf(tracks[static_cast<size_t>(up)].output))
+        ++depth;
+    return depth;
+}
+
+void MainWindow::placeInGroup(int track, chost::Uid group)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    auto inside = [&](chost::Uid uid, chost::Uid bus) {
+        int at = fSession.trackOf(uid);
+        for (int steps = 0; at >= 0 && steps < 64; ++steps)
+        {
+            if (tracks[static_cast<size_t>(at)].output == bus)
+                return true;
+            at = fSession.trackOf(tracks[static_cast<size_t>(at)].output);
+        }
+        return false;
+    };
+    // the track, with the tracks of its own group if it is one, goes after the group's last track
+    const chost::Uid moving = tracks[static_cast<size_t>(track)].uid;
+    std::vector<chost::Uid> block{moving};
+    for (size_t k = static_cast<size_t>(track) + 1; k < tracks.size() && inside(tracks[k].uid, moving); ++k)
+        block.push_back(tracks[k].uid);
+    std::vector<chost::Uid> order;
+    for (const chost::Track& t : tracks)
+        if (std::find(block.begin(), block.end(), t.uid) == block.end())
+            order.push_back(t.uid);
+    const auto g = std::find(order.begin(), order.end(), group);
+    if (g == order.end())
+        return;
+    auto end = g + 1;
+    while (end != order.end() && inside(*end, group))
+        ++end;
+    order.insert(end, block.begin(), block.end());
+    for (size_t i = 0; i < order.size(); ++i)
+        if (const int from = fSession.trackOf(order[i]); from != static_cast<int>(i))
+            fSession.moveTrack(from, static_cast<int>(i));
+}
+
+QString MainWindow::findEffect(BusKind kind) const
+{
+    // the user's own first (FabFilter, Valhalla, Waves...), then free ones, then anything named like it
+    static const QStringList reverbs{QStringLiteral("Pro-R"), QStringLiteral("Valhalla"), QStringLiteral("RVerb"), QStringLiteral("TrueVerb"),
+                                     QStringLiteral("H-Reverb"), QStringLiteral("Abbey Road"), QStringLiteral("Raum"), QStringLiteral("Dragonfly"),
+                                     QStringLiteral("MVerb"), QStringLiteral("GVerb"), QStringLiteral("Reverb"), QStringLiteral("Verb")};
+    static const QStringList delays{QStringLiteral("Timeless"), QStringLiteral("ValhallaDelay"), QStringLiteral("H-Delay"), QStringLiteral("SuperTap"),
+                                    QStringLiteral("EchoBoy"), QStringLiteral("Replika"), QStringLiteral("Ping"), QStringLiteral("Delay"),
+                                    QStringLiteral("Echo")};
+    static const QRegularExpression notAnEffect(QStringLiteral("allpass|comb|fractional|delay line|delayorama|sampler"),
+                                                QRegularExpression::CaseInsensitiveOption);
+    for (const QString& name : kind == BusKind::Reverb ? reverbs : delays)
+        for (const chost::PluginEntry& p : fPlugins)
+        {
+            const QString pluginName = QString::fromStdString(p.name);
+            if (!p.isSynth && p.audioIns > 0 && p.audioOuts > 0 && pluginName.contains(name, Qt::CaseInsensitive) &&
+                !pluginName.contains(notAnEffect))
+                return QString::fromStdString(p.spec);
+        }
+    return {};
+}
+
+void MainWindow::makeWet(uint plugin)
+{
+    // on an effect bus the dry sound is already in the tracks' own channels
+    for (const chost::ParamInfo& p : fHost.parameters(plugin))
+    {
+        if (p.isOutput)
+            continue;
+        const QString name = QString::fromStdString(p.name).toLower().trimmed();
+        if (name == QLatin1String("mix") || name == QLatin1String("dry/wet") || name == QLatin1String("wet/dry") ||
+            name == QLatin1String("drywet") || name == QLatin1String("dry wet") || name == QLatin1String("wet") || name.startsWith(QLatin1String("mix ")))
+            fHost.setParameter(plugin, p.index, p.max);
+        else if (name.contains(QLatin1String("dry")) && !name.contains(QLatin1String("wet")))
+            fHost.setParameter(plugin, p.index, p.min);
+    }
+}
+
+int MainWindow::addBus(BusKind kind, const std::vector<int>& members, const QString& name)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    QString base = !name.isEmpty() ? name
+                   : kind == BusKind::Group ? QStringLiteral("编组")
+                   : kind == BusKind::Reverb ? QStringLiteral("混响")
+                                             : QStringLiteral("延迟");
+    QString text = base;
+    for (int n = 2; std::any_of(tracks.begin(), tracks.end(), [&](const chost::Track& t) { return QString::fromStdString(t.name) == text; }); ++n)
+        text = QStringLiteral("%1 %2").arg(base).arg(n);
+    std::vector<chost::Uid> uids;
+    for (int m : members)
+        if (m >= 0 && m < static_cast<int>(tracks.size()))
+            uids.push_back(tracks[static_cast<size_t>(m)].uid);
+
+    const int added = fSession.addTrack(text.toStdString(), chost::TrackKind::Bus);
+    if (added < 0)
+    {
+        showError(QStringLiteral("无法添加%1：%2").arg(text, QString::fromStdString(fSession.lastError())));
+        return -1;
+    }
+    const chost::Uid bus = fSession.tracks()[static_cast<size_t>(added)].uid;
+    QString note;
+    if (kind == BusKind::Group)
+    {
+        // the group goes where its first track was, its tracks under it
+        int first = added;
+        for (chost::Uid uid : uids)
+            first = std::min(first, fSession.trackOf(uid));
+        fSession.moveTrack(added, first);
+        for (chost::Uid uid : uids)
+        {
+            fSession.setOutput(fSession.trackOf(uid), bus);
+            placeInGroup(fSession.trackOf(uid), bus);
+        }
+    }
+    else
+    {
+        const QString spec = findEffect(kind);
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        if (!spec.isEmpty() && fSession.addInsert(fSession.trackOf(bus), spec.toStdString()))
+        {
+            const chost::Track& t = fSession.tracks()[static_cast<size_t>(fSession.trackOf(bus))];
+            makeWet(t.inserts.back());
+            note = QStringLiteral("用的是 %1，可以在插入效果里换成别的").arg(QString::fromStdString(fHost.slot(t.inserts.back()).name));
+        }
+        else
+        {
+            note = kind == BusKind::Reverb ? QStringLiteral("没找到混响插件：在这条效果轨的插入效果里加一个")
+                                           : QStringLiteral("没找到延迟插件：在这条效果轨的插入效果里加一个");
+        }
+        QApplication::restoreOverrideCursor();
+        for (chost::Uid uid : uids)
+            fSession.setSend(fSession.trackOf(uid), bus, kDefaultSend);
+    }
+    const int index = fSession.trackOf(bus);
+    fSelected = index;
+    refreshTracks();
+    fHistory->record(kind == BusKind::Group ? QStringLiteral("添加编组") : QStringLiteral("添加效果轨"));
+    statusBar()->showMessage(note.isEmpty() ? QStringLiteral("已添加 %1").arg(text) : QStringLiteral("已添加 %1：%2").arg(text, note), 8000);
+    return index;
+}
+
+bool MainWindow::setTrackOutput(int track, int bus)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (track < 0 || track >= static_cast<int>(tracks.size()))
+        return false;
+    const chost::Uid to = bus >= 0 && bus < static_cast<int>(tracks.size()) ? tracks[static_cast<size_t>(bus)].uid : 0;
+    if (bus >= 0 && to == 0)
+        return false;
+    if (tracks[static_cast<size_t>(track)].output == to)
+        return true;
+    if (!fSession.setOutput(track, to))
+    {
+        showError(QStringLiteral("不能这样接：%1").arg(fSession.trackOf(to) >= 0 && fSession.tracks()[static_cast<size_t>(fSession.trackOf(to))].kind == chost::TrackKind::Bus
+                                                          ? QStringLiteral("这个编组的声音本来就要经过这条轨，会绕成一个圈")
+                                                          : QStringLiteral("只能输出到编组或效果轨")));
+        return false;
+    }
+    const chost::Uid moved = tracks[static_cast<size_t>(track)].uid;
+    if (to != 0)
+        placeInGroup(track, to);
+    fSelected = fSession.trackOf(moved);
+    refreshTracks();
+    fHistory->record(QStringLiteral("输出到 %1").arg(to ? QString::fromStdString(fSession.tracks()[static_cast<size_t>(fSession.trackOf(to))].name)
+                                                     : QStringLiteral("Stereo Out")));
+    return true;
+}
+
+bool MainWindow::setTrackSend(int track, int bus, float level)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (track < 0 || track >= static_cast<int>(tracks.size()) || bus < 0 || bus >= static_cast<int>(tracks.size()))
+        return false;
+    const chost::Uid to = tracks[static_cast<size_t>(bus)].uid;
+    const QString busName = QString::fromStdString(tracks[static_cast<size_t>(bus)].name);
+    const std::vector<chost::Send>& sends = tracks[static_cast<size_t>(track)].sends;
+    const bool exists = std::any_of(sends.begin(), sends.end(), [to](const chost::Send& x) { return x.bus == to; });
+    if (level < 0.0f)
+    {
+        if (!exists || !fSession.removeSend(track, to))
+            return false;
+        refreshTracks();
+        fHistory->record(QStringLiteral("去掉发送到 %1").arg(busName));
+        return true;
+    }
+    if (!fSession.setSend(track, to, level))
+    {
+        showError(QStringLiteral("不能这样发送：%1").arg(tracks[static_cast<size_t>(bus)].kind == chost::TrackKind::Bus
+                                                            ? QStringLiteral("这条效果轨的声音本来就要经过这条轨，会绕成一个圈")
+                                                            : QStringLiteral("只能发送到效果轨或编组")));
+        return false;
+    }
+    if (exists)
+    {
+        // a drag of the send knob is one step
+        fHistory->record(QStringLiteral("发送量"), QStringLiteral("send %1 %2").arg(track).arg(to));
+        return true;
+    }
+    refreshTracks();
+    fHistory->record(QStringLiteral("发送到 %1").arg(busName));
+    return true;
+}
+
+void MainWindow::setFolded(int track, bool folded)
+{
+    fSession.setFolded(track, folded);
+    if (folded && fSelected >= 0 && fSelected != track && depthOf(fSelected) > 0)
+    {
+        // the selection doesn't stay on a track that is out of sight
+        const chost::Uid group = fSession.tracks()[static_cast<size_t>(track)].uid;
+        if (fSession.feeds(fSession.tracks()[static_cast<size_t>(fSelected)].uid, group))
+            fSelected = track;
+    }
+    refreshTracks();
+}
+
+void MainWindow::foldGroups()
+{
+    for (size_t i = 0; i < fSession.tracks().size(); ++i)
+        if (fSession.tracks()[i].kind == chost::TrackKind::Bus)
+            fSession.setFolded(static_cast<int>(i), true);
+    refreshTracks();
+}
+
+void MainWindow::addBusMenu(QMenu* menu, int track)
+{
+    const std::vector<int> members = track >= 0 ? std::vector<int>{track} : std::vector<int>{};
+    menu->addAction(track >= 0 ? QStringLiteral("放进新编组（文件夹）") : QStringLiteral("添加编组轨（文件夹）"), this,
+                    [this, members] { addBus(BusKind::Group, members); });
+    menu->addAction(track >= 0 ? QStringLiteral("发送到新的混响效果轨") : QStringLiteral("添加混响效果轨"), this,
+                    [this, members] { addBus(BusKind::Reverb, members); });
+    menu->addAction(track >= 0 ? QStringLiteral("发送到新的延迟效果轨") : QStringLiteral("添加延迟效果轨"), this,
+                    [this, members] { addBus(BusKind::Delay, members); });
+}
+
+void MainWindow::outputMenu(int track, const QPoint& globalPos)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (track < 0 || track >= static_cast<int>(tracks.size()))
+        return;
+    const chost::Track& t = tracks[static_cast<size_t>(track)];
+    QMenu menu;
+    QAction* master = menu.addAction(QStringLiteral("Stereo Out（总输出）"), this, [this, track] { setTrackOutput(track, -1); });
+    master->setCheckable(true);
+    master->setChecked(t.output == 0);
+    for (size_t b = 0; b < tracks.size(); ++b)
+    {
+        if (tracks[b].kind != chost::TrackKind::Bus || static_cast<int>(b) == track)
+            continue;
+        QAction* a = menu.addAction(QString::fromStdString(tracks[b].name), this, [this, track, b] { setTrackOutput(track, static_cast<int>(b)); });
+        a->setCheckable(true);
+        a->setChecked(t.output == tracks[b].uid);
+        a->setEnabled(!fSession.feeds(tracks[b].uid, t.uid));
+    }
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("放进新编组（文件夹）"), this, [this, track] { addBus(BusKind::Group, {track}); });
+    menu.exec(globalPos);
+}
+
+void MainWindow::sendMenu(int track, int slot, const QPoint& globalPos)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (track < 0 || track >= static_cast<int>(tracks.size()))
+        return;
+    const chost::Track& t = tracks[static_cast<size_t>(track)];
+    const chost::Send* current = slot < static_cast<int>(t.sends.size()) ? &t.sends[static_cast<size_t>(slot)] : nullptr;
+    QMenu menu;
+    const int currentBus = current ? fSession.trackOf(current->bus) : -1;
+    const float level = current ? current->level : kDefaultSend;
+    bool any = false;
+    for (size_t b = 0; b < tracks.size(); ++b)
+    {
+        if (tracks[b].kind != chost::TrackKind::Bus || static_cast<int>(b) == track)
+            continue;
+        const bool sending = std::any_of(t.sends.begin(), t.sends.end(), [&](const chost::Send& x) { return x.bus == tracks[b].uid; });
+        QAction* a = menu.addAction(QString::fromStdString(tracks[b].name), this, [this, track, b, currentBus, level] {
+            if (currentBus >= 0)
+                setTrackSend(track, currentBus, -1.0f); // switched over: the old send goes
+            setTrackSend(track, static_cast<int>(b), level);
+        });
+        a->setCheckable(true);
+        a->setChecked(static_cast<int>(b) == currentBus);
+        a->setEnabled(static_cast<int>(b) != currentBus && !sending && !fSession.feeds(tracks[b].uid, t.uid) && t.output != tracks[b].uid);
+        any = true;
+    }
+    if (any)
+        menu.addSeparator();
+    menu.addAction(QStringLiteral("新建混响效果轨"), this, [this, track] { addBus(BusKind::Reverb, {track}); });
+    menu.addAction(QStringLiteral("新建延迟效果轨"), this, [this, track] { addBus(BusKind::Delay, {track}); });
+    if (currentBus >= 0)
+    {
+        menu.addSeparator();
+        menu.addAction(QStringLiteral("去掉这个发送"), this, [this, track, currentBus] { setTrackSend(track, currentBus, -1.0f); });
+    }
+    menu.exec(globalPos);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2758,7 +3157,7 @@ int MainWindow::testUndo(const QString& insertSpec)
     auto live = [this] {
         size_t n = 1;
         for (const chost::Track& t : fSession.tracks())
-            n += 1 + (t.source >= 0) + (t.instrument >= 0) + t.inserts.size();
+            n += 1 + (t.source >= 0) + (t.instrument >= 0) + t.inserts.size() + t.sends.size();
         return n;
     };
     QUndoStack* stack = fHistory->stack();
@@ -2792,6 +3191,21 @@ int MainWindow::testUndo(const QString& insertSpec)
     states.push_back(fSession.state());
     renameSelectedTrack(QStringLiteral("renamed"));
     states.push_back(fSession.state());
+    // buses: an effect bus with a send, the send's knob dragged, a group, then the effect bus removed
+    const int fx = addBus(BusKind::Group, {}, QStringLiteral("FX"));
+    states.push_back(fSession.state());
+    check(setTrackSend(0, fx, 0.5f), "send added");
+    states.push_back(fSession.state());
+    setTrackSend(0, fx, 0.4f);
+    setTrackSend(0, fx, 0.3f); // a drag: one step
+    states.push_back(fSession.state());
+    check(addBus(BusKind::Group, {0}) == 0, "group above its track");
+    states.push_back(fSession.state());
+    check(fSession.tracks()[1].output == fSession.tracks()[0].uid && fSession.tracks()[1].sends.size() == 1, "the track is in the group, still sending");
+    selectTrack(2);
+    removeSelectedTrack();
+    states.push_back(fSession.state());
+    check(fSession.tracks()[1].sends.empty(), "a removed bus takes the sends to it along");
     check(stack->count() - base == static_cast<int>(states.size()) - 1, "one step per change");
 
     for (int i = static_cast<int>(states.size()) - 2; i >= 0; --i)
@@ -2803,7 +3217,7 @@ int MainWindow::testUndo(const QString& insertSpec)
         }
     }
     check(fSession.state() == states.front(), "everything undone");
-    check(fHost.pluginCount() == live() + 1, "the removed insert is kept aside for redo");
+    check(fHost.pluginCount() == live() + 3, "the removed insert and the two buses are kept aside for redo");
     for (size_t i = 1; i < states.size(); ++i)
     {
         stack->redo();

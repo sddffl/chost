@@ -177,6 +177,31 @@ reopened = call("get_project")
 check([m["name"] for m in reopened["markers"]] == ["前奏", "副歌"] and "_编辑" in reopened["tracks"][2]["file"],
       "markers and the edited clip are saved with the project")
 
+# buses: an effect bus the audio track sends to, then a group holding both audio tracks
+reverb = call("add_bus", kind="reverb", tracks=[0], name="Room")
+project = call("get_project")
+room = reverb["track"]
+check(project["tracks"][room]["kind"] == "bus" and project["tracks"][0]["sends"][0]["bus"] == room
+      and abs(project["tracks"][0]["sends"][0]["level_db"] + 10) < 0.1, "track 0 sends to the Room bus at -10 dB")
+call("set_send", track=0, bus=room, level_db=-6)
+check(abs(call("get_project")["tracks"][0]["sends"][0]["level_db"] + 6) < 0.1, "send level changed")
+call("set_send", track=0, bus=0, expect_error=True)  # not a bus
+group = call("add_bus", kind="group", tracks=[0, 1])
+project = call("get_project")
+g = group["track"]
+members = [i for i, t in enumerate(project["tracks"]) if t.get("output") == g]
+check(len(members) == 2 and members == [g + 1, g + 2], "both audio tracks in the group, right under it")
+call("set_output", track=g, bus=members[0], expect_error=True)  # an audio track is no bus
+call("set_output", track=members[0], bus=-1)
+check("output" not in call("get_project")["tracks"][members[0]], "back to Stereo Out")
+call("undo")
+room = [i for i, t in enumerate(call("get_project")["tracks"]) if t["name"] == "Room"][0]
+check(room == 4, "the Room bus moved down one, below the group")
+call("set_send", track=room, bus=room, expect_error=True)  # a bus can't feed itself
+call("set_send", track=g, bus=room, remove=True, expect_error=True)  # the group sends nothing
+call("set_output", track=room, bus=g)
+call("set_send", track=g, bus=room, expect_error=True)  # Room goes into the group: a loop
+
 proc.stdin.close()
 proc.wait(timeout=10)
 print("MCP TEST PASSED")

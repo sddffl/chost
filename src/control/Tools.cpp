@@ -198,6 +198,33 @@ static const char* const kTools = R"json([
   }, "required": ["index"]}
 },
 {
+  "name": "add_bus",
+  "description": "Adds a group or an effect bus. A group (a folder in the arrangement) takes the given tracks' faders in, so they can be turned up and down, muted or processed together (drums, backing vocals). A reverb or delay bus gets the user's best reverb or delay plugin (fully wet) and a send from each given track, so several tracks share one room. Returns the new bus's index. Undoable.",
+  "inputSchema": {"type": "object", "properties": {
+    "kind": {"type": "string", "enum": ["group", "reverb", "delay"]},
+    "tracks": {"type": "array", "items": {"type": "integer"}, "description": "Tracks to put in the group, or to send to the effect."},
+    "name": {"type": "string", "description": "Default 编组, 混响 or 延迟."}
+  }, "required": ["kind"]}
+},
+{
+  "name": "set_output",
+  "description": "Where a track's fader goes: a group (bus index from get_project) or, with bus -1, Stereo Out.",
+  "inputSchema": {"type": "object", "properties": {
+    "track": {"type": "integer", "minimum": 0},
+    "bus": {"type": "integer", "minimum": -1}
+  }, "required": ["track", "bus"]}
+},
+{
+  "name": "set_send",
+  "description": "Sends a copy of a track's sound, after its fader, to a bus (a reverb or delay bus), or changes how much; remove: true takes the send away. A track has at most 2 sends.",
+  "inputSchema": {"type": "object", "properties": {
+    "track": {"type": "integer", "minimum": 0},
+    "bus": {"type": "integer", "minimum": 0},
+    "level_db": {"type": "number", "maximum": 2, "description": "Default -10."},
+    "remove": {"type": "boolean"}
+  }, "required": ["track", "bus"]}
+},
+{
   "name": "get_parameters",
   "description": "The parameters of a plugin: an insert of a track, or its instrument. Each has its index, name, unit, range, default and current value; outputs (meters) are marked.",
   "inputSchema": {"type": "object", "properties": {

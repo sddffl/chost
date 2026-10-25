@@ -274,6 +274,9 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
         }
         return list;
     };
+    auto kindName = [](chost::TrackKind kind) {
+        return kind == chost::TrackKind::Audio ? QStringLiteral("audio") : kind == chost::TrackKind::Bus ? QStringLiteral("bus") : QStringLiteral("instrument");
+    };
     auto modified = [&] { return w.fHistory->isModified() && !tracks.empty(); };
     auto okTrack = [&](int track) {
         return QJsonObject{{QStringLiteral("track"), track}, {QStringLiteral("name"), QString::fromStdString(tracks[track].name)}};
@@ -313,7 +316,7 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                 const chost::Track& t = tracks[i];
                 QJsonObject o{{QStringLiteral("index"), static_cast<int>(i)},
                               {QStringLiteral("name"), QString::fromStdString(t.name)},
-                              {QStringLiteral("kind"), t.kind == chost::TrackKind::Audio ? QStringLiteral("audio") : QStringLiteral("instrument")},
+                              {QStringLiteral("kind"), kindName(t.kind)},
                               {QStringLiteral("volume_db"), toDb(t.volume)},
                               {QStringLiteral("muted"), t.muted},
                               {QStringLiteral("solo"), t.solo}};
@@ -340,6 +343,14 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                     inserts.append(insert);
                 }
                 o.insert(QStringLiteral("inserts"), inserts);
+                if (session.trackOf(t.output) >= 0)
+                    o.insert(QStringLiteral("output"), session.trackOf(t.output));
+                QJsonArray sends;
+                for (const chost::Send& send : t.sends)
+                    if (session.trackOf(send.bus) >= 0)
+                        sends.append(QJsonObject{{QStringLiteral("bus"), session.trackOf(send.bus)}, {QStringLiteral("level_db"), toDb(send.level)}});
+                if (!sends.isEmpty())
+                    o.insert(QStringLiteral("sends"), sends);
                 list.append(o);
             }
             const double rate = host.sampleRate();
@@ -425,7 +436,7 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                 && std::none_of(fJobs.begin(), fJobs.end(), [](const Job& job) { return job.kind == QLatin1String("analyze") && !job.done; }))
                 startJob(QStringLiteral("analyze"), QString::fromStdString(tracks[track].name), nullptr);
             QJsonObject o = okTrack(track);
-            o.insert(QStringLiteral("kind"), tracks[track].kind == chost::TrackKind::Audio ? QStringLiteral("audio") : QStringLiteral("instrument"));
+            o.insert(QStringLiteral("kind"), kindName(tracks[track].kind));
             if (tracks[track].instrument >= 0)
                 o.insert(QStringLiteral("instrument"), QString::fromStdString(host.slot(static_cast<uint>(tracks[track].instrument)).name));
             result = o;
@@ -879,6 +890,74 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             w.refreshMarkers();
             w.fHistory->record(what);
             result = QJsonObject{{QStringLiteral("markers"), markersJson()}};
+        }
+        else if (tool == QLatin1String("add_bus"))
+        {
+            const QString kindText = args.value(QStringLiteral("kind")).toString();
+            const MainWindow::BusKind kind = kindText == QLatin1String("reverb") ? MainWindow::BusKind::Reverb
+                                             : kindText == QLatin1String("delay") ? MainWindow::BusKind::Delay
+                                                                                  : MainWindow::BusKind::Group;
+            if (kindText != QLatin1String("group") && kindText != QLatin1String("reverb") && kindText != QLatin1String("delay"))
+                throw Fail{QStringLiteral("kind: group, reverb or delay")};
+            std::vector<int> members;
+            for (const QJsonValue& v : args.value(QStringLiteral("tracks")).toArray())
+            {
+                const int t = v.toInt(-1);
+                if (t < 0 || t >= static_cast<int>(tracks.size()))
+                    throw Fail{QStringLiteral("there is no track %1").arg(v.toInt(-1))};
+                members.push_back(t);
+            }
+            const int bus = w.addBus(kind, members, args.value(QStringLiteral("name")).toString().trimmed());
+            check();
+            if (bus < 0)
+                throw Fail{QStringLiteral("the bus was not added")};
+            QJsonObject o = okTrack(bus);
+            QJsonArray inserts;
+            for (uint id : tracks[bus].inserts)
+                inserts.append(pluginJson(id));
+            o.insert(QStringLiteral("inserts"), inserts);
+            if (kind != MainWindow::BusKind::Group && tracks[bus].inserts.empty())
+                o.insert(QStringLiteral("warning"), QStringLiteral("no %1 plugin was found: add one with add_insert").arg(kindText));
+            o.insert(QStringLiteral("note"), QStringLiteral("track indices changed: read get_project again"));
+            result = o;
+        }
+        else if (tool == QLatin1String("set_output"))
+        {
+            const int track = trackArg();
+            const int bus = args.value(QStringLiteral("bus")).toInt(-1);
+            if (bus >= 0 && (bus >= static_cast<int>(tracks.size()) || tracks[bus].kind != chost::TrackKind::Bus))
+                throw Fail{QStringLiteral("track %1 is not a bus: add_bus makes one").arg(bus)};
+            const chost::Uid uid = tracks[track].uid;
+            const bool done = w.setTrackOutput(track, bus);
+            check();
+            if (!done)
+                throw Fail{QStringLiteral("the output was not changed")};
+            QJsonObject o = okTrack(session.trackOf(uid));
+            o.insert(QStringLiteral("note"), QStringLiteral("a track put in a group moves under it: read get_project again"));
+            result = o;
+        }
+        else if (tool == QLatin1String("set_send"))
+        {
+            const int track = trackArg();
+            const int bus = args.value(QStringLiteral("bus")).toInt(-1);
+            if (bus < 0 || bus >= static_cast<int>(tracks.size()) || tracks[bus].kind != chost::TrackKind::Bus)
+                throw Fail{QStringLiteral("track %1 is not a bus: add_bus makes one").arg(bus)};
+            const bool remove = args.value(QStringLiteral("remove")).toBool();
+            const bool exists = std::any_of(tracks[track].sends.begin(), tracks[track].sends.end(),
+                                            [&](const chost::Send& x) { return x.bus == tracks[bus].uid; });
+            if (!remove && !exists && tracks[track].sends.size() >= static_cast<size_t>(ChannelStrip::kSendSlots))
+                throw Fail{QStringLiteral("track %1 already has %2 sends").arg(track).arg(ChannelStrip::kSendSlots)};
+            if (remove && !exists)
+                throw Fail{QStringLiteral("track %1 sends nothing to %2").arg(track).arg(bus)};
+            const float level = remove ? -1.0f : fromDb(static_cast<float>(args.value(QStringLiteral("level_db")).toDouble(-10.0)));
+            const bool done = w.setTrackSend(track, bus, level);
+            check();
+            if (!done)
+                throw Fail{QStringLiteral("the send was not changed")};
+            QJsonObject o = okTrack(track);
+            if (!remove)
+                o.insert(QStringLiteral("level_db"), std::round(toDb(level) * 10.0) / 10.0);
+            result = o;
         }
         else if (tool == QLatin1String("get_parameters"))
         {

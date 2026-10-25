@@ -305,7 +305,7 @@ static int cmdMix(int argc, char* argv[])
     std::string savePath, openPath;
     std::vector<std::string> files, midis, inserts, volumes;
     std::vector<int> mutes, solos, removeTracks;
-    std::vector<std::string> removeInserts;
+    std::vector<std::string> removeInserts, buses, outputs, sends;
     double seconds = 3.0;
 
     for (int i = 0; i < argc; ++i)
@@ -324,6 +324,9 @@ static int cmdMix(int argc, char* argv[])
         else if (arg == "--open" && hasValue)     openPath = argv[++i];
         else if (arg == "--remove-track" && hasValue)  removeTracks.push_back(std::stoi(argv[++i]));
         else if (arg == "--remove-insert" && hasValue) removeInserts.emplace_back(argv[++i]);
+        else if (arg == "--bus" && hasValue)      buses.emplace_back(argv[++i]);
+        else if (arg == "--output" && hasValue)   outputs.emplace_back(argv[++i]);
+        else if (arg == "--send" && hasValue)     sends.emplace_back(argv[++i]);
         else
         {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
@@ -388,6 +391,33 @@ static int cmdMix(int argc, char* argv[])
             ok = false;
         }
     }
+    for (const std::string& name : buses)
+        if (session.addTrack(name, chost::TrackKind::Bus) < 0)
+        {
+            std::fprintf(stderr, "bus %s: %s\n", name.c_str(), session.lastError().c_str());
+            ok = false;
+        }
+    // T=B: track T's fader feeds bus B (track indices); T=B:LEVEL: track T sends to bus B
+    auto busUid = [&](const std::string& text) -> chost::Uid {
+        const int b = std::stoi(text);
+        return b >= 0 && b < static_cast<int>(session.tracks().size()) ? session.tracks()[static_cast<size_t>(b)].uid : 0;
+    };
+    for (const std::string& o : outputs)
+        if (const auto eq = o.find('='); eq == std::string::npos || !session.setOutput(std::stoi(o.substr(0, eq)), busUid(o.substr(eq + 1))))
+        {
+            std::fprintf(stderr, "output %s: %s\n", o.c_str(), session.lastError().c_str());
+            ok = false;
+        }
+    for (const std::string& snd : sends)
+    {
+        const auto eq = snd.find('='), colon = snd.find(':');
+        if (eq == std::string::npos || colon == std::string::npos ||
+            !session.setSend(std::stoi(snd.substr(0, eq)), busUid(snd.substr(eq + 1, colon - eq - 1)), std::stof(snd.substr(colon + 1))))
+        {
+            std::fprintf(stderr, "send %s: %s\n", snd.c_str(), session.lastError().c_str());
+            ok = false;
+        }
+    }
     for (const std::string& ins : inserts)
     {
         const auto colon = ins.find(':');
@@ -413,8 +443,9 @@ static int cmdMix(int argc, char* argv[])
     for (size_t i = 0; i < session.tracks().size(); ++i)
     {
         const chost::Track& t = session.tracks()[i];
-        std::printf("track %zu \"%s\": source=%d instrument=%d inserts=%zu fader=%u file=%s\n", i, t.name.c_str(),
-                    t.source, t.instrument, t.inserts.size(), t.fader, t.file.c_str());
+        std::printf("track %zu \"%s\": source=%d instrument=%d inserts=%zu fader=%u file=%s%s output=%d sends=%zu\n", i, t.name.c_str(),
+                    t.source, t.instrument, t.inserts.size(), t.fader, t.file.c_str(), t.kind == chost::TrackKind::Bus ? " bus" : "",
+                    session.trackOf(t.output), t.sends.size());
     }
 
     host.relocate(0);
@@ -769,6 +800,7 @@ int main(int argc, char* argv[])
                  "  chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]...\n"
                  "                [--mute T] [--solo T]\n"
                  "                [--volume T=V] [--remove-track T] [--remove-insert T:I]\n"
+                 "                [--bus NAME]... [--output T=BUS] [--send T=BUS:LEVEL]\n"
                  "                [--seconds S] [--save F.chost] [--open F.chost]\n"
                  "  chost-cli chords [--key \"A minor\"] [--sevenths] [--after CHORD]\n"
                  "  chost-cli chords [--key K] --progression \"C G | Am F\" [--output F.mid] [--pattern block|arpeggio|rhythm] [--tempo BPM]\n"

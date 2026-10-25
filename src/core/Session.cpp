@@ -95,6 +95,8 @@ void Session::removePlugin(uint id)
         shift(t.fader);
         for (uint& insert : t.inserts)
             shift(insert);
+        for (Send& send : t.sends)
+            shift(send.gain);
     };
     shift(fMaster);
     for (Track& t : fTracks)
@@ -157,6 +159,8 @@ bool Session::setPlayer(int track, const std::string& path)
             ++t.fader;
             for (uint& insert : t.inserts)
                 ++insert;
+            for (Send& send : t.sends)
+                ++send.gain;
         };
         ++fMaster;
         for (Track& t : fTracks)
@@ -252,6 +256,8 @@ bool Session::removeTrack(int track)
 {
     if (!valid(track))
         return false;
+    if (fTracks[track].kind == TrackKind::Bus)
+        dropSends(fTracks[track].uid);
     if (fKeepRemoved)
     {
         parkTrack(track);
@@ -261,6 +267,8 @@ bool Session::removeTrack(int track)
     // remove from the highest id down so the remaining ids stay valid while we go
     std::vector<uint> ids = fTracks[track].inserts;
     ids.push_back(fTracks[track].fader);
+    for (const Send& send : fTracks[track].sends)
+        ids.push_back(send.gain);
     for (int optional : {fTracks[track].source, fTracks[track].instrument})
         if (optional >= 0)
             ids.push_back(static_cast<uint>(optional));
@@ -286,6 +294,131 @@ bool Session::moveTrack(int from, int to)
     fTracks.erase(fTracks.begin() + from);
     fTracks.insert(fTracks.begin() + to, t);
     return true;
+}
+
+int Session::trackOf(Uid uid) const
+{
+    for (size_t i = 0; i < fTracks.size(); ++i)
+        if (uid != 0 && fTracks[i].uid == uid)
+            return static_cast<int>(i);
+    return -1;
+}
+
+bool Session::isBus(Uid uid) const
+{
+    const int i = trackOf(uid);
+    return i >= 0 && fTracks[static_cast<size_t>(i)].kind == TrackKind::Bus;
+}
+
+bool Session::feeds(Uid from, Uid to) const
+{
+    if (from == to)
+        return true;
+    const int i = trackOf(from);
+    if (i < 0)
+        return false;
+    const Track& t = fTracks[static_cast<size_t>(i)];
+    if (t.output != 0 && feeds(t.output, to))
+        return true;
+    return std::any_of(t.sends.begin(), t.sends.end(), [&](const Send& send) { return feeds(send.bus, to); });
+}
+
+bool Session::setOutput(int track, Uid bus)
+{
+    if (!valid(track))
+        return false;
+    if (bus != 0 && (!isBus(bus) || feeds(bus, fTracks[track].uid)))
+    {
+        fError = isBus(bus) ? "a bus can't feed itself" : "not a bus";
+        return false;
+    }
+    fTracks[track].output = bus;
+    reroute();
+    return true;
+}
+
+bool Session::addSendGain(Track& t, Uid bus, float level)
+{
+    Send send;
+    send.bus = bus;
+    send.level = level;
+    if (!addFader(t.name + " send", send.gain))
+        return false;
+    t.sends.push_back(send);
+    return true;
+}
+
+bool Session::setSend(int track, Uid bus, float level)
+{
+    if (!valid(track))
+        return false;
+    level = std::clamp(level, 0.0f, 1.27f);
+    for (Send& send : fTracks[track].sends)
+        if (send.bus == bus)
+        {
+            send.level = level;
+            applyGains();
+            return true;
+        }
+    if (!isBus(bus) || feeds(bus, fTracks[track].uid))
+    {
+        fError = isBus(bus) ? "a bus can't feed itself" : "not a bus";
+        return false;
+    }
+    if (!addSendGain(fTracks[track], bus, level))
+        return false;
+    reroute();
+    return true;
+}
+
+bool Session::removeSend(int track, Uid bus)
+{
+    if (!valid(track))
+        return false;
+    std::vector<Send>& sends = fTracks[track].sends;
+    const auto it = std::find_if(sends.begin(), sends.end(), [bus](const Send& send) { return send.bus == bus; });
+    if (it == sends.end())
+        return false;
+    const uint gain = it->gain;
+    sends.erase(it);
+    removePlugin(gain); // a send has no state of its own: undo makes a new one
+    reroute();
+    return true;
+}
+
+void Session::dropSends(Uid bus)
+{
+    std::vector<uint> gains;
+    for (Track& t : fTracks)
+    {
+        if (t.output == bus)
+            t.output = 0;
+        for (size_t i = 0; i < t.sends.size();)
+            if (t.sends[i].bus == bus)
+            {
+                gains.push_back(t.sends[i].gain);
+                t.sends.erase(t.sends.begin() + static_cast<long>(i));
+            }
+            else
+                ++i;
+    }
+    std::sort(gains.rbegin(), gains.rend());
+    for (uint gain : gains)
+        removePlugin(gain);
+}
+
+void Session::setFolded(int track, bool folded)
+{
+    if (valid(track))
+        fTracks[track].folded = folded;
+}
+
+uint Session::inputOf(const Track& bus) const
+{
+    for (uint insert : bus.inserts)
+        if (fHost.slot(insert).active)
+            return insert;
+    return bus.fader;
 }
 
 bool Session::addInsert(int track, const std::string& spec)
@@ -364,10 +497,21 @@ void Session::setMasterVolume(float volume)
 void Session::applyGains()
 {
     const bool anySolo = std::any_of(fTracks.begin(), fTracks.end(), [](const Track& t) { return t.solo; });
+    // a soloed bus solos what feeds it (a group its tracks, an effect the tracks sending to it), as in
+    // Cubase; buses themselves stay open, so a soloed track keeps its reverb
+    std::vector<Uid> soloedBuses;
+    for (const Track& t : fTracks)
+        if (t.solo && t.kind == TrackKind::Bus)
+            soloedBuses.push_back(t.uid);
+    auto soloed = [&](const Track& t) {
+        return t.solo || std::any_of(soloedBuses.begin(), soloedBuses.end(), [&](Uid bus) { return feeds(t.uid, bus); });
+    };
     for (const Track& t : fTracks)
     {
-        const bool silent = t.muted || (anySolo && !t.solo);
+        const bool silent = t.muted || (anySolo && t.kind != TrackKind::Bus && !soloed(t));
         fHost.setVolume(t.fader, silent ? 0.0f : t.volume);
+        for (const Send& send : t.sends)
+            fHost.setVolume(send.gain, send.level); // after the fader: a silent track sends nothing
     }
     if (fReady)
         fHost.setVolume(fMaster, fMasterVolume);
@@ -405,9 +549,18 @@ void Session::reroute()
             if (fHost.slot(insert).active)
                 chain.push_back(insert);
         chain.push_back(t.fader);
-        chain.push_back(fMaster);
+        const int out = trackOf(t.output);
+        chain.push_back(out >= 0 ? inputOf(fTracks[static_cast<size_t>(out)]) : fMaster);
         for (size_t i = 0; i + 1 < chain.size(); ++i)
             fHost.connect(chain[i], chain[i + 1]);
+        for (const Send& send : t.sends)
+        {
+            const int bus = trackOf(send.bus);
+            if (bus < 0)
+                continue;
+            fHost.connect(t.fader, send.gain);
+            fHost.connect(send.gain, inputOf(fTracks[static_cast<size_t>(bus)]));
+        }
     }
     fHost.connectToOutput(fMaster);
     applyGains();
@@ -428,6 +581,10 @@ void Session::reroute()
 //   file <audio or MIDI file path>
 //   instrument <id>              only on instrument tracks, -1 without an instrument
 //   role <stem id>               optional
+//   bus                          a bus (group or effect return) instead of an audio track
+//   output <track>               the bus the fader feeds, by its index in the file; else the master
+//   send <track> <level> <id>    a send to a bus, its level and gain plugin
+//   folded                       a bus whose tracks are hidden in the arrangement
 
 void Session::setMarkers(std::vector<Marker> markers)
 {
@@ -484,6 +641,15 @@ bool Session::save(const std::string& path)
             out << "instrument-spec " << t.instrumentSpec << "\n";
         if (t.colour)
             out << "colour " << t.colour << "\n";
+        if (t.kind == TrackKind::Bus)
+            out << "bus\n";
+        if (trackOf(t.output) >= 0)
+            out << "output " << trackOf(t.output) << "\n";
+        for (const Send& send : t.sends)
+            if (trackOf(send.bus) >= 0)
+                out << "send " << trackOf(send.bus) << " " << send.level << " " << send.gain << "\n";
+        if (t.folded)
+            out << "folded\n";
     }
     return static_cast<bool>(out);
 }
@@ -505,6 +671,11 @@ bool Session::load(const std::string& path)
     double tempo = 120.0;
     std::string songKey;
     std::vector<Marker> markers;
+    struct Links {
+        int output = -1;
+        std::vector<std::pair<int, Send>> sends; // to a track index
+    };
+    std::vector<Links> links;
     while (std::getline(in, line))
     {
         const auto space = line.find(' ');
@@ -536,6 +707,7 @@ bool Session::load(const std::string& path)
             for (uint& id : t.inserts)
                 fields >> id;
             tracks.push_back(t);
+            links.emplace_back();
         }
         else if (key == "name" && !tracks.empty())
             tracks.back().name = rest;
@@ -552,6 +724,19 @@ bool Session::load(const std::string& path)
             tracks.back().instrumentSpec = rest;
         else if (key == "colour" && !tracks.empty())
             fields >> tracks.back().colour;
+        else if (key == "bus" && !tracks.empty())
+            tracks.back().kind = TrackKind::Bus;
+        else if (key == "output" && !tracks.empty())
+            fields >> links.back().output;
+        else if (key == "send" && !tracks.empty())
+        {
+            int to = -1;
+            Send send;
+            if (fields >> to >> send.level >> send.gain)
+                links.back().sends.emplace_back(to, send);
+        }
+        else if (key == "folded" && !tracks.empty())
+            tracks.back().folded = true;
     }
 
     const fs::path carlaPath = fs::u8path(path).parent_path() / fs::u8path(carlaFile);
@@ -577,6 +762,22 @@ bool Session::load(const std::string& path)
         fUids.push_back(fNextUid++);
     for (Track& t : fTracks)
         t.uid = fNextUid++;
+    const int pluginCount = static_cast<int>(fHost.pluginCount());
+    auto busUid = [&](int index) -> Uid {
+        return index >= 0 && index < static_cast<int>(fTracks.size()) && fTracks[static_cast<size_t>(index)].kind == TrackKind::Bus
+                   ? fTracks[static_cast<size_t>(index)].uid
+                   : 0;
+    };
+    for (size_t i = 0; i < fTracks.size(); ++i)
+    {
+        fTracks[i].output = busUid(links[i].output);
+        for (auto& [to, send] : links[i].sends)
+            if (busUid(to) != 0 && static_cast<int>(send.gain) < pluginCount)
+            {
+                send.bus = busUid(to);
+                fTracks[i].sends.push_back(send);
+            }
+    }
     // plugins no track uses: set aside for undo when the session was saved, nothing to keep now
     std::vector<bool> used(fHost.pluginCount(), false);
     auto use = [&](int id) {
@@ -591,6 +792,8 @@ bool Session::load(const std::string& path)
         use(static_cast<int>(t.fader));
         for (uint insert : t.inserts)
             use(static_cast<int>(insert));
+        for (const Send& send : t.sends)
+            use(static_cast<int>(send.gain));
     }
     for (int id = static_cast<int>(used.size()) - 1; id >= 0; --id)
         if (!used[static_cast<size_t>(id)])
@@ -607,7 +810,7 @@ bool SessionState::TrackState::operator==(const TrackState& o) const
 {
     return uid == o.uid && kind == o.kind && name == o.name && role == o.role && file == o.file && instrumentSpec == o.instrumentSpec
            && instrument == o.instrument && inserts == o.inserts && insertsActive == o.insertsActive && volume == o.volume
-           && muted == o.muted && solo == o.solo && colour == o.colour;
+           && muted == o.muted && solo == o.solo && colour == o.colour && output == o.output && sends == o.sends;
 }
 
 bool SessionState::operator==(const SessionState& o) const
@@ -641,6 +844,9 @@ SessionState Session::state() const
         ts.muted = t.muted;
         ts.solo = t.solo;
         ts.colour = t.colour;
+        ts.output = t.output;
+        for (const Send& send : t.sends)
+            ts.sends.push_back({send.bus, send.level});
         s.tracks.push_back(ts);
     }
     return s;
@@ -672,6 +878,8 @@ void Session::parkTrack(int track)
             fHost.setActive(static_cast<uint>(id), false);
     for (uint insert : t.inserts)
         fHost.setActive(insert, false);
+    for (const Send& send : t.sends)
+        fHost.setActive(send.gain, false);
     fParkedTracks.push_back(t);
 }
 
@@ -700,6 +908,8 @@ void Session::restore(const SessionState& s)
         for (int id : {parked->source, parked->instrument, static_cast<int>(parked->fader)})
             if (id >= 0)
                 fHost.setActive(static_cast<uint>(id), true);
+        for (const Send& send : parked->sends)
+            fHost.setActive(send.gain, true);
         ordered.push_back(*parked);
         fParkedTracks.erase(parked);
     }
@@ -742,6 +952,44 @@ void Session::restore(const SessionState& s)
                 park(insert);
         t.inserts = inserts;
     }
+    // outputs and sends: a send's gain plugin has no state, so the ones not wanted go and missing ones are made
+    std::vector<uint> unwanted;
+    for (Track& t : fTracks)
+    {
+        const auto ts = std::find_if(s.tracks.begin(), s.tracks.end(), [&](const SessionState::TrackState& x) { return x.uid == t.uid; });
+        t.output = trackOf(ts->output) >= 0 ? ts->output : 0;
+        for (size_t i = 0; i < t.sends.size();)
+        {
+            const auto want = std::find_if(ts->sends.begin(), ts->sends.end(), [&](const auto& x) { return x.bus == t.sends[i].bus; });
+            if (want == ts->sends.end() || trackOf(want->bus) < 0)
+            {
+                unwanted.push_back(t.sends[i].gain);
+                t.sends.erase(t.sends.begin() + static_cast<long>(i));
+                continue;
+            }
+            t.sends[i].level = want->level;
+            ++i;
+        }
+    }
+    std::sort(unwanted.rbegin(), unwanted.rend());
+    for (uint gain : unwanted)
+        removePlugin(gain);
+    for (Track& t : fTracks)
+    {
+        const auto ts = std::find_if(s.tracks.begin(), s.tracks.end(), [&](const SessionState::TrackState& x) { return x.uid == t.uid; });
+        std::vector<Send> ordered;
+        for (const auto& want : ts->sends)
+        {
+            if (trackOf(want.bus) < 0)
+                continue;
+            const auto have = std::find_if(t.sends.begin(), t.sends.end(), [&](const Send& x) { return x.bus == want.bus; });
+            if (have != t.sends.end())
+                ordered.push_back(*have);
+            else if (Track probe; addSendGain(probe, want.bus, want.level))
+                ordered.push_back(probe.sends.back());
+        }
+        t.sends = ordered;
+    }
     fMasterVolume = s.masterVolume;
     setTempo(s.tempo);
     fKey = s.key;
@@ -775,6 +1023,8 @@ void Session::dropUnused(const std::vector<const SessionState*>& keep)
             if (optional >= 0)
                 doomed.push_back(static_cast<uint>(optional));
         doomed.insert(doomed.end(), t.inserts.begin(), t.inserts.end());
+        for (const Send& send : t.sends)
+            doomed.push_back(send.gain);
         fParkedTracks.erase(fParkedTracks.begin() + static_cast<long>(i));
     }
     for (size_t i = 0; i < fParkedPlugins.size();)

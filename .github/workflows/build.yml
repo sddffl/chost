@@ -56,6 +56,14 @@ jobs:
           mix --track a.wav --track b.wav --track a.wav --insert 0:$gain --insert 2:$gain --remove-track 1 | grep -q 'master peak 0.97'
           mix --track a.wav --track b.wav --insert 1:$gain --mute 0 --volume 1=0.5 --save s.chost | grep -q 'master peak 0.24'
           mix --open s.chost | grep -q 'master peak 0.24'
+          # buses: a group at half volume; a send doubling a muted-free track; a solo keeps its reverb; saved and reopened
+          mix --track a.wav --track b.wav --bus 组 --output 0=2 --output 1=2 --volume 2=0.5 | grep -q 'master peak 0.4[89]'
+          mix --track a.wav --track b.wav --bus 混响 --send 0=2:1.0 --mute 1 | grep -q 'master peak 0.97'
+          mix --track a.wav --track b.wav --bus 混响 --send 0=2:1.0 --solo 1 | grep -q 'master peak 0.4[89]'
+          mix --track a.wav --track b.wav --bus 混响 --send 0=2:1.0 --solo 2 | grep -q 'master peak 0.97'
+          mix --track a.wav --track b.wav --bus 组 --bus 混响 --output 0=2 --send 0=3:1 --mute 1 --save bus.chost | grep -q 'master peak 0.97'
+          mix --open bus.chost | grep -q 'master peak 0.97'
+          if ./build/chost-cli mix --driver PulseAudio --seconds 1 --track a.wav --bus A --bus B --output 1=2 --output 2=1 2>&1 | grep -q 'feed itself'; then :; else exit 1; fi
           # the same session mixed down offline by chost-render, faster than real time
           ./build/chost-render --session s.chost --output render.wav --seconds 3 | tee render.log
           grep -P '^DONE render\.wav\t3\.00\t-12\.\d' render.log
@@ -111,6 +119,8 @@ jobs:
           if ./build/chost-cli clip --input a.wav --output x.wav --edit stretch; then exit 1; fi
           QT_QPA_PLATFORM=offscreen ./build/chost --file a.wav --file b.wav --marker "0.5:主歌" --marker "1.5:副歌" --range 0.6:1.2 \
               --screenshot markers.png --screenshot-delay 1500
+          QT_QPA_PLATFORM=offscreen ./build/chost --file a.wav --file b.wav --file a.wav --group 1,2 --reverb 1,3 \
+              --screenshot buses.png --screenshot-delay 1500
           echo '{"mcpServers": {"other": {"command": "x"}}}' > claude.json
           QT_QPA_PLATFORM=offscreen ./build/chost --claude-config claude.json | grep -q 'CLAUDE CONFIG WRITTEN'
           python3 -c "import json; s = json.load(open('claude.json'))['mcpServers']; assert 'other' in s and s['chost']['command'].endswith('chost-mcp')"
@@ -211,6 +221,8 @@ jobs:
             scale*.png
             score*.png
             master*.png
+            markers.png
+            buses.png
             arrange*.png
             tune*.png
 

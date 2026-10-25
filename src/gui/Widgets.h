@@ -53,6 +53,10 @@ public:
         bool muted = false;
         bool solo = false;
         QColor colour;
+        int depth = 0;             // how many groups the track sits in, for the indent
+        bool folder = false;       // a group or effect bus: no clip, can fold its tracks away
+        bool folded = false;
+        bool hidden = false;       // inside a folded group
     };
 
     struct Marker {
@@ -80,6 +84,7 @@ signals:
     void clipDoubleClicked(int lane);
     void muteToggled(int lane, bool muted);
     void soloToggled(int lane, bool solo);
+    void foldToggled(int lane, bool folded);
     void trackMenuRequested(int lane, const QPoint& globalPos); // lane -1: the empty area below the tracks
     void filesDropped(const QStringList& paths, int lane);       // lane -1: make new tracks
     void rangeChanged(double start, double end);
@@ -113,6 +118,7 @@ private:
     QRect laneRect(int lane) const;
     QRect muteRect(int lane) const;
     QRect soloRect(int lane) const;
+    QRect foldRect(int lane) const;
     void updateScrollRange();
     void paintLane(QPainter& p, int lane);
     double snap(double seconds, Qt::KeyboardModifiers modifiers) const; // to the beat, unless Shift
@@ -122,6 +128,8 @@ private:
     QScrollBar* fScroll = nullptr;
     QScrollBar* fVScroll = nullptr;
     std::vector<Lane> fLanes;
+    std::vector<int> fRows; // per lane, its row on screen; -1 when hidden in a folded group
+    int fRowCount = 0;
     int fSelected = -1;
     double fLongest = 0.0;
     double fPlayhead = 0.0;
@@ -177,7 +185,15 @@ class ChannelStrip : public QWidget {
 public:
     ChannelStrip(const QString& name, bool isOutput, QWidget* parent = nullptr);
 
+    struct SendSlot {
+        QString bus;        // the bus's name
+        float level = 0.0f; // carla volume
+    };
+    static constexpr int kSendSlots = 2;
+
     InsertRack* inserts() const { return fInserts; }
+    void setSends(const std::vector<SendSlot>& sends);
+    void setOutput(const QString& name); // where the fader goes: "Stereo Out" or a group
     void setLevels(float left, float right);
     void setVolume(float volume);  // carla volume, 0 .. 1.27
     void setMuted(bool muted);
@@ -191,6 +207,9 @@ signals:
     void muteToggled(bool muted);
     void soloToggled(bool solo);
     void selected();
+    void sendMenuRequested(int slot, const QPoint& globalPos);
+    void sendLevelChanged(int slot, float level);
+    void outputMenuRequested(const QPoint& globalPos);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -205,4 +224,11 @@ private:
     LevelMeter* fMeter = nullptr;
     QLabel* fVolumeLabel = nullptr;
     QToolButton* fName = nullptr;
+    QToolButton* fOutput = nullptr;
+    struct SendRow {
+        QToolButton* name = nullptr;
+        QSlider* level = nullptr;
+    };
+    std::vector<SendRow> fSendRows;
+    int fSendCount = 0;
 };

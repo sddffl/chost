@@ -89,6 +89,15 @@ public:
     void setRange(double start, double end);                  // the timeline's selection; equal: none
     double playhead() const;
     std::vector<int> scoreTracks();           // the MIDI tracks sheet music can be made of (not drums)
+
+    // buses. A group takes the tracks' faders in (and shows them as a folder); an effect bus gets a reverb
+    // or a delay from the user's plugins and a send from each track. The new bus's index, -1 on error.
+    enum class BusKind { Group, Reverb, Delay };
+    int addBus(BusKind kind, const std::vector<int>& tracks = {}, const QString& name = {});
+    bool setTrackOutput(int track, int bus);            // bus -1: Stereo Out
+    bool setTrackSend(int track, int bus, float level); // adds the send or sets its level; level < 0 removes it
+    void setFolded(int track, bool folded);
+    void foldGroups(); // every group folded (tests)
     int testUndo(const QString& insertSpec);  // the self test of undo and redo (CI), 0 when it passes
 
 protected:
@@ -152,6 +161,13 @@ private:
     void refreshMarkers();
     QString editFolder() const;                  // where edited clips are written
     void dropFiles(const QStringList& paths, int track);
+    void outputMenu(int track, const QPoint& globalPos);
+    void sendMenu(int track, int slot, const QPoint& globalPos);
+    void addBusMenu(QMenu* menu, int track);             // new group / effect bus entries
+    QString findEffect(BusKind kind) const;              // the user's best reverb or delay, empty without one
+    void makeWet(uint plugin);                           // a plugin on an effect bus plays only the effect
+    void placeInGroup(int track, chost::Uid group);       // display order: right after the group's tracks
+    int depthOf(int track) const;                        // how many groups a track sits in
 
     void addInsert();
     void editInsert(int index);
