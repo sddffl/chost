@@ -689,7 +689,7 @@ static int cmdScore(int argc, char* argv[])
                 score.meter.beats, score.meter.beatType, score.measures, score.parts.size(), notes, rests, ties, triplets);
     for (const chost::ScorePart& part : score.parts)
         std::printf("PART %s\t%s\n", part.name.c_str(),
-                    part.staves.size() > 1 ? "grand" : part.staves[0].clef == chost::Clef::Treble ? "treble" : "bass");
+                    part.drums ? "drums" : part.staves.size() > 1 ? "grand" : part.staves[0].clef == chost::Clef::Treble ? "treble" : "bass");
     if (!output.empty())
     {
         FILE* f = std::fopen(output.c_str(), "wb");

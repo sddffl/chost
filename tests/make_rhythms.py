@@ -3,6 +3,7 @@
     python make_rhythms.py triplets.mid   4/4 with beats of triplets among straight eighths and sixteenths
     python make_rhythms.py waltz.mid      3/4
     python make_rhythms.py jig.mid        6/8
+    python make_rhythms.py drums.mid      a rock beat on channel 10: kick, snare, hi-hat, a crash and a tom fill
 """
 import random
 import struct
@@ -29,6 +30,18 @@ PATTERNS = {
     ],
 }
 
+# kick on 1 and 3, snare on 2 and 4, eighths on the hi-hat; then a fill on the toms and a crash
+DRUMS = []
+for bar in range(2):
+    for eighth in range(8):
+        DRUMS.append((bar * 4 + eighth / 2, 0.1, 42))
+    for beat in (0, 2):
+        DRUMS.append((bar * 4 + beat, 0.1, 36))
+    for beat in (1, 3):
+        DRUMS.append((bar * 4 + beat, 0.1, 38))
+DRUMS += [(8 + i / 4, 0.1, (50, 50, 48, 48, 45, 45, 43, 43)[i]) for i in range(8)] + [(10, 0.1, 49), (10, 0.1, 36)]
+PATTERNS["drums"] = DRUMS
+
 
 def var(n):
     out = bytearray()
@@ -40,14 +53,14 @@ def var(n):
     return bytes(out)
 
 
-def write(path, notes):
+def write(path, notes, channel=0):
     events = []
     for start, length, pitch in notes:
         jitter = lambda: random.uniform(-0.03, 0.03)  # about 15 ms at 120 bpm
         on = max(0, round((start + jitter()) * TPQ))
         off = round((start + length * 0.92 + jitter()) * TPQ)
-        events.append((on, 1, bytes([0x90, pitch, 90])))
-        events.append((off, 0, bytes([0x80, pitch, 0])))
+        events.append((on, 1, bytes([0x90 | channel, pitch, 90])))
+        events.append((off, 0, bytes([0x80 | channel, pitch, 0])))
     events.sort()
     track = bytearray(b"\x00\xff\x51\x03\x07\xa1\x20")  # 120 bpm
     now = 0
@@ -61,4 +74,5 @@ def write(path, notes):
 
 
 path = sys.argv[1]
-write(path, PATTERNS[path.rsplit("/", 1)[-1].split(".")[0]])
+name = path.rsplit("/", 1)[-1].split(".")[0]
+write(path, PATTERNS[name], 9 if name == "drums" else 0)

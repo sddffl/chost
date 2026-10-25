@@ -30,7 +30,7 @@ public:
 
     ScoreDialog(const QString& title, const QString& key, double tempo, const QString& folder, QWidget* parent = nullptr);
 
-    void setTracks(const std::vector<Track>& tracks, int selected); // MIDI tracks, drums left out
+    void setTracks(const std::vector<Track>& tracks, int selected); // MIDI tracks, drums too
     void setSong(const QString& key, double tempo);
     void setChosen(const std::vector<int>& tracks); // session indices to put in the score (tests)
     bool setMeter(const QString& meter);            // "6/8"; false when it isn't one the score writes

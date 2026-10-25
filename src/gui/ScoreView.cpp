@@ -30,7 +30,8 @@ constexpr double kTitleRoom = 22.0; // above the first system of page 1
 constexpr double kFooter = 8.0;
 
 // SMuFL code points
-constexpr char32_t kGClef = 0xE050, kFClef = 0xE062, kBrace = 0xE000;
+constexpr char32_t kGClef = 0xE050, kFClef = 0xE062, kPercussionClef = 0xE069, kBrace = 0xE000;
+constexpr char32_t kHeadXWhole = 0xE0A7, kHeadXHalf = 0xE0A8, kHeadXBlack = 0xE0A9;
 constexpr char32_t kHeadWhole = 0xE0A2, kHeadHalf = 0xE0A3, kHeadBlack = 0xE0A4;
 constexpr char32_t kFlat = 0xE260, kNatural = 0xE261, kSharp = 0xE262;
 constexpr char32_t kRestWhole = 0xE4E3, kRestHalf = 0xE4E4, kRestQuarter = 0xE4E5, kRest8th = 0xE4E6, kRest16th = 0xE4E7;
@@ -110,7 +111,7 @@ void tie(QPainter& p, double x1, double x2, double y, bool up)
 // a note's place on its staff: half spaces above the middle line
 int position(const chost::ScoreNote& n, chost::Clef clef)
 {
-    return n.octave * 7 + n.step - (clef == chost::Clef::Treble ? 34 : 22);
+    return n.octave * 7 + n.step - (clef == chost::Clef::Bass ? 22 : 34); // drums sit as on a treble staff
 }
 
 // room for a note's length (ticks): longer notes get more, but far less than in proportion
@@ -371,6 +372,8 @@ const chost::ScoreEvent* ScoreEngraving::eventAt(int staff, int measure, int sta
 bool ScoreEngraving::stemUp(int staff, int measure, const chost::ScoreEvent& e) const
 {
     const chost::ScoreStaff& st = fScore.parts[static_cast<size_t>(fStaves[static_cast<size_t>(staff)].part)].staves[static_cast<size_t>(fStaves[static_cast<size_t>(staff)].index)];
+    if (st.clef == chost::Clef::Percussion)
+        return true; // drums: one voice, stems up
     // a beamed group goes one way, decided by its notes furthest from the middle line
     int sum = 0;
     auto add = [&](const chost::ScoreEvent& ev) {
@@ -478,17 +481,23 @@ void ScoreEngraving::paintSystem(QPainter& p, const System& s) const
     {
         const chost::ScoreStaff& staff = fScore.parts[static_cast<size_t>(fStaves[st].part)].staves[static_cast<size_t>(fStaves[st].index)];
         const bool treble = staff.clef == chost::Clef::Treble;
+        const bool drums = staff.clef == chost::Clef::Percussion;
         const double m = middle(st);
         double x = left + 0.8 * kSpace;
         p.setPen(Qt::black);
-        glyph(p, treble ? kGClef : kFClef, x, m + (treble ? 1.0 : -1.0) * kSpace);
+        if (drums)
+            glyph(p, kPercussionClef, x + 0.6 * kSpace, m);
+        else
+            glyph(p, treble ? kGClef : kFClef, x, m + (treble ? 1.0 : -1.0) * kSpace);
         x += 3.2 * kSpace;
         static const int sharps[7] = {4, 1, 5, 2, -1, 3, 0};
         static const int flats[7] = {0, 3, -1, 2, -2, 1, -3};
         for (int i = 0; i < std::abs(fScore.fifths); ++i)
         {
+            // a drum staff has no key signature, but keeps the time signature in line with the others
             const int pos = (fScore.fifths > 0 ? sharps : flats)[i] - (treble ? 0 : 2);
-            glyph(p, fScore.fifths > 0 ? kSharp : kFlat, x, m - pos * kSpace / 2.0);
+            if (!drums)
+                glyph(p, fScore.fifths > 0 ? kSharp : kFlat, x, m - pos * kSpace / 2.0);
             x += 1.05 * kSpace;
         }
         if (first)
@@ -681,7 +690,7 @@ void ScoreEngraving::paintStaffMeasure(QPainter& p, const System& s, int staffIn
             for (int l = -6; l >= pos; l -= 2)
                 line(p, hx - 0.4 * kSpace, yOf(l), hx + headWidth + 0.4 * kSpace, yOf(l), kLedger);
             p.setPen(Qt::black);
-            glyph(p, head, hx, y);
+            glyph(p, n.cross ? (whole ? kHeadXWhole : display >= 24 ? kHeadXHalf : kHeadXBlack) : head, hx, y);
             if (n.accidental)
             {
                 const char32_t sign = n.alter > 0 ? kSharp : n.alter < 0 ? kFlat : kNatural;

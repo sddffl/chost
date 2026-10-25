@@ -19,7 +19,7 @@
 
 namespace chost {
 
-enum class Clef { Treble, Bass };
+enum class Clef { Treble, Bass, Percussion };
 
 struct Meter {
     int beats = 4;
@@ -45,6 +45,7 @@ struct ScoreNote {
     bool tieStart = false;
     bool tieStop = false;
     bool accidental = false; // show its sharp, flat or natural
+    bool cross = false;      // drums: an x notehead (cymbals, hi-hat, side stick)
 };
 
 struct ScoreEvent {
@@ -69,6 +70,7 @@ struct ScoreStaff {
 struct ScorePart {
     std::string name;
     int program = -1;
+    bool drums = false;             // one percussion staff, the drums where drum notation puts them
     std::vector<ScoreStaff> staves; // two for a grand staff
 };
 
@@ -97,12 +99,17 @@ struct ScoreOptions {
     bool triplets = true; // beats played in triplets written so
 };
 
-// Drum parts are left out (they need a percussion staff). Empty, with error, when nothing is left.
+// A part's drum notes (MIDI channel 10) go on a percussion staff of their own. Empty, with error, when
+// there's nothing to write.
 Score makeScore(const std::vector<ScoreInput>& parts, const ScoreOptions& options, std::string& error);
 
 std::string musicXml(const Score& score);
 
 int keyFifths(const Key& key);
+// A General MIDI drum's place on a percussion staff (step and octave as on a treble staff) and notehead:
+// kick in the bottom space, snare in the third, hi-hat and cymbals above the staff as crosses. step -1
+// for sounds a drum kit staff doesn't have.
+ScoreNote drumNote(int pitch);
 // A note's letter, alteration and octave as the key spells it.
 ScoreNote spellPitch(int pitch, const Key& key);
 // how long an event looks: a triplet eighth (4) is drawn as an eighth (6)

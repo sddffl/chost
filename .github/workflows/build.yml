@@ -187,7 +187,7 @@ jobs:
           ai-env/bin/pip install -q music21
           ai-env/bin/python tests/check_score.py midi/song.musicxml 3
           # time signatures and triplets, from melodies played a little unevenly
-          for f in triplets waltz jig; do python3 tests/make_rhythms.py $f.mid; done
+          for f in triplets waltz jig drums; do python3 tests/make_rhythms.py $f.mid; done
           ./build/chost-cli score --midi triplets.mid --key "C major" --output triplets.musicxml | tee rhythm.log
           ./build/chost-cli score --midi waltz.mid --key "C major" --time 3/4 --output waltz.musicxml | tee -a rhythm.log
           ./build/chost-cli score --midi jig.mid --key "G major" --time 6/8 --output jig.musicxml | tee -a rhythm.log
@@ -197,6 +197,12 @@ jobs:
           ai-env/bin/python tests/check_score.py triplets.musicxml 1 4
           ai-env/bin/python tests/check_score.py waltz.musicxml 1 0
           ai-env/bin/python tests/check_score.py jig.musicxml 1 0
+          # a drum part on a percussion staff, with the melody
+          ./build/chost-cli score --midi drums.mid --midi triplets.mid --key "C major" --output drums.musicxml | tee drums.log
+          grep -P '^PART drums.mid\tdrums$' drums.log
+          grep -q '<sign>percussion</sign>' drums.musicxml
+          grep -q '<notehead>x</notehead>' drums.musicxml
+          ai-env/bin/python tests/check_score.py drums.musicxml 2 4
           QT_QPA_PLATFORM=offscreen ./build/chost --file jig.mid --score $PWD/jig.pdf --score-time 6/8 --screenshot jig.png \
               --screenshot-delay 2500 | grep -q 'SCORE WRITTEN .*(1 pages)'
 

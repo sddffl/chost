@@ -39,7 +39,7 @@ ScoreDialog::ScoreDialog(const QString& title, const QString& key, double tempo,
     auto* form = new QFormLayout;
     fList = new QListWidget;
     fList->setMaximumHeight(150);
-    fList->setToolTip(QStringLiteral("勾上的 MIDI 轨道写进同一份谱子，一轨一行（钢琴这类音域宽的会用大谱表）；鼓轨暂时不能出谱"));
+    fList->setToolTip(QStringLiteral("勾上的 MIDI 轨道写进同一份谱子，一轨一行（钢琴这类音域宽的会用大谱表）；鼓轨写成打击乐谱"));
     form->addRow(QStringLiteral("轨道"), fList);
     fTitle = new QLineEdit(title);
     form->addRow(QStringLiteral("标题"), fTitle);

@@ -174,11 +174,18 @@ ScoreStaff layOut(const std::vector<Timed>& timeline, Clef clef, int bars, const
                 const bool last = at + (offset - inBar) + length >= t.end;
                 for (int pitch : t.pitches)
                 {
-                    ScoreNote n = spellPitch(pitch, key);
+                    ScoreNote n = clef == Clef::Percussion ? drumNote(pitch) : spellPitch(pitch, key);
                     n.tieStop = !first;
                     n.tieStart = !last;
+                    // drums: two sounds in one place (two kicks) are one note
+                    if (clef == Clef::Percussion &&
+                        std::any_of(e.notes.begin(), e.notes.end(), [&](const ScoreNote& o) { return o.step == n.step && o.octave == n.octave; }))
+                        continue;
                     e.notes.push_back(n);
                 }
+                if (clef == Clef::Percussion)
+                    std::sort(e.notes.begin(), e.notes.end(),
+                              [](const ScoreNote& a, const ScoreNote& b) { return a.octave * 7 + a.step < b.octave * 7 + b.step; });
                 staff.measures[static_cast<size_t>(bar)].events.push_back(e);
                 offset += length;
                 first = false;
@@ -201,7 +208,7 @@ ScoreStaff layOut(const std::vector<Timed>& timeline, Clef clef, int bars, const
             {
                 const auto where = std::make_pair(n.step, n.octave);
                 const int current = state.count(where) ? state[where] : signatureAlter(n.step, fifths);
-                n.accidental = !n.tieStop && n.alter != current;
+                n.accidental = clef != Clef::Percussion && !n.tieStop && n.alter != current;
                 state[where] = n.alter;
             }
 
@@ -302,6 +309,33 @@ int keyFifths(const Key& key)
     return fifths[major];
 }
 
+ScoreNote drumNote(int pitch)
+{
+    struct Place {
+        int pitch;
+        char step;
+        int octave;
+        bool cross;
+    };
+    static const Place places[] = {
+        {35, 'F', 4, false}, {36, 'F', 4, false}, {37, 'C', 5, true},  {38, 'C', 5, false}, {39, 'C', 5, true},  {40, 'C', 5, false},
+        {41, 'G', 4, false}, {42, 'G', 5, true},  {43, 'A', 4, false}, {44, 'D', 4, true},  {45, 'D', 5, false}, {46, 'G', 5, true},
+        {47, 'D', 5, false}, {48, 'E', 5, false}, {49, 'A', 5, true},  {50, 'E', 5, false}, {51, 'F', 5, true},  {52, 'A', 5, true},
+        {53, 'F', 5, true},  {54, 'E', 5, true},  {55, 'B', 5, true},  {56, 'E', 5, true},  {57, 'A', 5, true},  {59, 'F', 5, true},
+    };
+    ScoreNote n;
+    n.pitch = pitch;
+    n.step = -1;
+    for (const Place& p : places)
+        if (p.pitch == pitch)
+        {
+            n.step = static_cast<int>(std::string("CDEFGAB").find(p.step));
+            n.octave = p.octave;
+            n.cross = p.cross;
+        }
+    return n;
+}
+
 ScoreNote spellPitch(int pitch, const Key& key)
 {
     const Key k = key.valid ? key : Key{0, false, true};
@@ -398,29 +432,47 @@ Score makeScore(const std::vector<ScoreInput>& inputs, const ScoreOptions& optio
         const ScoreInput* input;
         std::vector<std::pair<int, std::pair<int, int>>> notes;
         std::set<int> tripletBeats; // beats (counted from the start) written as triplets
+        bool drums = false;         // the input's channel 10 notes, on a percussion staff
     };
     std::vector<Part> parts;
     std::vector<MidiNote> all;
     int end = 0;
     for (const ScoreInput& input : inputs)
+    for (bool drums : {false, true})
     {
-        Part part{&input, {}, {}};
+        Part part{&input, {}, {}, drums};
         std::vector<std::pair<double, double>> raw; // start, end in ticks
         std::vector<int> pitches;
         for (const MidiNote& n : input.clip.notes)
         {
-            if (n.channel == 9)
+            if ((n.channel == 9) != drums || (drums && drumNote(n.pitch).step < 0))
                 continue;
             raw.push_back({std::max(0.0, n.start * perSecond), std::max(0.0, n.end * perSecond)});
             pitches.push_back(n.pitch);
-            all.push_back(n);
+            if (!drums)
+                all.push_back(n);
         }
         if (raw.empty())
             continue;
 
-        // a note let go a little before the next one (or the bar line) is written as lasting until it,
-        // so detached playing doesn't fill the page with short rests
+        if (drums)
         {
+            // a drum hit has no length to speak of: it's written up to the next hit, at most to the end of its beat
+            std::vector<double> onsets;
+            for (const auto& r : raw)
+                onsets.push_back(r.first);
+            std::sort(onsets.begin(), onsets.end());
+            for (auto& [a, b] : raw)
+            {
+                const auto next = std::upper_bound(onsets.begin(), onsets.end(), a + 0.5);
+                const double beatEnd = std::ceil((a + 0.5) / pulse) * pulse;
+                b = next != onsets.end() ? std::min(*next, beatEnd) : beatEnd;
+            }
+        }
+        else
+        {
+            // a note let go a little before the next one (or the bar line) is written as lasting until it,
+            // so detached playing doesn't fill the page with short rests
             std::vector<double> onsets;
             for (const auto& r : raw)
                 onsets.push_back(r.first);
@@ -478,7 +530,7 @@ Score makeScore(const std::vector<ScoreInput>& inputs, const ScoreOptions& optio
     }
     if (parts.empty())
     {
-        error = "there are no notes to write (drum parts are left out)";
+        error = "there are no notes to write";
         return score;
     }
 
@@ -493,6 +545,24 @@ Score makeScore(const std::vector<ScoreInput>& inputs, const ScoreOptions& optio
         ScorePart out;
         out.name = part.input->name;
         out.program = part.input->clip.program;
+        out.drums = part.drums;
+        const bool both = std::any_of(parts.begin(), parts.end(), [&](const Part& p) { return p.input == part.input && p.drums != part.drums; });
+        if (part.drums && both)
+            out.name += " (drums)";
+
+        // the part's beats of triplets, bar by bar
+        std::vector<std::vector<bool>> tripletMap(static_cast<size_t>(score.measures), std::vector<bool>(static_cast<size_t>(barTicks / pulse), false));
+        for (int beat : part.tripletBeats)
+            if (beat / (barTicks / pulse) < score.measures)
+                tripletMap[static_cast<size_t>(beat / (barTicks / pulse))][static_cast<size_t>(beat % (barTicks / pulse))] = true;
+        if (part.drums)
+        {
+            out.program = -1;
+            out.staves.push_back(layOut(chordsAndRests(part.notes, score.measures, barTicks), Clef::Percussion, score.measures, score.key, 0,
+                                        meter, tripletMap));
+            score.parts.push_back(out);
+            continue;
+        }
 
         StaffMode mode = part.input->staff;
         if (mode == StaffMode::Auto)
@@ -510,11 +580,6 @@ Score makeScore(const std::vector<ScoreInput>& inputs, const ScoreOptions& optio
             const double count = static_cast<double>(part.notes.size());
             mode = single / count > 0.6 && grand < 0.5 * single ? StaffMode::Grand : treble <= bass ? StaffMode::Treble : StaffMode::Bass;
         }
-        // the part's beats of triplets, bar by bar
-        std::vector<std::vector<bool>> tripletMap(static_cast<size_t>(score.measures), std::vector<bool>(static_cast<size_t>(barTicks / pulse), false));
-        for (int beat : part.tripletBeats)
-            if (beat / (barTicks / pulse) < score.measures)
-                tripletMap[static_cast<size_t>(beat / (barTicks / pulse))][static_cast<size_t>(beat % (barTicks / pulse))] = true;
         if (mode == StaffMode::Grand)
         {
             std::vector<std::pair<int, std::pair<int, int>>> upper, lower;
@@ -547,7 +612,10 @@ std::string musicXml(const Score& score)
     {
         const ScorePart& part = score.parts[p];
         x << "    <score-part id=\"P" << p + 1 << "\"><part-name>" << escape(part.name) << "</part-name>";
-        if (part.program >= 0)
+        if (part.drums)
+            x << "<score-instrument id=\"P" << p + 1 << "-I1\"><instrument-name>Drumset</instrument-name></score-instrument><midi-instrument id=\"P"
+              << p + 1 << "-I1\"><midi-channel>10</midi-channel><midi-program>1</midi-program></midi-instrument>";
+        else if (part.program >= 0)
             x << "<score-instrument id=\"P" << p + 1 << "-I1\"><instrument-name>" << escape(part.name)
               << "</instrument-name></score-instrument><midi-instrument id=\"P" << p + 1 << "-I1\"><midi-channel>" << p % 9 + 1
               << "</midi-channel><midi-program>" << part.program + 1 << "</midi-program></midi-instrument>";
@@ -565,18 +633,20 @@ std::string musicXml(const Score& score)
             x << "    <measure number=\"" << m + 1 << "\">\n";
             if (m == 0)
             {
-                x << "      <attributes><divisions>12</divisions><key><fifths>" << score.fifths << "</fifths><mode>"
-                  << (score.key.minor ? "minor" : "major") << "</mode></key><time><beats>" << score.meter.beats << "</beats><beat-type>"
+                // a drum staff has no key signature
+                x << "      <attributes><divisions>12</divisions><key" << (part.drums ? " print-object=\"no\"" : "") << "><fifths>"
+                  << (part.drums ? 0 : score.fifths) << "</fifths><mode>" << (score.key.minor ? "minor" : "major") << "</mode></key><time><beats>" << score.meter.beats << "</beats><beat-type>"
                   << score.meter.beatType << "</beat-type></time>";
                 if (part.staves.size() > 1)
                     x << "<staves>" << part.staves.size() << "</staves>";
                 for (size_t s = 0; s < part.staves.size(); ++s)
                 {
-                    const bool treble = part.staves[s].clef == Clef::Treble;
+                    const Clef clef = part.staves[s].clef;
                     x << "<clef";
                     if (part.staves.size() > 1)
                         x << " number=\"" << s + 1 << "\"";
-                    x << "><sign>" << (treble ? "G" : "F") << "</sign><line>" << (treble ? 2 : 4) << "</line></clef>";
+                    x << "><sign>" << (clef == Clef::Treble ? "G" : clef == Clef::Bass ? "F" : "percussion") << "</sign><line>"
+                      << (clef == Clef::Bass ? 4 : clef == Clef::Treble ? 2 : 3) << "</line></clef>";
                 }
                 x << "</attributes>\n";
                 if (p == 0)
@@ -639,10 +709,18 @@ std::string musicXml(const Score& score)
                         else
                         {
                             const ScoreNote& n = e.notes[k];
-                            x << "<pitch><step>" << steps[n.step] << "</step>";
-                            if (n.alter != 0)
-                                x << "<alter>" << n.alter << "</alter>";
-                            x << "<octave>" << n.octave << "</octave></pitch>";
+                            if (part.drums)
+                            {
+                                x << "<unpitched><display-step>" << steps[n.step] << "</display-step><display-octave>" << n.octave
+                                  << "</display-octave></unpitched>";
+                            }
+                            else
+                            {
+                                x << "<pitch><step>" << steps[n.step] << "</step>";
+                                if (n.alter != 0)
+                                    x << "<alter>" << n.alter << "</alter>";
+                                x << "<octave>" << n.octave << "</octave></pitch>";
+                            }
                         }
                         x << "<duration>" << e.duration << "</duration>";
                         if (!e.rest)
@@ -666,6 +744,13 @@ std::string musicXml(const Score& score)
                         }
                         if (e.tuplet >= 0)
                             x << "<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>";
+                        if (part.drums && !e.rest)
+                        {
+                            if (displayLength(e) < 48)
+                                x << "<stem>up</stem>";
+                            if (e.notes[k].cross)
+                                x << "<notehead>x</notehead>";
+                        }
                         if (part.staves.size() > 1)
                             x << "<staff>" << s + 1 << "</staff>";
                         if (k == 0)

@@ -776,7 +776,7 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                 {
                     const int t = v.toInt(-1);
                     if (std::find(available.begin(), available.end(), t) == available.end())
-                        throw Fail{QStringLiteral("track %1 is not a MIDI track with notes (drum tracks can't be written as a score yet)").arg(t)};
+                        throw Fail{QStringLiteral("track %1 is not a MIDI track with notes (or has no notes)").arg(t)};
                     chosen.push_back(t);
                 }
             }
@@ -817,7 +817,7 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             QJsonArray parts;
             for (const chost::ScorePart& part : score.parts)
                 parts.append(QJsonObject{{QStringLiteral("name"), QString::fromStdString(part.name)},
-                                         {QStringLiteral("staff"), part.staves.size() > 1 ? QStringLiteral("grand")
+                                         {QStringLiteral("staff"), part.drums ? QStringLiteral("drums") : part.staves.size() > 1 ? QStringLiteral("grand")
                                                                    : part.staves[0].clef == chost::Clef::Treble ? QStringLiteral("treble")
                                                                                                                 : QStringLiteral("bass")}});
             QJsonObject o{{QStringLiteral("file"), path(file)}, {QStringLiteral("key"), QString::fromStdString(chost::keyName(score.key))},

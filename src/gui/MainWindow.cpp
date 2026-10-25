@@ -3117,7 +3117,7 @@ std::vector<int> MainWindow::scoreTracks()
     std::vector<int> list;
     const std::vector<chost::Track>& tracks = fSession.tracks();
     for (size_t i = 0; i < tracks.size(); ++i)
-        if (tracks[i].kind == chost::TrackKind::Instrument && !tracks[i].file.empty() && !isDrumTrack(static_cast<int>(i)))
+        if (tracks[i].kind == chost::TrackKind::Instrument && !tracks[i].file.empty())
             list.push_back(static_cast<int>(i));
     return list;
 }

@@ -157,10 +157,10 @@ static const char* const kTools = R"json([
 },
 {
   "name": "export_score",
-  "description": "Writes MIDI tracks as sheet music: a PDF (A4, to print or send) or MusicXML (for MuseScore, Sibelius, Finale, Dorico). Notes are quantized to sixteenths (or eighths), beats played as triplets are written as triplets, one voice per staff; wide parts like piano get a grand staff. Drum tracks are left out. The user can also do this in File > 出谱.",
+  "description": "Writes MIDI tracks as sheet music: a PDF (A4, to print or send) or MusicXML (for MuseScore, Sibelius, Finale, Dorico). Notes are quantized to sixteenths (or eighths), beats played as triplets are written as triplets, one voice per staff; wide parts like piano get a grand staff. Drum tracks are written on a percussion staff (kick, snare, toms, hi-hat and cymbals where drum notation puts them, cymbals as x noteheads). The user can also do this in File > 出谱.",
   "inputSchema": {"type": "object", "properties": {
     "path": {"type": "string", "description": "Absolute path ending in .pdf or .musicxml."},
-    "tracks": {"type": "array", "items": {"type": "integer"}, "description": "MIDI tracks, top to bottom; default every MIDI track that isn't drums."},
+    "tracks": {"type": "array", "items": {"type": "integer"}, "description": "MIDI tracks, top to bottom; default every MIDI track."},
     "title": {"type": "string", "description": "Default the project's name."},
     "key": {"type": "string", "description": "The key signature, e.g. \"A minor\"; default the song's key, else guessed from the notes."},
     "staff": {"type": "string", "enum": ["auto", "treble", "bass", "grand"], "description": "Default auto."},
