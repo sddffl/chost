@@ -25,4 +25,9 @@ double balanceTarget(const std::string& role, VocalStyle style);
 // fader would have to go past its top (+2 dB) everything comes down together, so the balance holds.
 std::vector<float> balanceVolumes(const std::vector<BalancePart>& parts, VocalStyle style, double reference = -18.0);
 
+// Pan positions (-1 left .. 1 right), parallel to roles, as a pop mix places them: vocals, kick, snare,
+// bass and whole drum kits in the centre; doubled parts (two guitars, backing vocals) spread to both
+// sides; a lone guitar on one side and the keys on the other; cymbals as the audience sees the kit.
+std::vector<float> autoPan(const std::vector<std::string>& roles);
+
 } // namespace chost

@@ -951,6 +951,7 @@ void MainWindow::refreshTracks()
         connectInsertRack(rack);
         connect(strip, &ChannelStrip::selected, this, [this, index] { selectTrack(index); });
         connect(strip, &ChannelStrip::volumeChanged, this, [this, index](float v) { setVolume(index, v); });
+        connect(strip, &ChannelStrip::panChanged, this, [this, index](float pan) { setPan(index, pan); });
         connect(strip, &ChannelStrip::muteToggled, this, [this, index](bool m) { setMuted(index, m); });
         connect(strip, &ChannelStrip::soloToggled, this, [this, index](bool s) { setSolo(index, s); });
         connect(strip, &ChannelStrip::outputMenuRequested, this, [this, index](const QPoint& at) { outputMenu(index, at); });
@@ -1086,6 +1087,7 @@ void MainWindow::refreshMixState()
             fStrips[i]->setMuted(tracks[i].muted);
             fStrips[i]->setSolo(tracks[i].solo);
             fStrips[i]->setVolume(tracks[i].volume);
+            fStrips[i]->setPan(tracks[i].pan);
             const int out = fSession.trackOf(tracks[i].output);
             fStrips[i]->setOutput(out >= 0 ? QString::fromStdString(tracks[static_cast<size_t>(out)].name) : QStringLiteral("Stereo Out"));
             std::vector<ChannelStrip::SendSlot> sends;
@@ -1883,6 +1885,12 @@ void MainWindow::setVolume(int track, float volume)
 {
     fSession.setVolume(track, volume);
     fHistory->record(QStringLiteral("音量"), QStringLiteral("volume %1").arg(track));
+}
+
+void MainWindow::setPan(int track, float pan)
+{
+    fSession.setPan(track, pan);
+    fHistory->record(QStringLiteral("声像"), QStringLiteral("pan %1").arg(track));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2994,16 +3002,22 @@ BalanceDialog* MainWindow::mixBalance(bool autoStart)
                     role = isDrumTrack(static_cast<int>(i)) ? QStringLiteral("drums") : guessRole(name + QLatin1Char(' ') + QFileInfo(QString::fromStdString(t.file)).completeBaseName());
                 if (role.isEmpty())
                     role = QStringLiteral("other");
-                list.push_back({t.uid, static_cast<int>(i), name, role, t.volume});
+                list.push_back({t.uid, static_cast<int>(i), name, role, t.volume, t.pan});
             }
             return list;
         };
-        auto apply = [this](const std::vector<std::pair<chost::Uid, float>>& volumes) {
+        auto apply = [this](const BalanceDialog::Changes& volumes, const BalanceDialog::Changes& pans) {
             for (const auto& [uid, volume] : volumes)
             {
                 const int track = fSession.trackOf(uid);
                 if (track >= 0)
                     fSession.setVolume(track, volume);
+            }
+            for (const auto& [uid, pan] : pans)
+            {
+                const int track = fSession.trackOf(uid);
+                if (track >= 0)
+                    fSession.setPan(track, pan);
             }
             refreshMixState();
             fHistory->record(QStringLiteral("AI 混音平衡"), QStringLiteral("ai-balance %1").arg(fBalanceRun));

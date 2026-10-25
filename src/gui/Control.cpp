@@ -319,6 +319,7 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                               {QStringLiteral("name"), QString::fromStdString(t.name)},
                               {QStringLiteral("kind"), kindName(t.kind)},
                               {QStringLiteral("volume_db"), toDb(t.volume)},
+                              {QStringLiteral("pan"), std::round(t.pan * 100.0) / 100.0},
                               {QStringLiteral("muted"), t.muted},
                               {QStringLiteral("solo"), t.solo}};
                 if (!t.role.empty())
@@ -493,6 +494,14 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                 w.setMuted(track, args.value(QStringLiteral("muted")).toBool());
             if (has("solo"))
                 w.setSolo(track, args.value(QStringLiteral("solo")).toBool());
+            if (has("pan"))
+            {
+                const double pan = args.value(QStringLiteral("pan")).toDouble();
+                if (pan < -1.0 || pan > 1.0)
+                    throw Fail{QStringLiteral("pan goes from -1 (left) to 1 (right)")};
+                w.setPan(track, static_cast<float>(pan));
+                w.refreshMixState();
+            }
             if (has("volume_db"))
             {
                 w.setVolume(track, fromDb(args.value(QStringLiteral("volume_db")).toDouble()));
@@ -503,6 +512,7 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             o.insert(QStringLiteral("volume_db"), toDb(tracks[track].volume));
             o.insert(QStringLiteral("muted"), tracks[track].muted);
             o.insert(QStringLiteral("solo"), tracks[track].solo);
+            o.insert(QStringLiteral("pan"), std::round(tracks[track].pan * 100.0) / 100.0);
             if (!tracks[track].role.empty())
                 o.insert(QStringLiteral("role"), QString::fromStdString(tracks[track].role));
             result = o;
@@ -1198,6 +1208,7 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             dialog->setVocalStyle(vocals == QLatin1String("forward") ? chost::VocalStyle::Forward
                                   : vocals == QLatin1String("blend") ? chost::VocalStyle::Blend
                                                                      : chost::VocalStyle::Normal);
+            dialog->setAutoPan(args.value(QStringLiteral("pan")).toBool(true));
             dialog->setAutoStart(true);
             check();
             startJob(QStringLiteral("balance"), w.projectName(), dialog);

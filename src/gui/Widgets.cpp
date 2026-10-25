@@ -76,6 +76,87 @@ void LevelMeter::setLevels(float left, float right)
     update();
 }
 
+PanControl::PanControl(QWidget* parent)
+    : QWidget(parent)
+{
+    setObjectName(QStringLiteral("pan"));
+    setFixedHeight(15);
+    setMinimumWidth(44);
+    setCursor(Qt::SizeHorCursor);
+    setToolTip(QStringLiteral("声像：左右拖动，双击回到中间"));
+}
+
+QString PanControl::text(float pan)
+{
+    const int amount = static_cast<int>(std::lround(std::abs(pan) * 100.0f));
+    if (amount == 0)
+        return QStringLiteral("C");
+    return (pan < 0.0f ? QStringLiteral("L%1") : QStringLiteral("R%1")).arg(amount);
+}
+
+void PanControl::setPan(float pan)
+{
+    fPan = std::clamp(pan, -1.0f, 1.0f);
+    update();
+}
+
+void PanControl::change(float pan)
+{
+    pan = std::round(std::clamp(pan, -1.0f, 1.0f) * 100.0f) / 100.0f;
+    if (pan == fPan)
+        return;
+    fPan = pan;
+    update();
+    emit panChanged(fPan);
+}
+
+void PanControl::paintEvent(QPaintEvent*)
+{
+    QPainter p(this);
+    p.fillRect(rect(), theme::lcd);
+    const int mid = width() / 2;
+    const int x = mid + static_cast<int>(std::lround(fPan * (width() / 2 - 1)));
+    p.fillRect(QRect(std::min(mid, x), 2, std::abs(x - mid) + 1, height() - 4), theme::accent.darker(130));
+    p.fillRect(QRect(mid, 0, 1, height()), theme::textDim);
+    p.fillRect(QRect(std::clamp(x - 1, 0, width() - 2), 0, 2, height()), theme::text);
+    // the value on a dark patch of its own, readable wherever the marker is
+    QFont font = p.font();
+    font.setPixelSize(10);
+    p.setFont(font);
+    const QString label = text(fPan);
+    const int w = p.fontMetrics().horizontalAdvance(label) + 6;
+    const QRect box((width() - w) / 2, 2, w, height() - 4);
+    p.fillRect(box, QColor(theme::lcd.red(), theme::lcd.green(), theme::lcd.blue(), 200));
+    p.setPen(theme::text);
+    p.drawText(box, Qt::AlignCenter, label);
+}
+
+void PanControl::mousePressEvent(QMouseEvent* event)
+{
+    fDragX = static_cast<int>(event->position().x());
+    fDragPan = fPan;
+}
+
+void PanControl::mouseMoveEvent(QMouseEvent* event)
+{
+    // the whole width is the whole way, finer with Shift
+    const float scale = (event->modifiers() & Qt::ShiftModifier) ? 0.25f : 1.0f;
+    change(fDragPan + scale * 2.0f * (static_cast<float>(event->position().x()) - fDragX) / std::max(1, width()));
+}
+
+void PanControl::mouseDoubleClickEvent(QMouseEvent*)
+{
+    change(0.0f);
+}
+
+void PanControl::wheelEvent(QWheelEvent* event)
+{
+    const int steps = event->angleDelta().y() / 120;
+    if (steps != 0)
+        change(fPan + 0.05f * steps);
+    event->accept();
+}
+
 void LevelMeter::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
@@ -950,6 +1031,12 @@ ChannelStrip::ChannelStrip(const QString& name, bool isOutput, QWidget* parent)
     buttons->addStretch();
     fMute->setVisible(!isOutput);
     fSolo->setVisible(!isOutput);
+    if (!isOutput)
+    {
+        fPan = new PanControl;
+        layout->addWidget(fPan);
+        connect(fPan, &PanControl::panChanged, this, &ChannelStrip::panChanged);
+    }
     layout->addLayout(buttons);
     connect(fMute, &QToolButton::toggled, this, &ChannelStrip::muteToggled);
     connect(fSolo, &QToolButton::toggled, this, &ChannelStrip::soloToggled);
@@ -1041,6 +1128,12 @@ void ChannelStrip::setVolume(float volume)
     const QSignalBlocker blocker(fFader);
     fFader->setValue(volumeToFader(volume));
     updateVolumeLabel(volume);
+}
+
+void ChannelStrip::setPan(float pan)
+{
+    if (fPan)
+        fPan->setPan(pan);
 }
 
 void ChannelStrip::setMuted(bool muted)

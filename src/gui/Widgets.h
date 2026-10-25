@@ -31,6 +31,36 @@ private:
     float fHold[2] = {0.0f, 0.0f};
 };
 
+// A channel's pan: a bar from the centre to where it points, "C", "L30" or "R45" on it. Dragged sideways,
+// the wheel moves it in steps, a double-click centres it.
+class PanControl : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit PanControl(QWidget* parent = nullptr);
+    void setPan(float pan); // -1 left .. 1 right, without panChanged
+    float pan() const { return fPan; }
+    QSize sizeHint() const override { return {70, 16}; }
+    static QString text(float pan);
+
+signals:
+    void panChanged(float pan);
+
+protected:
+    void paintEvent(QPaintEvent*) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
+
+private:
+    void change(float pan);
+
+    float fPan = 0.0f;
+    float fDragPan = 0.0f;
+    int fDragX = 0;
+};
+
 // Project window: track header column, bar ruler and one lane per audio track with its waveform.
 class ArrangeView : public QWidget {
     Q_OBJECT
@@ -196,6 +226,7 @@ public:
     void setOutput(const QString& name); // where the fader goes: "Stereo Out" or a group
     void setLevels(float left, float right);
     void setVolume(float volume);  // carla volume, 0 .. 1.27
+    void setPan(float pan);
     void setMuted(bool muted);
     void setSolo(bool solo);
     void setName(const QString& name);
@@ -204,6 +235,7 @@ public:
 
 signals:
     void volumeChanged(float volume);
+    void panChanged(float pan);
     void muteToggled(bool muted);
     void soloToggled(bool solo);
     void selected();
@@ -220,6 +252,7 @@ private:
     InsertRack* fInserts = nullptr;
     QToolButton* fMute = nullptr;
     QToolButton* fSolo = nullptr;
+    PanControl* fPan = nullptr;
     QSlider* fFader = nullptr;
     LevelMeter* fMeter = nullptr;
     QLabel* fVolumeLabel = nullptr;

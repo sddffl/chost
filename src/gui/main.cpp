@@ -162,8 +162,8 @@ int main(int argc, char* argv[])
             {
                 const QTreeWidgetItem* item = results->topLevelItem(i);
                 const auto* role = qobject_cast<QComboBox*>(results->itemWidget(const_cast<QTreeWidgetItem*>(item), 1));
-                std::printf("BALANCE %s\t%s\t%s\t%s\n", qPrintable(item->text(0)), role ? qPrintable(role->currentText()) : "", qPrintable(item->text(2)),
-                            qPrintable(item->text(3)));
+                std::printf("BALANCE %s\t%s\t%s\t%s\t%s\n", qPrintable(item->text(0)), role ? qPrintable(role->currentText()) : "", qPrintable(item->text(2)),
+                            qPrintable(item->text(3)), qPrintable(item->text(4)));
             }
             const auto* status = dialog->findChild<QLabel*>(QStringLiteral("status"));
             std::printf("%s %s\n", ok ? "BALANCED" : "BALANCE FAILED", status ? qPrintable(status->text()) : "");

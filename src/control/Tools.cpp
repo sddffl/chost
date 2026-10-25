@@ -53,13 +53,14 @@ static const char* const kTools = R"json([
 },
 {
   "name": "set_track",
-  "description": "Changes a track: name, fader volume, mute, solo, its role (the part it plays, used by ai_mix_balance), or the audio or MIDI file it plays. Only the given fields change.",
+  "description": "Changes a track: name, fader volume, pan, mute, solo, its role (the part it plays, used by ai_mix_balance), or the audio or MIDI file it plays. Only the given fields change.",
   "inputSchema": {"type": "object", "properties": {
     "track": {"type": "integer", "minimum": 0},
     "name": {"type": "string"},
     "volume_db": {"type": "number", "maximum": 2, "description": "Fader in dB: 0 is unity, at most +2, -60 or lower is silence."},
     "muted": {"type": "boolean"},
     "solo": {"type": "boolean"},
+    "pan": {"type": "number", "minimum": -1, "maximum": 1, "description": "-1 hard left, 0 centre, 1 hard right."},
     "role": {"type": "string", "enum": ["lead", "vocals", "backing", "drums", "kick", "snare", "toms", "hh", "ride", "crash", "bass", "guitar", "piano", "keys", "strings", "pad", "chords", "other"]},
     "file": {"type": "string", "description": "Replace the track's audio file (audio tracks) or MIDI file (instrument tracks)."}
   }, "required": ["track"]}
@@ -333,9 +334,10 @@ static const char* const kTools = R"json([
 },
 {
   "name": "ai_mix_balance",
-  "description": "AI auto mix balance: renders every playing (unmuted) audio and MIDI track on its own, measures its loudness (LUFS) and sets the track faders to a common pop balance: vocals in front, drums and bass close behind, guitars, keys, strings and pads further back, by each track's role (set_track role, or guessed from its name). Then checks the whole mix keeps 3 dB of headroom. One undo step. A starting point to refine by ear. Runs in the background: see wait_for_jobs; afterwards get_project shows the new volumes.",
+  "description": "AI auto mix balance: renders every playing (unmuted) audio and MIDI track on its own, measures its loudness (LUFS) and sets the track faders (and pans, see pan) to a common pop balance: vocals in front, drums and bass close behind, guitars, keys, strings and pads further back, by each track's role (set_track role, or guessed from its name). Then checks the whole mix keeps 3 dB of headroom. One undo step. A starting point to refine by ear. Runs in the background: see wait_for_jobs; afterwards get_project shows the new volumes.",
   "inputSchema": {"type": "object", "properties": {
-    "vocals": {"type": "string", "enum": ["forward", "normal", "blend"], "description": "forward: vocals well above the band (pop, ballads); blend: vocals sit in the band (rock, electronic). Default normal."}
+    "vocals": {"type": "string", "enum": ["forward", "normal", "blend"], "description": "forward: vocals well above the band (pop, ballads); blend: vocals sit in the band (rock, electronic). Default normal."},
+    "pan": {"type": "boolean", "description": "Also pan the tracks by their roles: vocals, kick, snare, bass in the centre, doubled guitars and backing vocals to both sides, a lone guitar and the keys on opposite sides. Default true."}
   }}
 },
 {

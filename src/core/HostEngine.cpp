@@ -572,6 +572,13 @@ RackSlot HostEngine::slot(uint id) const
 void HostEngine::setActive(uint id, bool active) { carla_set_active(fHandle, id, active); }
 void HostEngine::setVolume(uint id, float volume) { carla_set_volume(fHandle, id, volume); }
 
+void HostEngine::setPan(uint id, float pan)
+{
+    // right of centre the left output moves over to the right, left of centre the other way
+    carla_set_balance_left(fHandle, id, pan > 0.0f ? -1.0f + 2.0f * pan : -1.0f);
+    carla_set_balance_right(fHandle, id, pan < 0.0f ? 1.0f + 2.0f * pan : 1.0f);
+}
+
 std::string HostEngine::audioFilePath(uint id) const
 {
     const char* value = carla_get_custom_data_value(fHandle, id, CUSTOM_DATA_TYPE_STRING, "file");

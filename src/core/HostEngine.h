@@ -114,6 +114,7 @@ public:
     RackSlot slot(uint id) const;
     void setActive(uint id, bool active);
     void setVolume(uint id, float volume);
+    void setPan(uint id, float pan); // a stereo plugin's output balance, -1 left .. 1 right
     std::string audioFilePath(uint id) const; // file played by an "audiofile" or "midifile" slot
     void setPlayerFile(uint id, const std::string& path); // a MIDI file player reads (another) file in place
     void showCustomUi(uint id, bool show);

@@ -43,6 +43,7 @@ struct Track {
     std::vector<uint> inserts; // carla ids, in processing order
     uint fader = 0;            // carla id of the track's gain plugin
     float volume = 1.0f;       // 0 .. 1.27
+    float pan = 0.0f;          // -1 left .. 1 right
     bool muted = false;
     bool solo = false;
     uint32_t colour = 0;       // 0xRRGGBB as shown in the GUI, 0 until it has one
@@ -69,6 +70,7 @@ struct SessionState {
         std::vector<Uid> inserts;
         std::vector<bool> insertsActive; // bypassed or not, parallel to inserts
         float volume = 1.0f;
+        float pan = 0.0f;
         bool muted = false, solo = false;
         uint32_t colour = 0;
         Uid output = 0;
@@ -129,6 +131,7 @@ public:
     bool moveInsert(int track, int index, int delta);
 
     void setVolume(int track, float volume);
+    void setPan(int track, float pan); // -1 left .. 1 right
     void setMuted(int track, bool muted);
     void setSolo(int track, bool solo);
     void setMasterVolume(float volume);

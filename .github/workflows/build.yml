@@ -77,6 +77,9 @@ jobs:
           mix --track a.wav --track b.wav --bus 混响 --send 0=2:1.0 --solo 2 | grep -q 'master peak 0.97'
           mix --track a.wav --track b.wav --bus 组 --bus 混响 --output 0=2 --send 0=3:1 --mute 1 --save bus.chost | grep -q 'master peak 0.97'
           mix --open bus.chost | grep -q 'master peak 0.97'
+          # pan: hard left keeps the power (0.49 on both sides becomes 0.69 on the left), and is saved
+          mix --track a.wav --pan 0=-1 --save pan.chost | grep -q 'left 0.69., right 0.000'
+          mix --open pan.chost | grep -q 'left 0.69., right 0.000'
           if ./build/chost-cli mix --driver PulseAudio --seconds 1 --track a.wav --bus A --bus B --output 1=2 --output 2=1 2>&1 | grep -q 'feed itself'; then :; else exit 1; fi
           # the same session mixed down offline by chost-render, faster than real time
           ./build/chost-render --session s.chost --output render.wav --seconds 3 | tee render.log
@@ -105,7 +108,7 @@ jobs:
           # AI mix balance: both tones measured and their faders set, the whole mix checked for headroom
           QT_QPA_PLATFORM=offscreen timeout 150 ./build/chost --file a.wav --file b.wav --mix-balance forward \
               --screenshot balance.png --screenshot-delay 60000 | tee balance.log
-          test "$(grep -c '^BALANCE .*LUFS.* dB$' balance.log)" = 2
+          test "$(grep -cP '^BALANCE .*LUFS.* dB\t' balance.log)" = 2
           grep -q '^BALANCED ' balance.log
           pkill -x chost || true
           # the chord pad's harmony: G7 goes home to C, and a progression becomes a MIDI part

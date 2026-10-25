@@ -202,6 +202,13 @@ call("set_send", track=g, bus=room, remove=True, expect_error=True)  # the group
 call("set_output", track=room, bus=g)
 call("set_send", track=g, bus=room, expect_error=True)  # Room goes into the group: a loop
 
+# pan: set, saved in the state, undone
+check(call("set_track", track=members[0], pan=-0.5)["pan"] == -0.5, "panned half left")
+call("set_track", track=members[0], pan=2, expect_error=True)
+check(call("get_project")["tracks"][members[0]]["pan"] == -0.5, "get_project shows the pan")
+call("undo")
+check(call("get_project")["tracks"][members[0]]["pan"] == 0, "undo centres it again")
+
 # AI mix balance: each playing track measured and its fader set by its part, one undo step
 call("set_track", track=members[0], role="bass")
 call("set_track", track=members[0], role="tuba", expect_error=True)

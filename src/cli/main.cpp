@@ -4,7 +4,7 @@
 //   chost-cli drivers
 //   chost-cli scan [--discover]       --discover: ask carla's discovery tool what every VST file holds
 //   chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]
-//   chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]... [--mute T] [--solo T] [--volume T=V]
+//   chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]... [--mute T] [--solo T] [--volume T=V] [--pan T=P]
 //                 [--remove-track T] [--remove-insert T:I] [--seconds S] [--save F.chost] [--open F.chost]
 //
 // Plugin SPEC:
@@ -306,7 +306,7 @@ static int cmdMix(int argc, char* argv[])
 {
     std::string driver = chost::defaultAudioDriver();
     std::string savePath, openPath;
-    std::vector<std::string> files, midis, inserts, volumes;
+    std::vector<std::string> files, midis, inserts, volumes, pans;
     std::vector<int> mutes, solos, removeTracks;
     std::vector<std::string> removeInserts, buses, outputs, sends;
     double seconds = 3.0, click = -1.0, tempo = 0.0;
@@ -323,6 +323,7 @@ static int cmdMix(int argc, char* argv[])
         else if (arg == "--mute" && hasValue)     mutes.push_back(std::stoi(argv[++i]));
         else if (arg == "--solo" && hasValue)     solos.push_back(std::stoi(argv[++i]));
         else if (arg == "--volume" && hasValue)   volumes.emplace_back(argv[++i]);
+        else if (arg == "--pan" && hasValue)      pans.emplace_back(argv[++i]);
         else if (arg == "--seconds" && hasValue)  seconds = std::stod(argv[++i]);
         else if (arg == "--save" && hasValue)     savePath = argv[++i];
         else if (arg == "--open" && hasValue)     openPath = argv[++i];
@@ -446,6 +447,9 @@ static int cmdMix(int argc, char* argv[])
     for (const std::string& v : volumes)
         if (const auto eq = v.find('='); eq != std::string::npos)
             session.setVolume(std::stoi(v.substr(0, eq)), std::stof(v.substr(eq + 1)));
+    for (const std::string& v : pans)
+        if (const auto eq = v.find('='); eq != std::string::npos)
+            session.setPan(std::stoi(v.substr(0, eq)), std::stof(v.substr(eq + 1)));
 
     for (size_t i = 0; i < session.tracks().size(); ++i)
     {
@@ -475,13 +479,15 @@ static int cmdMix(int argc, char* argv[])
 
     host.relocate(0);
     host.play();
-    float peak = 0.0f, clickPeak = 0.0f, clickLate = 0.0f;
+    float peak = 0.0f, left = 0.0f, right = 0.0f, clickPeak = 0.0f, clickLate = 0.0f;
     const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
     while (!gQuit && host.isRunning() && std::chrono::steady_clock::now() < until)
     {
         host.idle();
         const auto [l, r] = host.outputPeaks(session.master());
         peak = std::max({peak, l, r});
+        left = std::max(left, l);
+        right = std::max(right, r);
         if (session.clickGain() >= 0)
         {
             const auto [cl, cr] = host.outputPeaks(static_cast<uint>(session.clickGain()));
@@ -491,7 +497,7 @@ static int cmdMix(int argc, char* argv[])
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    std::printf("master peak %.3f\n", peak);
+    std::printf("master peak %.3f (left %.3f, right %.3f)\n", peak, left, right);
     if (click >= 0.0)
         std::printf("click peak %.3f, after 2.5 s %.3f\n", clickPeak, clickLate);
     for (const chost::Track& t : session.tracks())
@@ -860,7 +866,7 @@ int main(int argc, char* argv[])
                  "  chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]\n"
                  "  chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]...\n"
                  "                [--mute T] [--solo T]\n"
-                 "                [--volume T=V] [--remove-track T] [--remove-insert T:I]\n"
+                 "                [--volume T=V] [--pan T=-1..1] [--remove-track T] [--remove-insert T:I]\n"
                  "                [--bus NAME]... [--output T=BUS] [--send T=BUS:LEVEL] [--click VOLUME [--click-sound SPEC]] [--tempo BPM]\n"
                  "                [--seconds S] [--save F.chost] [--open F.chost]\n"
                  "  chost-cli chords [--key \"A minor\"] [--sevenths] [--after CHORD]\n"

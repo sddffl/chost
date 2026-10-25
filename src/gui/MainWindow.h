@@ -185,6 +185,7 @@ private:
     void setMuted(int track, bool muted);
     void setSolo(int track, bool solo);
     void setVolume(int track, float volume);
+    void setPan(int track, float pan);
 
     void editPluginFolders();
     void rescanPlugins();

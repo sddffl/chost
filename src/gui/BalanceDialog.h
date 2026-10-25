@@ -14,6 +14,7 @@
 #include <functional>
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QProgressBar;
@@ -30,16 +31,20 @@ public:
         QString name;
         QString role;
         float volume = 1.0f;
+        float pan = 0.0f;
     };
-    // the tracks to balance, as they are when it starts; set: the new faders, by uid, as one undo step
+    // the tracks to balance, as they are when it starts; apply: the new faders and pans (pans may be
+    // empty), by uid, as one undo step
     using TrackFunction = std::function<std::vector<Track>()>;
-    using ApplyFunction = std::function<void(const std::vector<std::pair<chost::Uid, float>>& volumes)>;
+    using Changes = std::vector<std::pair<chost::Uid, float>>;
+    using ApplyFunction = std::function<void(const Changes& volumes, const Changes& pans)>;
     // a track's part changed by hand, to keep with the track
     using RoleFunction = std::function<void(chost::Uid uid, const QString& role)>;
     BalanceDialog(TrackFunction tracks, SnapshotFunction snapshot, ApplyFunction apply, RoleFunction role, QWidget* parent = nullptr);
 
     void setAutoStart(bool autoStart);
     void setVocalStyle(chost::VocalStyle style);
+    void setAutoPan(bool on);
 
 signals:
     void balanced(bool ok);
@@ -68,6 +73,7 @@ private:
     QString fSession;
 
     QComboBox* fStyle = nullptr;
+    QCheckBox* fPan = nullptr;
     QLabel* fStatus = nullptr;
     QProgressBar* fProgress = nullptr;
     QTreeWidget* fResults = nullptr;

@@ -3,6 +3,7 @@
 #include "MidiFile.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -476,6 +477,14 @@ void Session::setVolume(int track, float volume)
     applyGains();
 }
 
+void Session::setPan(int track, float pan)
+{
+    if (!valid(track))
+        return;
+    fTracks[track].pan = std::clamp(pan, -1.0f, 1.0f);
+    applyGains();
+}
+
 void Session::setMuted(int track, bool muted)
 {
     if (!valid(track))
@@ -513,7 +522,10 @@ void Session::applyGains()
     for (const Track& t : fTracks)
     {
         const bool silent = t.muted || (anySolo && t.kind != TrackKind::Bus && !soloed(t));
-        fHost.setVolume(t.fader, silent ? 0.0f : t.volume);
+        // Carla's stereo balance moves the far side over rather than dropping it; the gain keeps the power
+        // of a centred (mono) part about the same wherever it's panned
+        fHost.setVolume(t.fader, silent ? 0.0f : t.volume / std::sqrt(1.0f + t.pan * t.pan));
+        fHost.setPan(t.fader, t.pan);
         for (const Send& send : t.sends)
             fHost.setVolume(send.gain, send.level); // after the fader: a silent track sends nothing
     }
@@ -650,6 +662,7 @@ void Session::reroute()
 //   file <audio or MIDI file path>
 //   instrument <id>              only on instrument tracks, -1 without an instrument
 //   role <stem id>               optional
+//   pan <-1 .. 1>                optional, 0 when missing
 //   bus                          a bus (group or effect return) instead of an audio track
 //   output <track>               the bus the fader feeds, by its index in the file; else the master
 //   send <track> <level> <id>    a send to a bus, its level and gain plugin
@@ -706,6 +719,8 @@ bool Session::save(const std::string& path)
             out << "instrument " << t.instrument << "\n";
         if (!t.role.empty())
             out << "role " << t.role << "\n";
+        if (t.pan != 0.0f)
+            out << "pan " << t.pan << "\n";
         if (!t.instrumentSpec.empty())
             out << "instrument-spec " << t.instrumentSpec << "\n";
         if (t.colour)
@@ -789,6 +804,11 @@ bool Session::load(const std::string& path)
         }
         else if (key == "role" && !tracks.empty())
             tracks.back().role = rest;
+        else if (key == "pan" && !tracks.empty())
+        {
+            fields >> tracks.back().pan;
+            tracks.back().pan = std::clamp(tracks.back().pan, -1.0f, 1.0f);
+        }
         else if (key == "instrument-spec" && !tracks.empty())
             tracks.back().instrumentSpec = rest;
         else if (key == "colour" && !tracks.empty())
@@ -879,7 +899,7 @@ bool Session::load(const std::string& path)
 bool SessionState::TrackState::operator==(const TrackState& o) const
 {
     return uid == o.uid && kind == o.kind && name == o.name && role == o.role && file == o.file && instrumentSpec == o.instrumentSpec
-           && instrument == o.instrument && inserts == o.inserts && insertsActive == o.insertsActive && volume == o.volume
+           && instrument == o.instrument && inserts == o.inserts && insertsActive == o.insertsActive && volume == o.volume && pan == o.pan
            && muted == o.muted && solo == o.solo && colour == o.colour && output == o.output && sends == o.sends;
 }
 
@@ -911,6 +931,7 @@ SessionState Session::state() const
             ts.insertsActive.push_back(fHost.slot(insert).active);
         }
         ts.volume = t.volume;
+        ts.pan = t.pan;
         ts.muted = t.muted;
         ts.solo = t.solo;
         ts.colour = t.colour;
@@ -991,6 +1012,7 @@ void Session::restore(const SessionState& s)
         t.name = ts->name;
         t.role = ts->role;
         t.volume = ts->volume;
+        t.pan = ts->pan;
         t.muted = ts->muted;
         t.solo = ts->solo;
         t.colour = ts->colour;
