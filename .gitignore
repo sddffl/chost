@@ -4,3 +4,4 @@ build/
 /*.png
 dist/
 carla-root/
+__pycache__/
