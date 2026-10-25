@@ -28,4 +28,8 @@ struct MidiClip {
 // Format 0 and 1 files, with tempo changes; false and an error message for anything unreadable.
 bool readMidiFile(const std::string& path, MidiClip& clip, std::string& error);
 
+// A format 1 file: a tempo track and one track with every note on its own channel, 480 ticks per beat.
+// The clip's program goes to every melodic channel used.
+bool writeMidiFile(const std::string& path, const MidiClip& clip, std::string& error);
+
 } // namespace chost

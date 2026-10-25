@@ -486,8 +486,11 @@ void ArrangeView::mouseDoubleClickEvent(QMouseEvent* event)
 {
     // double click below the tracks adds one, as in Cubase
     const QPoint pos = event->position().toPoint();
-    if (pos.y() > kRulerHeight && laneAt(pos.y()) < 0)
+    const int lane = pos.y() > kRulerHeight ? laneAt(pos.y()) : -2;
+    if (lane == -1)
         emit trackMenuRequested(-1, mapToGlobal(pos));
+    else if (lane >= 0 && pos.x() >= kHeaderWidth)
+        emit clipDoubleClicked(lane); // opens the MIDI editor, as in Cubase
 }
 
 void ArrangeView::contextMenuEvent(QContextMenuEvent* event)

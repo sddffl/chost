@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y carla carla-dev qt6-base-dev cmake g++ pkg-config pulseaudio python3-numpy
+          sudo apt-get install -y carla carla-dev carla-vst qt6-base-dev cmake g++ pkg-config pulseaudio python3-numpy
 
       - name: Build
         run: |
@@ -83,6 +83,17 @@ jobs:
               | tee midi.log
           grep -E 'master peak 0\.[1-9]' midi.log
           grep -q 'program Fingered Bass' midi.log
+          # the MIDI editor on a converted part
+          QT_QPA_PLATFORM=offscreen ./build/chost --file midi/piano.mid --select 0 --edit-notes \
+              --screenshot pianoroll.png --screenshot-delay 3000
+          test -f pianoroll-1.png
+
+      - name: Plugin discovery test
+        run: |
+          # carla's discovery tool tells instruments from effects; carla ships VST2 plugins of both kinds
+          ./build/chost-cli scan --discover | tee discover.log
+          grep -E '^VST2 +Carla-Rack +.*instrument' discover.log
+          grep -E '^VST2 +Carla-RackFX ' discover.log | grep -v instrument
 
       - uses: actions/upload-artifact@v4
         with:
@@ -91,6 +102,7 @@ jobs:
             linux.png
             stems*.png
             midi*.png
+            pianoroll*.png
 
   windows:
     runs-on: windows-latest
@@ -138,6 +150,8 @@ jobs:
           test -f tools/chost_transcribe.py
           test -f tools/models/basic_pitch_nmp.onnx
           test -f sounds/TimGM6mb.sf2
+          test -f carla-discovery-native.exe
+          ./chost-cli.exe scan --discover | tail -5
           # MIDI tracks with the bundled sound font load on Windows too
           ./chost-cli.exe mix --driver Dummy --midi ../../tests/data/notes.mid@sf2:sounds/TimGM6mb.sf2 --seconds 1 | tee ../../midi.log
           grep -q 'program' ../../midi.log

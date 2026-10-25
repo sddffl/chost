@@ -198,9 +198,24 @@ namespace {
 
 struct PluginSpec {
     PluginType type = PLUGIN_NONE;
+    BinaryType binary = BINARY_NATIVE;
     std::string filename;
     std::string label;
+    int64_t uniqueId = 0;
 };
+
+// "path#123": one plugin of a VST2 shell
+void splitUniqueId(std::string& path, int64_t& uniqueId)
+{
+    const auto hash = path.rfind('#');
+    if (hash == std::string::npos || hash + 1 >= path.size())
+        return;
+    const std::string id = path.substr(hash + 1);
+    if (id.find_first_not_of("-0123456789") != std::string::npos)
+        return;
+    uniqueId = std::stoll(id);
+    path.erase(hash);
+}
 
 bool parseSpec(const std::string& spec, PluginSpec& out)
 {
@@ -213,7 +228,14 @@ bool parseSpec(const std::string& spec, PluginSpec& out)
 
     if (kind == "lv2")       { out.type = PLUGIN_LV2;  out.label = rest; }
     else if (kind == "vst3") { out.type = PLUGIN_VST3; out.filename = rest; }
-    else if (kind == "vst2") { out.type = PLUGIN_VST2; out.filename = rest; }
+    else if (kind == "vst2" || kind == "vst2-32")
+    {
+        out.type = PLUGIN_VST2;
+        out.filename = rest;
+        splitUniqueId(out.filename, out.uniqueId);
+        if (kind == "vst2-32")
+            out.binary = BINARY_WIN32; // an old 32-bit plugin, run through carla's bridge
+    }
     // carla needs a label for sound fonts too: their name
     else if (kind == "sf2")  { out.type = PLUGIN_SF2;  out.filename = rest; out.label = fs::u8path(rest).stem().u8string(); }
     else if (kind == "sfz")  { out.type = PLUGIN_SFZ;  out.filename = rest; out.label = fs::u8path(rest).stem().u8string(); }
@@ -233,6 +255,120 @@ bool parseSpec(const std::string& spec, PluginSpec& out)
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------------------------------------------------
+// discovery
+
+std::string discoveryTool(bool win32)
+{
+    const char* folder = carla_get_library_folder();
+    std::vector<fs::path> candidates;
+#ifdef _WIN32
+    const char* name = win32 ? "carla-discovery-win32.exe" : "carla-discovery-native.exe";
+#else
+    if (win32)
+        return {};
+    const char* name = "carla-discovery-native";
+#endif
+    if (folder != nullptr && folder[0] != '\0')
+        candidates.push_back(fs::u8path(folder) / name);
+#ifndef _WIN32
+    candidates.push_back(fs::path("/usr/lib/carla") / name);
+    candidates.push_back(fs::path("/usr/local/lib/carla") / name);
+#endif
+    for (const fs::path& path : candidates)
+    {
+        std::error_code ec;
+        if (fs::is_regular_file(path, ec))
+            return path.u8string();
+    }
+    return {};
+}
+
+std::vector<std::string> discoveryArguments(const PluginEntry& file)
+{
+    PluginSpec spec;
+    parseSpec(file.spec, spec);
+    return {file.format == "VST3" ? "vst3" : "vst", spec.filename};
+}
+
+std::vector<PluginEntry> parseDiscovery(const std::string& output, const PluginEntry& file, bool win32)
+{
+    std::vector<PluginEntry> found;
+    PluginEntry current;
+    int64_t uniqueId = 0;
+    bool inside = false;
+    size_t pos = 0;
+    while (pos < output.size())
+    {
+        size_t end = output.find('\n', pos);
+        if (end == std::string::npos)
+            end = output.size();
+        std::string line = output.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+
+        static const std::string prefix = "carla-discovery::";
+        if (line.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        const auto sep = line.find("::", prefix.size());
+        if (sep == std::string::npos)
+            continue;
+        const std::string key = line.substr(prefix.size(), sep - prefix.size());
+        const std::string value = line.substr(sep + 2);
+
+        if (key == "init")
+        {
+            current = file;
+            current.name.clear();
+            current.isSynth = false;
+            uniqueId = 0;
+            inside = true;
+        }
+        else if (!inside)
+        {
+            continue;
+        }
+        else if (key == "name")
+            current.name = value;
+        else if (key == "maker")
+            current.maker = value;
+        else if (key == "category")
+            current.category = value;
+        else if (key == "uniqueId")
+            uniqueId = std::strtoll(value.c_str(), nullptr, 10);
+        else if (key == "hints")
+            current.isSynth = current.isSynth || (std::strtoul(value.c_str(), nullptr, 10) & PLUGIN_IS_SYNTH) != 0;
+        else if (key == "audio.ins")
+            current.audioIns = static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+        else if (key == "audio.outs")
+            current.audioOuts = static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+        else if (key == "midi.ins")
+            current.midiIns = static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+        else if (key == "end")
+        {
+            inside = false;
+            if (current.name.empty())
+                continue;
+            current.isSynth = current.isSynth || current.category == "synth";
+            found.push_back(current);
+            found.back().spec = file.spec;
+            if (win32)
+                found.back().spec.replace(0, 4, "vst2-32");
+            found.back().spec += "#" + std::to_string(uniqueId);
+        }
+    }
+    // a single plugin keeps the plain spec; carla 2.5 always loads a VST3 bundle's first plugin anyway
+    if (file.format == "VST3" && found.size() > 1)
+        found.resize(1);
+    if (found.size() == 1)
+    {
+        const auto hash = found.front().spec.rfind('#');
+        found.front().spec.erase(hash);
+    }
+    return found;
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // engine
@@ -328,9 +464,31 @@ bool HostEngine::addPlugin(const std::string& specStr)
     PluginSpec spec;
     if (!parseSpec(specStr, spec))
         return false;
-    return carla_add_plugin(fHandle, BINARY_NATIVE, spec.type,
+    return carla_add_plugin(fHandle, spec.binary, spec.type,
                             spec.filename.empty() ? nullptr : spec.filename.c_str(), nullptr,
-                            spec.label.empty() ? nullptr : spec.label.c_str(), 0, nullptr, PLUGIN_OPTIONS_NULL);
+                            spec.label.empty() ? nullptr : spec.label.c_str(), spec.uniqueId, nullptr, PLUGIN_OPTIONS_NULL);
+}
+
+void HostEngine::setPlayerFile(uint id, const std::string& path)
+{
+    if (fHandle != nullptr)
+        carla_set_custom_data(fHandle, id, CUSTOM_DATA_TYPE_STRING, "file", path.c_str());
+}
+
+void HostEngine::sendNote(uint id, uint8_t channel, uint8_t note, uint8_t velocity)
+{
+    if (fHandle != nullptr)
+        carla_send_midi_note(fHandle, id, channel, note, velocity);
+}
+
+bool HostEngine::savePluginState(uint id, const std::string& path)
+{
+    return fHandle != nullptr && carla_save_plugin_state(fHandle, id, path.c_str());
+}
+
+bool HostEngine::loadPluginState(uint id, const std::string& path)
+{
+    return fHandle != nullptr && carla_load_plugin_state(fHandle, id, path.c_str());
 }
 
 bool HostEngine::addInternalPlugin(const std::string& label, const std::string& name)

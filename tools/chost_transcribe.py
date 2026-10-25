@@ -334,9 +334,12 @@ def transcribe_drum_part(path, role):
         notes = [(t, t + 0.1, mapping(f), hit_velocity(v)) for t, v, f in zip(times, levels, freqs)]
     elif role == "hh":
         # an open hi-hat rings much longer than a closed one
-        for t, v in zip(times, levels):
-            note = 46 if ring_time(audio, sr, t) > 0.18 else 42
-            notes.append((t, t + 0.1, note, hit_velocity(v)))
+        # an open hi-hat rings much longer than a closed one; the ring is measured up to the next hit
+        for i, (t, v) in enumerate(zip(times, levels)):
+            gap = (times[i + 1] - t) if i + 1 < len(times) else 0.5
+            ring = ring_time(audio, sr, t, min(0.5, gap - 0.01))
+            is_open = ring > 0.18 or (gap <= 0.2 and ring >= 0.9 * (gap - 0.01))
+            notes.append((t, t + 0.1, 46 if is_open else 42, hit_velocity(v)))
     else:
         notes = [(t, t + 0.1, DRUM_NOTES[role], hit_velocity(v)) for t, v in zip(times, levels)]
     return notes, 0, True
@@ -394,9 +397,9 @@ def tom_mapping(freqs):
     return mapping
 
 
-def ring_time(audio, sr, t):
+def ring_time(audio, sr, t, window=0.5):
     a = int(t * sr)
-    seg = np.abs(audio[a : a + int(0.5 * sr)])
+    seg = np.abs(audio[a : a + max(1, int(window * sr))])
     if len(seg) == 0 or seg.max() <= 0:
         return 0.0
     above = np.where(seg > 0.1 * seg.max())[0]

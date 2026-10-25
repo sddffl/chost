@@ -71,8 +71,7 @@ def score(role, path):
     used, hits = set(), 0
     for t, pitch in expected:
         for j, (s, q) in enumerate(found):
-            # closed, pedal and open hi-hat all count, the synthetic hat has no pedal to tell them apart
-            same = q in (42, 44, 46) if pitch == 42 else q == pitch
+            same = q == pitch
             if j not in used and abs(s - t) < 0.06 and same:
                 used.add(j)
                 hits += 1

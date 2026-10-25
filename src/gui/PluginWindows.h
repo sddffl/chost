@@ -52,7 +52,8 @@ class PluginPicker : public QDialog {
     Q_OBJECT
 
 public:
-    PluginPicker(const std::vector<chost::PluginEntry>& plugins, QWidget* parent = nullptr);
+    enum Kind { Effects, Instruments };
+    PluginPicker(const std::vector<chost::PluginEntry>& plugins, QWidget* parent = nullptr, Kind kind = Effects);
     QString selectedSpec() const;
 
 private:
@@ -60,6 +61,7 @@ private:
 
     QLineEdit* fSearch = nullptr;
     QTreeWidget* fList = nullptr;
+    QString fFileSpec; // a sound font picked from disk
 };
 
 // Fills a tree widget with plugins (name / format / maker), the spec stored as user data in column 0.

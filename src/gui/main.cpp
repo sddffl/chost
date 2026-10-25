@@ -26,8 +26,11 @@ int main(int argc, char* argv[])
     QCommandLineOption delayOpt(QStringLiteral("screenshot-delay"), QStringLiteral("Milliseconds before the screenshot (default 1500)."), QStringLiteral("ms"), QStringLiteral("1500"));
     QCommandLineOption transcribeOpt(QStringLiteral("transcribe"), QStringLiteral("Open AI audio to MIDI for every audio track and start it."));
     QCommandLineOption selectOpt(QStringLiteral("select"), QStringLiteral("Select a track at startup (0 is the first)."), QStringLiteral("n"));
+    QCommandLineOption applyOpt(QStringLiteral("apply-instruments"), QStringLiteral("Put the instruments from the settings on every MIDI track."));
+    QCommandLineOption instrumentsOpt(QStringLiteral("instrument-settings"), QStringLiteral("Open the instrument settings."));
+    QCommandLineOption notesOpt(QStringLiteral("edit-notes"), QStringLiteral("Open the MIDI editor of the selected track."));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -42,13 +45,19 @@ int main(int argc, char* argv[])
         window.addPluginSpec(spec);
     for (const QString& file : parser.positionalArguments())
         window.loadAudioFile(file); // "open with" / a file dropped on chost.exe
+    if (parser.isSet(applyOpt))
+        window.applyInstruments();
     if (parser.isSet(selectOpt))
         window.selectTrack(parser.value(selectOpt).toInt());
     window.show();
+    if (parser.isSet(notesOpt) && parser.isSet(selectOpt))
+        window.editNotes(parser.value(selectOpt).toInt());
     if (parser.isSet(playOpt))
         window.play();
     if (parser.isSet(separateOpt))
         window.separateStems(true);
+    if (parser.isSet(instrumentsOpt))
+        QTimer::singleShot(500, &window, &MainWindow::instrumentSettings);
     if (parser.isSet(transcribeOpt))
         window.transcribe(true, true);
 

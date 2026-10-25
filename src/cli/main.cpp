@@ -2,7 +2,7 @@
 //
 // Usage:
 //   chost-cli drivers
-//   chost-cli scan
+//   chost-cli scan [--discover]       --discover: ask carla's discovery tool what every VST file holds
 //   chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]
 //   chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]... [--mute T] [--solo T] [--volume T=V]
 //                 [--remove-track T] [--remove-insert T:I] [--seconds S] [--save F.chost] [--open F.chost]
@@ -43,10 +43,61 @@ static int cmdDrivers()
     return 0;
 }
 
-static int cmdScan()
+// Runs a program and returns what it printed (stdout and stderr).
+static std::string capture(const std::vector<std::string>& args)
 {
-    for (const chost::PluginEntry& e : chost::scanPlugins())
-        std::printf("%-5s %-32s %-20s %s\n", e.format.c_str(), e.name.c_str(), e.maker.c_str(), e.spec.c_str());
+    std::string command;
+    for (const std::string& a : args)
+        command += "\"" + a + "\" ";
+    command += "2>&1";
+#ifdef _WIN32
+    command = "\"" + command + "\""; // cmd.exe strips the outer quotes
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (pipe == nullptr)
+        return {};
+    std::string out;
+    char buffer[4096];
+    size_t n;
+    while ((n = std::fread(buffer, 1, sizeof(buffer), pipe)) > 0)
+        out.append(buffer, n);
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+    return out;
+}
+
+static int cmdScan(int argc, char* argv[])
+{
+    const bool discover = argc > 0 && std::string(argv[0]) == "--discover";
+    const std::string tool = chost::discoveryTool();
+    if (discover && tool.empty())
+        std::fprintf(stderr, "carla-discovery not found, VST files are listed by name\n");
+    for (const chost::PluginEntry& file : chost::scanPlugins())
+    {
+        std::vector<chost::PluginEntry> entries{file};
+        if (discover && !tool.empty() && (file.format == "VST2" || file.format == "VST3"))
+        {
+            std::vector<std::string> args{tool};
+            for (const std::string& a : chost::discoveryArguments(file))
+                args.push_back(a);
+            std::vector<chost::PluginEntry> found = chost::parseDiscovery(capture(args), file);
+            if (found.empty() && !chost::discoveryTool(true).empty())
+            {
+                args.front() = chost::discoveryTool(true); // maybe an old 32-bit plugin
+                found = chost::parseDiscovery(capture(args), file, true);
+            }
+            if (!found.empty())
+                entries = found;
+        }
+        for (const chost::PluginEntry& e : entries)
+            std::printf("%-5s %-32s %-20s %-10s %s\n", e.format.c_str(), e.name.c_str(), e.maker.c_str(),
+                        e.isSynth ? "instrument" : e.category.c_str(), e.spec.c_str());
+    }
     return 0;
 }
 
@@ -400,7 +451,7 @@ int main(int argc, char* argv[])
     if (cmd == "drivers")
         return cmdDrivers();
     if (cmd == "scan")
-        return cmdScan();
+        return cmdScan(argc - 2, argv + 2);
     if (cmd == "run")
         return cmdRun(argc - 2, argv + 2);
     if (cmd == "mix")
@@ -409,7 +460,7 @@ int main(int argc, char* argv[])
     std::fprintf(stderr,
                  "usage:\n"
                  "  chost-cli drivers\n"
-                 "  chost-cli scan\n"
+                 "  chost-cli scan [--discover]\n"
                  "  chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]\n"
                  "  chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]...\n"
                  "                [--mute T] [--solo T]\n"

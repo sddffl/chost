@@ -66,6 +66,7 @@ public:
 signals:
     void seekRequested(double seconds);
     void trackSelected(int lane);
+    void clipDoubleClicked(int lane);
     void muteToggled(int lane, bool muted);
     void soloToggled(int lane, bool solo);
     void trackMenuRequested(int lane, const QPoint& globalPos); // lane -1: the empty area below the tracks

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.5.0 LANGUAGES CXX)
+project(chost VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +50,10 @@ if(CHOST_BUILD_GUI)
         src/gui/StemDialog.cpp src/gui/StemDialog.h
         src/gui/Resources.cpp src/gui/Resources.h
         src/gui/TranscribeDialog.cpp src/gui/TranscribeDialog.h
+        src/gui/PluginDiscovery.cpp src/gui/PluginDiscovery.h
+        src/gui/Instruments.cpp src/gui/Instruments.h
+        src/gui/InstrumentDialog.cpp src/gui/InstrumentDialog.h
+        src/gui/PianoRoll.cpp src/gui/PianoRoll.h
         src/gui/Theme.cpp src/gui/Theme.h
         src/gui/Widgets.cpp src/gui/Widgets.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}" CHOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

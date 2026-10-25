@@ -23,6 +23,7 @@ struct PluginEntry {
     uint32_t audioOuts = 0;
     uint32_t midiIns = 0;
     bool isSynth = false;
+    std::string category; // carla's category ("synth", "delay", "eq", ...), known after discovery
 };
 
 struct ParamInfo {
@@ -59,6 +60,13 @@ std::string defaultPluginPath(CarlaBackend::PluginType type);
 void setExtraPluginFolders(const std::vector<std::string>& folders); // UTF-8 paths
 std::vector<std::string> extraPluginFolders();
 std::vector<PluginEntry> scanPlugins();
+
+// VST files are found by name only; carla's discovery tool loads each one in a separate process (so a
+// crashing plugin can't take chost down) and reports what it really is. VST2 "shells" such as Waves hold
+// many plugins, each gets its own entry with a "#uniqueId" spec suffix.
+std::string discoveryTool(bool win32 = false); // empty when missing; win32: the 32-bit one (Windows)
+std::vector<std::string> discoveryArguments(const PluginEntry& file);
+std::vector<PluginEntry> parseDiscovery(const std::string& output, const PluginEntry& file, bool win32 = false);
 
 std::vector<std::string> audioDrivers();
 std::string defaultAudioDriver();
@@ -103,6 +111,7 @@ public:
     void setActive(uint id, bool active);
     void setVolume(uint id, float volume);
     std::string audioFilePath(uint id) const; // file played by an "audiofile" or "midifile" slot
+    void setPlayerFile(uint id, const std::string& path); // a MIDI file player reads (another) file in place
     void showCustomUi(uint id, bool show);
     std::pair<float, float> outputPeaks(uint id) const;
 
@@ -115,6 +124,13 @@ public:
     std::vector<MidiProgram> midiPrograms(uint id) const;
     int currentMidiProgram(uint id) const; // index into midiPrograms(), -1 without one
     void setMidiProgram(uint id, uint32_t index);
+
+    // plays a note on an instrument right away (velocity 0: note off), e.g. while editing notes
+    void sendNote(uint id, uint8_t channel, uint8_t note, uint8_t velocity);
+
+    // a plugin's whole state (e.g. the library loaded in Kontakt) in a .carxs file
+    bool savePluginState(uint id, const std::string& path);
+    bool loadPluginState(uint id, const std::string& path);
 
     // parameters
     std::vector<ParamInfo> parameters(uint id) const;

@@ -148,6 +148,15 @@ void Session::matchProgram(int track)
         }
 }
 
+bool Session::reloadMidiFile(int track, const std::string& path)
+{
+    if (!valid(track) || fTracks[track].kind != TrackKind::Instrument || fTracks[track].source < 0)
+        return setTrackFile(track, path);
+    fHost.setPlayerFile(static_cast<uint>(fTracks[track].source), path);
+    fTracks[track].file = path;
+    return true;
+}
+
 bool Session::setInstrument(int track, const std::string& spec)
 {
     if (!valid(track) || fTracks[track].kind != TrackKind::Instrument)
@@ -164,6 +173,7 @@ bool Session::setInstrument(int track, const std::string& spec)
         return false;
     }
     fTracks[track].instrument = static_cast<int>(fHost.pluginCount() - 1);
+    fTracks[track].instrumentSpec = spec;
     matchProgram(track);
     reroute();
     return true;
@@ -374,6 +384,8 @@ bool Session::save(const std::string& path)
             out << "instrument " << t.instrument << "\n";
         if (!t.role.empty())
             out << "role " << t.role << "\n";
+        if (!t.instrumentSpec.empty())
+            out << "instrument-spec " << t.instrumentSpec << "\n";
     }
     return static_cast<bool>(out);
 }
@@ -424,6 +436,8 @@ bool Session::load(const std::string& path)
         }
         else if (key == "role" && !tracks.empty())
             tracks.back().role = rest;
+        else if (key == "instrument-spec" && !tracks.empty())
+            tracks.back().instrumentSpec = rest;
     }
 
     const fs::path carlaPath = fs::u8path(path).parent_path() / fs::u8path(carlaFile);

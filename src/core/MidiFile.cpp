@@ -246,4 +246,113 @@ bool readMidiFile(const std::string& path, MidiClip& clip, std::string& error)
     return true;
 }
 
+namespace {
+
+void putVarLen(std::string& out, uint32_t value)
+{
+    char bytes[4];
+    int n = 0;
+    do
+    {
+        bytes[n++] = static_cast<char>(value & 0x7F);
+        value >>= 7;
+    } while (value != 0 && n < 4);
+    while (n > 1)
+        out += static_cast<char>(bytes[--n] | 0x80);
+    out += bytes[0];
+}
+
+void put32(std::string& out, uint32_t v)
+{
+    for (int shift = 24; shift >= 0; shift -= 8)
+        out += static_cast<char>((v >> shift) & 0xFF);
+}
+
+void putTrack(std::string& file, const std::string& events)
+{
+    file += "MTrk";
+    put32(file, static_cast<uint32_t>(events.size()));
+    file += events;
+}
+
+} // namespace
+
+bool writeMidiFile(const std::string& path, const MidiClip& clip, std::string& error)
+{
+    constexpr int ppq = 480;
+    const double tempo = clip.tempo > 0.0 ? clip.tempo : 120.0;
+    const double ticksPerSecond = ppq * tempo / 60.0;
+    auto tickOf = [&](double seconds) { return static_cast<uint64_t>(std::max(0.0, seconds) * ticksPerSecond + 0.5); };
+
+    std::string conductor;
+    putVarLen(conductor, 0);
+    const uint32_t microseconds = static_cast<uint32_t>(60e6 / tempo + 0.5);
+    conductor += "\xFF\x51\x03";
+    conductor += static_cast<char>((microseconds >> 16) & 0xFF);
+    conductor += static_cast<char>((microseconds >> 8) & 0xFF);
+    conductor += static_cast<char>(microseconds & 0xFF);
+    putVarLen(conductor, 0);
+    conductor += "\xFF\x58\x04\x04\x02\x18\x08"; // 4/4
+    putVarLen(conductor, 0);
+    conductor += std::string("\xFF\x2F\x00", 3);
+
+    struct Ev { uint64_t tick; int order; uint8_t status, a, b; };
+    std::vector<Ev> evs;
+    bool channels[16] = {};
+    for (const MidiNote& n : clip.notes)
+    {
+        const uint8_t ch = n.channel & 0x0F;
+        channels[ch] = true;
+        const uint64_t on = tickOf(n.start);
+        const uint64_t off = std::max(on + 1, tickOf(n.end));
+        evs.push_back({on, 1, static_cast<uint8_t>(0x90 | ch), n.pitch, std::max<uint8_t>(1, n.velocity)});
+        evs.push_back({off, 0, static_cast<uint8_t>(0x80 | ch), n.pitch, 0}); // note offs first at the same tick
+    }
+    std::stable_sort(evs.begin(), evs.end(), [](const Ev& x, const Ev& y) { return x.tick != y.tick ? x.tick < y.tick : x.order < y.order; });
+
+    std::string notes;
+    if (!clip.name.empty())
+    {
+        putVarLen(notes, 0);
+        notes += "\xFF\x03";
+        putVarLen(notes, static_cast<uint32_t>(clip.name.size()));
+        notes += clip.name;
+    }
+    if (clip.program >= 0)
+        for (uint8_t ch = 0; ch < 16; ++ch)
+            if (channels[ch] && ch != 9)
+            {
+                putVarLen(notes, 0);
+                notes += static_cast<char>(0xC0 | ch);
+                notes += static_cast<char>(clip.program & 0x7F);
+            }
+    uint64_t last = 0;
+    for (const Ev& e : evs)
+    {
+        putVarLen(notes, static_cast<uint32_t>(e.tick - last));
+        last = e.tick;
+        notes += static_cast<char>(e.status);
+        notes += static_cast<char>(e.a);
+        notes += static_cast<char>(e.b);
+    }
+    putVarLen(notes, 0);
+    notes += std::string("\xFF\x2F\x00", 3);
+
+    std::string file = "MThd";
+    put32(file, 6);
+    file += std::string("\x00\x01\x00\x02", 4);
+    file += static_cast<char>(ppq >> 8);
+    file += static_cast<char>(ppq & 0xFF);
+    putTrack(file, conductor);
+    putTrack(file, notes);
+
+    std::ofstream out(fs::u8path(path), std::ios::binary | std::ios::trunc);
+    if (!out || !out.write(file.data(), static_cast<std::streamsize>(file.size())))
+    {
+        error = "cannot write " + path;
+        return false;
+    }
+    return true;
+}
+
 } // namespace chost

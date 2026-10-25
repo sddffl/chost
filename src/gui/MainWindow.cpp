@@ -1,5 +1,9 @@
 #include "MainWindow.h"
 
+#include "InstrumentDialog.h"
+#include "Instruments.h"
+#include "PianoRoll.h"
+#include "PluginDiscovery.h"
 #include "PluginWindows.h"
 #include "Resources.h"
 #include "StemDialog.h"
@@ -65,6 +69,30 @@ static bool isMidiFile(const QString& path)
     return suffix == QLatin1String("mid") || suffix == QLatin1String("midi");
 }
 
+// The kind of part an audio track holds when it wasn't made by stem separation, guessed from its name.
+static QString guessRole(const QString& name)
+{
+    const QString n = name.toLower();
+    static const std::vector<std::pair<QStringList, QString>> words{
+        {{QStringLiteral("kick"), QStringLiteral("底鼓")}, QStringLiteral("kick")},
+        {{QStringLiteral("snare"), QStringLiteral("军鼓")}, QStringLiteral("snare")},
+        {{QStringLiteral("hihat"), QStringLiteral("hi-hat"), QStringLiteral("hh"), QStringLiteral("踩镲")}, QStringLiteral("hh")},
+        {{QStringLiteral("tom"), QStringLiteral("通鼓")}, QStringLiteral("toms")},
+        {{QStringLiteral("drum"), QStringLiteral("鼓")}, QStringLiteral("drums")},
+        {{QStringLiteral("bass"), QStringLiteral("贝斯")}, QStringLiteral("bass")},
+        {{QStringLiteral("lead"), QStringLiteral("melody"), QStringLiteral("主旋律")}, QStringLiteral("lead")},
+        {{QStringLiteral("backing"), QStringLiteral("harmony"), QStringLiteral("和声")}, QStringLiteral("backing")},
+        {{QStringLiteral("vocal"), QStringLiteral("vox"), QStringLiteral("voice"), QStringLiteral("人声"), QStringLiteral("主唱")}, QStringLiteral("vocals")},
+        {{QStringLiteral("guitar"), QStringLiteral("gtr"), QStringLiteral("吉他")}, QStringLiteral("guitar")},
+        {{QStringLiteral("piano"), QStringLiteral("keys"), QStringLiteral("钢琴")}, QStringLiteral("piano")},
+    };
+    for (const auto& [keys, role] : words)
+        for (const QString& key : keys)
+            if (n.contains(key))
+                return role;
+    return {};
+}
+
 static const QString kImportFilter = QStringLiteral(
     "音频和 MIDI (*.wav *.flac *.ogg *.mp3 *.aiff *.aif *.mid *.midi);;音频文件 (*.wav *.flac *.ogg *.mp3 *.aiff *.aif);;"
     "MIDI 文件 (*.mid *.midi);;所有文件 (*)");
@@ -105,6 +133,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(fArrange, &ArrangeView::soloToggled, this, &MainWindow::setSolo);
     connect(fArrange, &ArrangeView::trackMenuRequested, this, &MainWindow::trackMenu);
     connect(fArrange, &ArrangeView::filesDropped, this, &MainWindow::dropFiles);
+    connect(fArrange, &ArrangeView::clipDoubleClicked, this, &MainWindow::editNotes);
 
     auto* space = new QShortcut(QKeySequence(Qt::Key_Space), this);
     connect(space, &QShortcut::activated, this, &MainWindow::togglePlay);
@@ -119,6 +148,16 @@ MainWindow::MainWindow(QWidget* parent)
     connect(fTimer, &QTimer::timeout, this, &MainWindow::tick);
     fTimer->start(30);
 
+    fDiscovery = new PluginDiscovery(this);
+    connect(fDiscovery, &PluginDiscovery::progress, this, [this](int done, int total, const QString& name) {
+        if (done < total)
+            statusBar()->showMessage(QStringLiteral("正在识别插件 %1/%2：%3").arg(done + 1).arg(total).arg(name));
+    });
+    connect(fDiscovery, &PluginDiscovery::finished, this, [this] {
+        showPlugins();
+        statusBar()->showMessage(QStringLiteral("插件识别完成，共 %1 个").arg(fPlugins.size()), 5000);
+    });
+
     startEngine(QString::fromStdString(chost::defaultAudioDriver()));
     rescanPlugins();
     updateTitle();
@@ -129,6 +168,7 @@ MainWindow::~MainWindow()
     fTimer->stop();
     delete fStemDialog;
     delete fTranscribeDialog;
+    delete fPianoRoll;
     closeEditors();
     fHost.setEventCallback(nullptr);
     fHost.stop();
@@ -166,6 +206,8 @@ void MainWindow::buildMenus()
     QMenu* plugins = menuBar()->addMenu(QStringLiteral("插件"));
     plugins->addAction(QStringLiteral("给选中轨道添加插入效果…"), this, &MainWindow::addInsert);
     plugins->addSeparator();
+    plugins->addAction(QStringLiteral("乐器设置（每种乐器用哪个音源）…"), this, &MainWindow::instrumentSettings);
+    plugins->addSeparator();
     plugins->addAction(QStringLiteral("插件文件夹…"), this, &MainWindow::editPluginFolders);
     plugins->addAction(QStringLiteral("重新扫描插件"), this, &MainWindow::rescanPlugins);
 
@@ -173,6 +215,7 @@ void MainWindow::buildMenus()
     ai->addAction(QStringLiteral("自动分轨…"), QKeySequence(QStringLiteral("Ctrl+Shift+S")), this, [this] { separateStems(); });
     ai->addAction(QStringLiteral("转 MIDI（选中轨道）…"), QKeySequence(QStringLiteral("Ctrl+Shift+M")), this, [this] { transcribe(false); });
     ai->addAction(QStringLiteral("转 MIDI（多条轨道）…"), this, [this] { transcribe(true); });
+    ai->addAction(QStringLiteral("MIDI 轨全部换成真实音源"), this, &MainWindow::applyInstruments);
 }
 
 void MainWindow::buildTransport()
@@ -289,6 +332,17 @@ QWidget* MainWindow::buildInspector()
     fInstrumentEdit = new QPushButton(QStringLiteral("打开界面"));
     instrumentButtons->addWidget(fInstrumentEdit);
     instrument->addLayout(instrumentButtons);
+    fInstrumentNotes = new QPushButton(QStringLiteral("编辑音符（钢琴卷帘）…"));
+    fInstrumentNotes->setToolTip(QStringLiteral("改错音、加音、删音，也可以双击轨道上的 MIDI"));
+    instrument->addWidget(fInstrumentNotes);
+    connect(fInstrumentNotes, &QPushButton::clicked, this, [this] { editNotes(fSelected); });
+    fInstrumentRemember = new QPushButton(QStringLiteral("记住这个音色"));
+    fInstrumentRemember->setToolTip(QStringLiteral("把这个乐器和你在它里面选好的音色记下来，以后同一种乐器的 MIDI 轨自动用它"));
+    instrument->addWidget(fInstrumentRemember);
+    auto* settings = new QPushButton(QStringLiteral("乐器设置…"));
+    instrument->addWidget(settings);
+    connect(fInstrumentRemember, &QPushButton::clicked, this, &MainWindow::rememberInstrument);
+    connect(settings, &QPushButton::clicked, this, &MainWindow::instrumentSettings);
     body->addWidget(fInstrumentBox);
     connect(choose, &QPushButton::clicked, this, &MainWindow::chooseInstrument);
     connect(fInstrumentEdit, &QPushButton::clicked, this, &MainWindow::editInstrument);
@@ -499,6 +553,8 @@ void MainWindow::tick()
     const double seconds = rate > 0.0 ? static_cast<double>(fHost.transportFrame()) / rate : 0.0;
     const bool playing = fHost.isPlaying();
     fArrange->setPlayhead(seconds, playing);
+    if (fPianoRoll)
+        fPianoRoll->setPlayhead(seconds);
 
     const int ms = static_cast<int>(seconds * 1000.0);
     fTimeLcd->setText(QStringLiteral("%1:%2:%3.%4")
@@ -807,7 +863,8 @@ int MainWindow::addMidiTrack(const QString& path, const QString& name, const QSt
         showError(QStringLiteral("无法添加轨道：%1").arg(QString::fromStdString(fSession.lastError())));
         return -1;
     }
-    fSession.setRole(track, role.toStdString());
+    // an imported file says what it is by its name, e.g. "bass.mid"
+    fSession.setRole(track, (role.isEmpty() ? guessRole(trackName + QLatin1Char(' ') + QFileInfo(path).completeBaseName()) : role).toStdString());
     if (!fSession.setTrackFile(track, path.toStdString()))
     {
         const QString error = QString::fromStdString(fSession.lastError());
@@ -816,13 +873,7 @@ int MainWindow::addMidiTrack(const QString& path, const QString& name, const QSt
         showError(QStringLiteral("无法打开 MIDI 文件：%1\n\n%2").arg(path, error));
         return -1;
     }
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const QString spec = instrumentFor(role);
-    bool ok = !spec.isEmpty() && fSession.setInstrument(track, spec.toStdString());
-    if (!ok && spec != resources::defaultInstrumentSpec() && !resources::defaultInstrumentSpec().isEmpty())
-        ok = fSession.setInstrument(track, resources::defaultInstrumentSpec().toStdString()); // the user's choice is gone
-    QApplication::restoreOverrideCursor();
-    if (!ok)
+    if (!loadInstrument(track, instruments::choiceFor(QString::fromStdString(fSession.tracks()[track].role))))
         statusBar()->showMessage(QStringLiteral("没有加载到乐器，请在检查器里选择一个乐器"), 8000);
     fSelected = track;
     refreshTracks();
@@ -870,23 +921,77 @@ void MainWindow::addInstrumentTrack()
         showError(QStringLiteral("无法添加轨道：%1").arg(QString::fromStdString(fSession.lastError())));
         return;
     }
-    const QString spec = instrumentFor({});
-    if (!spec.isEmpty())
-        fSession.setInstrument(track, spec.toStdString());
+    loadInstrument(track, instruments::choiceFor({}));
     fSelected = track;
     refreshTracks();
 }
 
-QString MainWindow::instrumentFor(const QString& role) const
+bool MainWindow::loadInstrument(int track, const instruments::Choice& choice)
 {
-    // the user's choice for this kind of part, then their choice for every MIDI track, then the bundled GM sounds
-    const QSettings settings;
-    if (!role.isEmpty())
-        if (const QString spec = settings.value(QStringLiteral("instruments/") + role).toString(); !spec.isEmpty())
-            return spec;
-    if (const QString spec = settings.value(QStringLiteral("instruments/default")).toString(); !spec.isEmpty())
-        return spec;
-    return resources::defaultInstrumentSpec();
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    bool ok = !choice.spec.isEmpty() && fSession.setInstrument(track, choice.spec.toStdString());
+    if (ok && !choice.state.isEmpty())
+        fHost.loadPluginState(static_cast<uint>(fSession.tracks()[track].instrument), choice.state.toStdString());
+    // the user's instrument may be uninstalled since: the bundled sounds still play the part
+    const QString bundled = instruments::bundledSpec();
+    if (!ok && choice.spec != bundled && !bundled.isEmpty())
+        ok = fSession.setInstrument(track, bundled.toStdString());
+    QApplication::restoreOverrideCursor();
+    return ok;
+}
+
+void MainWindow::applyInstruments()
+{
+    closeEditors();
+    int changed = 0;
+    const int count = static_cast<int>(fSession.tracks().size());
+    for (int i = 0; i < count; ++i)
+    {
+        const chost::Track& t = fSession.tracks()[i];
+        if (t.kind != chost::TrackKind::Instrument)
+            continue;
+        const instruments::Choice choice = instruments::choiceFor(QString::fromStdString(t.role));
+        if (choice.spec.toStdString() == t.instrumentSpec && choice.state.isEmpty())
+            continue;
+        statusBar()->showMessage(QStringLiteral("正在加载 %1…").arg(choice.name));
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        if (loadInstrument(i, choice))
+            ++changed;
+    }
+    const int keep = fSelected;
+    refreshTracks();
+    selectTrack(keep);
+    statusBar()->showMessage(QStringLiteral("已给 %1 条 MIDI 轨换上设置的乐器").arg(changed), 6000);
+}
+
+void MainWindow::instrumentSettings()
+{
+    InstrumentDialog dialog(fPlugins, fDiscovery->isRunning(), this);
+    connect(&dialog, &InstrumentDialog::applyRequested, this, &MainWindow::applyInstruments);
+    dialog.exec();
+}
+
+void MainWindow::rememberInstrument()
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (fSelected < 0 || fSelected >= static_cast<int>(tracks.size()) || tracks[fSelected].instrument < 0)
+        return;
+    const chost::Track& t = tracks[fSelected];
+    const QString key = instruments::keyFor(QString::fromStdString(t.role));
+    const uint id = static_cast<uint>(t.instrument);
+    instruments::Choice choice{QString::fromStdString(t.instrumentSpec), QString::fromStdString(fHost.slot(id).name), {}};
+    if (choice.spec.isEmpty())
+    {
+        showError(QStringLiteral("这个乐器是从旧工程里打开的，请先点“换乐器…”重新选一次。"));
+        return;
+    }
+    // the sound chosen inside the plugin (a Kontakt library, a preset) comes back with it
+    const QString state = instruments::statePath(key);
+    if (fHost.savePluginState(id, state.toStdString()))
+        choice.state = state;
+    instruments::store(key, choice);
+    statusBar()->showMessage(QStringLiteral("记住了：以后的“%1”都用 %2").arg(instruments::roleName(key), choice.name), 6000);
+    refreshInstrument();
 }
 
 bool MainWindow::isDrumTrack(int track)
@@ -920,12 +1025,10 @@ void MainWindow::chooseInstrument()
         showError(QStringLiteral("先选中一条乐器轨（MIDI 轨）。"));
         return;
     }
-    PluginPicker picker(fPlugins, this);
-    picker.setWindowTitle(QStringLiteral("选择乐器"));
+    PluginPicker picker(fPlugins, this, PluginPicker::Instruments);
     if (picker.exec() != QDialog::Accepted || picker.selectedSpec().isEmpty())
         return;
     const QString spec = picker.selectedSpec();
-    const QString role = QString::fromStdString(tracks[fSelected].role);
     closeEditors();
     QApplication::setOverrideCursor(Qt::WaitCursor);
     const bool ok = fSession.setInstrument(fSelected, spec.toStdString());
@@ -940,19 +1043,7 @@ void MainWindow::chooseInstrument()
     refreshTracks();
     selectTrack(keep);
 
-    // remember it, so the next converted or imported part of this kind gets the same instrument
-    if (QGuiApplication::platformName() != QLatin1String("offscreen"))
-    {
-        QMessageBox ask(this);
-        ask.setWindowTitle(QStringLiteral("记住这个乐器？"));
-        ask.setText(role.isEmpty() ? QStringLiteral("以后新的 MIDI 轨都默认用这个乐器吗？")
-                                   : QStringLiteral("以后转出来的“%1”都默认用这个乐器吗？").arg(QString::fromStdString(tracks[keep].name)));
-        QPushButton* yes = ask.addButton(QStringLiteral("记住"), QMessageBox::AcceptRole);
-        ask.addButton(QStringLiteral("只用这一次"), QMessageBox::RejectRole);
-        ask.exec();
-        if (ask.clickedButton() == yes)
-            QSettings().setValue(QStringLiteral("instruments/") + (role.isEmpty() ? QStringLiteral("default") : role), spec);
-    }
+    statusBar()->showMessage(QStringLiteral("选好音色后，点检查器里的“记住这个音色”，以后同一种乐器就自动用它"), 8000);
 }
 
 void MainWindow::editInstrument()
@@ -984,6 +1075,11 @@ void MainWindow::refreshInstrument()
     const int id = tracks[fSelected].instrument;
     fInstrumentName->setText(id >= 0 ? QString::fromStdString(fHost.slot(static_cast<uint>(id)).name) : QStringLiteral("没有乐器"));
     fInstrumentEdit->setEnabled(id >= 0);
+    fInstrumentNotes->setEnabled(!tracks[fSelected].file.empty());
+    const QString key = instruments::keyFor(QString::fromStdString(tracks[fSelected].role));
+    fInstrumentRemember->setEnabled(id >= 0);
+    fInstrumentRemember->setText(key == QLatin1String("default") ? QStringLiteral("记住这个音色")
+                                                                : QStringLiteral("记住这个音色（以后的%1都用它）").arg(instruments::roleName(key)));
 
     const QSignalBlocker blocker(fProgramBox);
     fProgramBox->clear();
@@ -1058,6 +1154,7 @@ void MainWindow::trackMenu(int track, const QPoint& globalPos)
         const chost::Track& t = fSession.tracks()[track];
         if (t.kind == chost::TrackKind::Instrument)
         {
+            menu.addAction(QStringLiteral("编辑音符…"), this, [this, track] { editNotes(track); })->setEnabled(!t.file.empty());
             menu.addAction(QStringLiteral("替换 MIDI…"), this, &MainWindow::replaceAudio);
             menu.addAction(QStringLiteral("换乐器…"), this, &MainWindow::chooseInstrument);
             menu.addAction(QStringLiteral("打开乐器界面"), this, &MainWindow::editInstrument)->setEnabled(t.instrument >= 0);
@@ -1263,30 +1360,6 @@ void MainWindow::separateStems(bool autoStart)
     fStemDialog->show();
 }
 
-// The kind of part an audio track holds when it wasn't made by stem separation, guessed from its name.
-static QString guessRole(const QString& name)
-{
-    const QString n = name.toLower();
-    static const std::vector<std::pair<QStringList, QString>> words{
-        {{QStringLiteral("kick"), QStringLiteral("底鼓")}, QStringLiteral("kick")},
-        {{QStringLiteral("snare"), QStringLiteral("军鼓")}, QStringLiteral("snare")},
-        {{QStringLiteral("hihat"), QStringLiteral("hi-hat"), QStringLiteral("hh"), QStringLiteral("踩镲")}, QStringLiteral("hh")},
-        {{QStringLiteral("tom"), QStringLiteral("通鼓")}, QStringLiteral("toms")},
-        {{QStringLiteral("drum"), QStringLiteral("鼓")}, QStringLiteral("drums")},
-        {{QStringLiteral("bass"), QStringLiteral("贝斯")}, QStringLiteral("bass")},
-        {{QStringLiteral("lead"), QStringLiteral("melody"), QStringLiteral("主旋律")}, QStringLiteral("lead")},
-        {{QStringLiteral("backing"), QStringLiteral("harmony"), QStringLiteral("和声")}, QStringLiteral("backing")},
-        {{QStringLiteral("vocal"), QStringLiteral("vox"), QStringLiteral("voice"), QStringLiteral("人声"), QStringLiteral("主唱")}, QStringLiteral("vocals")},
-        {{QStringLiteral("guitar"), QStringLiteral("gtr"), QStringLiteral("吉他")}, QStringLiteral("guitar")},
-        {{QStringLiteral("piano"), QStringLiteral("keys"), QStringLiteral("钢琴")}, QStringLiteral("piano")},
-    };
-    for (const auto& [keys, role] : words)
-        for (const QString& key : keys)
-            if (n.contains(key))
-                return role;
-    return {};
-}
-
 void MainWindow::transcribe(bool allTracks, bool autoStart)
 {
     if (fTranscribeDialog && fTranscribeDialog->isVisible())
@@ -1321,46 +1394,154 @@ void MainWindow::transcribe(bool allTracks, bool autoStart)
     delete fTranscribeDialog;
     fTranscribeDialog = new TranscribeDialog(sources, kTempo, this);
 
+    // the drum parts of one run end up on one track, so a single drum instrument plays the whole kit
+    struct Part { QString source, midi; };
+    auto drumParts = std::make_shared<std::vector<Part>>();
     connect(fTranscribeDialog, &TranscribeDialog::midiReady, this,
-            [this](const QString& sourceFile, const QString& role, const QString& trackName, const QString& midiPath) {
-        auto trackOf = [this](const QString& path) {
-            const std::vector<chost::Track>& all = fSession.tracks();
-            for (size_t i = 0; i < all.size(); ++i)
-                if (QString::fromStdString(all[i].file) == path)
-                    return static_cast<int>(i);
-            return -1;
-        };
-        // converting again replaces the earlier MIDI track of the same part
-        if (const int old = trackOf(midiPath); old >= 0)
-        {
-            closeEditors();
-            fSession.removeTrack(old);
-            fColours.erase(fColours.begin() + old);
-        }
-        fClips.remove(midiPath);
-        const int keep = fSelected;
-        const int track = addMidiTrack(midiPath, trackName + QStringLiteral(" MIDI"), role);
-        if (track < 0)
-            return;
-        // the MIDI goes right below its audio, in the same colour, and is what you hear from now on
-        if (const int source = trackOf(sourceFile); source >= 0)
-        {
-            fSession.setMuted(source, true);
-            const int to = std::min(track, source + 1);
-            fSession.moveTrack(track, to);
-            fColours.erase(fColours.begin() + track);
-            fColours.insert(fColours.begin() + to, fColours[source]);
-            --fNextColour;
-            refreshTracks();
-        }
-        selectTrack(keep);
+            [this, drumParts](const QString& sourceFile, const QString& role, const QString& trackName, const QString& midiPath) {
+        static const QStringList parts{QStringLiteral("kick"), QStringLiteral("snare"), QStringLiteral("toms"),
+                                       QStringLiteral("hh"), QStringLiteral("ride"), QStringLiteral("crash")};
+        if (parts.contains(role))
+            drumParts->push_back({sourceFile, midiPath});
+        else
+            placeMidiTrack({sourceFile}, midiPath, trackName + QStringLiteral(" MIDI"), role);
     });
-    connect(fTranscribeDialog, &TranscribeDialog::transcriptionFinished, this, [this](bool ok) {
+    connect(fTranscribeDialog, &TranscribeDialog::transcriptionFinished, this, [this, drumParts](bool ok) {
+        if (drumParts->size() == 1)
+        {
+            const Part& p = drumParts->front();
+            placeMidiTrack({p.source}, p.midi, QFileInfo(p.source).completeBaseName() + QStringLiteral(" MIDI"),
+                           guessRole(QFileInfo(p.midi).completeBaseName()));
+        }
+        else if (drumParts->size() > 1)
+        {
+            chost::MidiClip kit;
+            kit.name = "Drums";
+            QStringList sources;
+            for (const Part& p : *drumParts)
+            {
+                chost::MidiClip clip;
+                std::string error;
+                if (chost::readMidiFile(p.midi.toStdString(), clip, error))
+                {
+                    kit.tempo = clip.tempo;
+                    kit.notes.insert(kit.notes.end(), clip.notes.begin(), clip.notes.end());
+                }
+                sources << p.source;
+            }
+            std::stable_sort(kit.notes.begin(), kit.notes.end(), [](const chost::MidiNote& a, const chost::MidiNote& b) { return a.start < b.start; });
+            const QString path = QFileInfo(drumParts->front().midi).absoluteDir().filePath(QStringLiteral("drum-kit.mid"));
+            std::string error;
+            if (chost::writeMidiFile(path.toStdString(), kit, error))
+                placeMidiTrack(sources, path, QStringLiteral("鼓 MIDI"), QStringLiteral("drums"));
+            else
+                showError(QString::fromStdString(error));
+        }
+        drumParts->clear();
         if (ok)
             statusBar()->showMessage(QStringLiteral("转 MIDI 完成"), 5000);
     });
     fTranscribeDialog->setAutoStart(autoStart);
     fTranscribeDialog->show();
+}
+
+void MainWindow::placeMidiTrack(const QStringList& sources, const QString& midiPath, const QString& name, const QString& role)
+{
+    auto trackOf = [this](const QString& path) {
+        const std::vector<chost::Track>& all = fSession.tracks();
+        for (size_t i = 0; i < all.size(); ++i)
+            if (QString::fromStdString(all[i].file) == path)
+                return static_cast<int>(i);
+        return -1;
+    };
+    // converting again replaces the earlier MIDI track of the same part
+    if (const int old = trackOf(midiPath); old >= 0)
+    {
+        closeEditors();
+        fSession.removeTrack(old);
+        fColours.erase(fColours.begin() + old);
+    }
+    fClips.remove(midiPath);
+    const int keep = fSelected;
+    const int track = addMidiTrack(midiPath, name, role);
+    if (track < 0)
+        return;
+
+    // the MIDI is what you hear from now on: its audio is muted
+    int below = -1;
+    for (const QString& source : sources)
+        if (const int t = trackOf(source); t >= 0)
+        {
+            fSession.setMuted(t, true);
+            below = std::max(below, t);
+        }
+    // it goes below its audio, in the same colour; a whole drum kit below the drum parts
+    if (below >= 0)
+    {
+        const int to = std::min(track, below + 1);
+        const QColor colour = fColours[below];
+        fSession.moveTrack(track, to);
+        fColours.erase(fColours.begin() + track);
+        fColours.insert(fColours.begin() + to, colour);
+        --fNextColour;
+        refreshTracks();
+    }
+    selectTrack(keep);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// MIDI editing
+
+int MainWindow::trackOfFile(const QString& path) const
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    for (size_t i = 0; i < tracks.size(); ++i)
+        if (QString::fromStdString(tracks[i].file) == path)
+            return static_cast<int>(i);
+    return -1;
+}
+
+void MainWindow::editNotes(int track)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (track < 0 || track >= static_cast<int>(tracks.size()) || tracks[track].kind != chost::TrackKind::Instrument ||
+        tracks[track].file.empty())
+        return;
+    selectTrack(track);
+    const QString path = QString::fromStdString(tracks[track].file);
+    if (fPianoRoll && fPianoRoll->midiPath() == path)
+    {
+        fPianoRoll->raise();
+        fPianoRoll->activateWindow();
+        return;
+    }
+    delete fPianoRoll;
+    fPianoRoll = new PianoRollDialog(QString::fromStdString(tracks[track].name), path, trackColour(track), this);
+    fPianoRoll->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(fPianoRoll, &PianoRollDialog::saved, this, [this](const QString& oldPath, const QString& newPath) {
+        const int t = trackOfFile(oldPath);
+        if (t < 0)
+            return;
+        fSession.reloadMidiFile(t, newPath.toStdString());
+        fClips.remove(oldPath);
+        fClips.remove(newPath);
+        const int keep = fSelected;
+        refreshTracks();
+        selectTrack(keep);
+    });
+    connect(fPianoRoll, &PianoRollDialog::audition, this, [this](const QString& midiPath, int pitch, int channel) {
+        const int t = trackOfFile(midiPath);
+        if (t < 0 || fSession.tracks()[t].instrument < 0)
+            return;
+        const uint id = static_cast<uint>(fSession.tracks()[t].instrument);
+        fHost.sendNote(id, static_cast<uint8_t>(channel), static_cast<uint8_t>(pitch), 100);
+        QTimer::singleShot(300, this, [this, id, channel, pitch] {
+            if (id < fHost.pluginCount())
+                fHost.sendNote(id, static_cast<uint8_t>(channel), static_cast<uint8_t>(pitch), 0);
+        });
+    });
+    fPianoRoll->show();
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1432,11 +1613,19 @@ void MainWindow::editPluginFolders()
 void MainWindow::rescanPlugins()
 {
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    fPlugins = chost::scanPlugins();
+    fPluginFiles = chost::scanPlugins();
     QApplication::restoreOverrideCursor();
+    showPlugins();
+    statusBar()->showMessage(QStringLiteral("找到 %1 个插件").arg(fPlugins.size()), 5000);
+    // what the VST files hold is found out in the background, known ones come from the cache right away
+    fDiscovery->start(fPluginFiles);
+}
+
+void MainWindow::showPlugins()
+{
+    fPlugins = fDiscovery->resolve(fPluginFiles);
     fillPluginTree(fBrowser, fPlugins);
     filterPluginTree(fBrowser, fSearch->text());
-    statusBar()->showMessage(QStringLiteral("找到 %1 个插件").arg(fPlugins.size()), 5000);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

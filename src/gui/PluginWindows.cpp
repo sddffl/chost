@@ -2,6 +2,8 @@
 
 #include <QCheckBox>
 #include <QDialogButtonBox>
+#include <QDir>
+#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -171,10 +173,10 @@ void filterPluginTree(QTreeWidget* tree, const QString& text)
     }
 }
 
-PluginPicker::PluginPicker(const std::vector<chost::PluginEntry>& plugins, QWidget* parent)
+PluginPicker::PluginPicker(const std::vector<chost::PluginEntry>& plugins, QWidget* parent, Kind kind)
     : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("添加插入效果"));
+    setWindowTitle(kind == Instruments ? QStringLiteral("选择乐器") : QStringLiteral("添加插入效果"));
     resize(520, 560);
 
     auto* layout = new QVBoxLayout(this);
@@ -188,12 +190,37 @@ PluginPicker::PluginPicker(const std::vector<chost::PluginEntry>& plugins, QWidg
     fList->setRootIsDecorated(false);
     fList->setAlternatingRowColors(true);
     fList->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    fillPluginTree(fList, plugins);
+    if (kind == Instruments)
+    {
+        // instruments, and VST files not identified yet (they might be one)
+        std::vector<chost::PluginEntry> shown;
+        for (const chost::PluginEntry& e : plugins)
+            if (e.isSynth || (e.category.empty() && (e.format == "VST2" || e.format == "VST3")))
+                shown.push_back(e);
+        fillPluginTree(fList, shown);
+    }
+    else
+    {
+        fillPluginTree(fList, plugins);
+    }
     fList->sortByColumn(0, Qt::AscendingOrder);
     layout->addWidget(fList);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("添加"));
+    buttons->button(QDialogButtonBox::Ok)->setText(kind == Instruments ? QStringLiteral("加载") : QStringLiteral("添加"));
+    if (kind == Instruments)
+    {
+        auto* file = buttons->addButton(QStringLiteral("音色库文件（SF2/SFZ）…"), QDialogButtonBox::ActionRole);
+        connect(file, &QPushButton::clicked, this, [this] {
+            const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("选择音色库文件"), {},
+                                                              QStringLiteral("音色库 (*.sf2 *.sfz);;所有文件 (*)"));
+            if (path.isEmpty())
+                return;
+            fFileSpec = (path.endsWith(QLatin1String(".sfz"), Qt::CaseInsensitive) ? QStringLiteral("sfz:") : QStringLiteral("sf2:"))
+                        + QDir::toNativeSeparators(path);
+            accept();
+        });
+    }
     buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
     layout->addWidget(buttons);
 
@@ -206,6 +233,8 @@ PluginPicker::PluginPicker(const std::vector<chost::PluginEntry>& plugins, QWidg
 
 QString PluginPicker::selectedSpec() const
 {
+    if (!fFileSpec.isEmpty())
+        return fFileSpec;
     const QTreeWidgetItem* item = fList->currentItem();
     return item != nullptr ? item->data(0, Qt::UserRole).toString() : QString();
 }

@@ -23,6 +23,7 @@ struct Track {
     std::string file;          // original audio file, or the MIDI file of an instrument track; may be empty
     int source = -1;           // carla id of the audio or MIDI file player, -1 without a file
     int instrument = -1;       // instrument tracks: carla id of the instrument plugin, -1 without one
+    std::string instrumentSpec; // what was loaded as the instrument, e.g. "vst3:C:/.../Kontakt.vst3"
     std::vector<uint> inserts; // carla ids, in processing order
     uint fader = 0;            // carla id of the track's gain plugin
     float volume = 1.0f;       // 0 .. 1.27
@@ -48,6 +49,7 @@ public:
 
     int addTrack(const std::string& name, TrackKind kind = TrackKind::Audio); // the new track's index, -1 on error
     bool setTrackFile(int track, const std::string& path);      // loads or replaces the track's audio or MIDI file
+    bool reloadMidiFile(int track, const std::string& path);    // an edited MIDI file, without replacing the player
     bool setInstrument(int track, const std::string& spec);     // loads or replaces an instrument track's instrument
     void setRole(int track, const std::string& role);
     bool removeTrack(int track);
