@@ -94,6 +94,7 @@ public:
     bool addPlugin(const std::string& spec);
     bool addInternalPlugin(const std::string& label, const std::string& name);
     bool loadAudioFile(const std::string& path); // in rack mode it is moved to the first slot
+    bool loadMidiFile(const std::string& path);  // carla's MIDI file player, appended at the end
     bool removePlugin(uint id);
     bool removeAllPlugins();
     bool movePlugin(uint id, int delta);
@@ -101,9 +102,19 @@ public:
     RackSlot slot(uint id) const;
     void setActive(uint id, bool active);
     void setVolume(uint id, float volume);
-    std::string audioFilePath(uint id) const; // file played by an "audiofile" slot
+    std::string audioFilePath(uint id) const; // file played by an "audiofile" or "midifile" slot
     void showCustomUi(uint id, bool show);
     std::pair<float, float> outputPeaks(uint id) const;
+
+    // MIDI programs (the instruments of a sound font, a synth's presets)
+    struct MidiProgram {
+        uint32_t bank = 0;
+        uint32_t program = 0;
+        std::string name;
+    };
+    std::vector<MidiProgram> midiPrograms(uint id) const;
+    int currentMidiProgram(uint id) const; // index into midiPrograms(), -1 without one
+    void setMidiProgram(uint id, uint32_t index);
 
     // parameters
     std::vector<ParamInfo> parameters(uint id) const;
@@ -115,6 +126,7 @@ public:
     void refreshPatchbay(); // re-reads groups and ports; plugin ids shift when a plugin is removed
     void disconnectAll();
     bool connect(uint fromPlugin, uint toPlugin);
+    bool connectMidi(uint fromPlugin, uint toPlugin); // first MIDI output to first MIDI input
     bool connectToOutput(uint plugin);
 
     // transport / project
@@ -134,6 +146,7 @@ private:
         int pluginId = -1;
         std::string name;
         std::vector<uint> audioIns, audioOuts;
+        std::vector<uint> midiIns, midiOuts;
     };
     void trackPatchbay(CarlaBackend::EngineCallbackOpcode action, uint id, int value1, int value2, const char* valueStr);
     bool connectGroups(uint fromGroup, uint toGroup);

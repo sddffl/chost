@@ -347,8 +347,11 @@ void ArrangeView::paintEvent(QPaintEvent*)
                    p.fontMetrics().elidedText(l.name, Qt::ElideRight, kHeaderWidth - 80));
         p.setFont(small);
         p.setPen(theme::textDim);
+        const QString kind = l.kindText.isEmpty() ? QStringLiteral("音频") : l.kindText;
         p.drawText(QRect(14, lane.top() + 30, kHeaderWidth - 20, 18), Qt::AlignVCenter,
-                   l.clipName.isEmpty() ? QStringLiteral("音频 · 空") : QStringLiteral("音频 · %1").arg(formatTime(l.seconds)));
+                   p.fontMetrics().elidedText(l.clipName.isEmpty() ? kind + QStringLiteral(" · 空")
+                                                                   : QStringLiteral("%1 · %2").arg(kind, formatTime(l.seconds)),
+                                              Qt::ElideMiddle, kHeaderWidth - 24));
 
         auto button = [&](const QRect& r, bool on, const QColor& colour, const QString& text) {
             p.fillRect(r, on ? colour : theme::panel);
@@ -394,6 +397,34 @@ void ArrangeView::paintLane(QPainter& p, int i)
     p.setPen(Qt::white);
     const int labelLeft = std::max(clip.left(), kHeaderWidth) + 6;
     p.drawText(QRect(labelLeft, clip.top(), std::max(0, clip.right() - labelLeft - 4), 15), Qt::AlignVCenter, l.clipName);
+
+    if (l.midi)
+    {
+        // a small piano roll: the clip's pitch range fills the clip's height
+        if (l.notes.empty())
+            return;
+        const QRect area(clip.left(), clip.top() + 17, clip.width(), clip.height() - 19);
+        int low = 127, high = 0;
+        for (const NoteBar& n : l.notes)
+        {
+            low = std::min(low, n.pitch);
+            high = std::max(high, n.pitch);
+        }
+        const int span = std::max(12, high - low + 1);
+        low -= (span - (high - low + 1)) / 2;
+        const double rowHeight = static_cast<double>(area.height()) / span;
+        const int barHeight = std::max(2, static_cast<int>(rowHeight));
+        for (const NoteBar& n : l.notes)
+        {
+            const int x0 = std::max(secondsToX(n.start), kHeaderWidth);
+            const int x1 = std::max(x0 + 2, secondsToX(n.end));
+            if (x1 < kHeaderWidth || x0 > width())
+                continue;
+            const int y = area.bottom() - static_cast<int>((n.pitch - low + 1) * rowHeight);
+            p.fillRect(QRect(x0, y, x1 - x0, barHeight), wave);
+        }
+        return;
+    }
 
     // waveform: one vertical line per pixel column from the peak buckets
     if (l.peaks.empty())

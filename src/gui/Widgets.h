@@ -36,9 +36,18 @@ class ArrangeView : public QWidget {
     Q_OBJECT
 
 public:
+    struct NoteBar {
+        float start = 0.0f; // seconds
+        float end = 0.0f;
+        int pitch = 0;
+    };
+
     struct Lane {
         QString name;
-        QString clipName;          // empty: the track has no audio yet
+        QString kindText;          // shown under the name, e.g. "音频" or the instrument
+        QString clipName;          // empty: the track has no audio or MIDI yet
+        bool midi = false;         // a MIDI clip: notes are drawn instead of a waveform
+        std::vector<NoteBar> notes;
         std::vector<float> peaks;  // max abs value per bucket over the whole file
         double seconds = 0.0;
         bool muted = false;

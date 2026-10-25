@@ -1,5 +1,7 @@
 #include "StemDialog.h"
 
+#include "Resources.h"
+
 #include <QButtonGroup>
 #include <QCloseEvent>
 #include <QCoreApplication>
@@ -14,11 +16,8 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
-#include <QSettings>
 #include <QStandardPaths>
 #include <QVBoxLayout>
-
-static const char* const kPythonKey = "ai/python";
 
 StemDialog::StemDialog(const QString& trackName, const QString& audioFile, QWidget* parent)
     : QDialog(parent)
@@ -147,15 +146,7 @@ StemDialog::~StemDialog()
 
 QString StemDialog::scriptPath()
 {
-    // next to chost.exe in a release, in the source tree when run from a build folder
-    const QString bundled = QCoreApplication::applicationDirPath() + QStringLiteral("/tools/chost_separate.py");
-    if (QFileInfo::exists(bundled))
-        return bundled;
-#ifdef CHOST_SOURCE_DIR
-    return QStringLiteral(CHOST_SOURCE_DIR "/tools/chost_separate.py");
-#else
-    return bundled;
-#endif
+    return resources::toolScript(QStringLiteral("chost_separate.py"));
 }
 
 QString StemDialog::envFolder() const
@@ -188,7 +179,7 @@ QString StemDialog::outputFolder() const
 
 void StemDialog::detectPython()
 {
-    QString python = QSettings().value(kPythonKey).toString();
+    QString python = resources::aiPython();
     if (python.isEmpty() && QFileInfo::exists(envPython()))
         python = envPython();
     if (python.isEmpty())
@@ -254,7 +245,8 @@ void StemDialog::install()
         fInstallSteps.push_back({py, QStringLiteral("-m"), QStringLiteral("pip"), QStringLiteral("install"), QStringLiteral("torch"),
                                  QStringLiteral("torchaudio"), QStringLiteral("--index-url"), QStringLiteral("https://download.pytorch.org/whl/cu124")});
     fInstallSteps.push_back({py, QStringLiteral("-m"), QStringLiteral("pip"), QStringLiteral("install"),
-                             nvidia ? QStringLiteral("audio-separator[gpu]") : QStringLiteral("audio-separator[cpu]")});
+                             nvidia ? QStringLiteral("audio-separator[gpu]") : QStringLiteral("audio-separator[cpu]"),
+                             QStringLiteral("librosa"), QStringLiteral("scipy")}); // librosa and scipy: audio to MIDI
 
     log(nvidia ? QStringLiteral("检测到 NVIDIA 显卡，安装 GPU 版本（下载约 3 GB）。") : QStringLiteral("没检测到 NVIDIA 显卡，安装 CPU 版本（分轨会慢一些）。"));
     fStatus->setText(QStringLiteral("正在安装 AI 组件，需要几分钟到十几分钟…"));
@@ -327,7 +319,7 @@ void StemDialog::readOutput()
                 const QStringList parts = line.split(QLatin1Char(' '));
                 const QString device = parts.value(2);
                 fReady = true;
-                QSettings().setValue(kPythonKey, fPython->text().trimmed());
+                resources::setAiPython(fPython->text().trimmed());
                 fStatus->setText(QStringLiteral("✓ AI 组件已就绪（audio-separator %1，%2）")
                                      .arg(parts.value(1), device.startsWith(QLatin1String("cuda"))
                                                               ? QStringLiteral("用显卡 %1").arg(device.mid(5))

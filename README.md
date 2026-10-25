@@ -10,7 +10,8 @@
 
 - 把音频文件拖进窗口（可以一次拖多个），每个文件变成一条音轨；拖到某条轨道上则替换它的音频
 - 点时间线定位，空格键播放/暂停，Ctrl+滚轮缩放，滚轮上下滚动轨道，Shift+滚轮左右滚动
-- 右键轨道：重命名、替换音频、AI 自动分轨、添加插入效果、删除
+- 也可以拖 MIDI 文件（.mid），会变成一条乐器轨，轨道上直接显示音符
+- 右键轨道：重命名、替换音频、AI 自动分轨、AI 转 MIDI、换乐器、添加插入效果、删除
 - 截图里是“自动分轨”之后的样子：原曲和被细分的“人声”“鼓”自动静音，主唱/和声、底鼓/军鼓等放在各自分组下面
 
 ## AI 自动分轨
@@ -31,6 +32,23 @@
 
 分好的音轨保存在原音频旁边的 `<文件名>_stems` 文件夹里。
 
+## AI 转 MIDI
+
+点工具栏的 **AI 转 MIDI**（或右键轨道 → AI 转 MIDI），勾选要转换的音轨。每条音轨转成一条 MIDI 乐器轨，放在原音轨下面、同样的颜色，原音轨自动静音，听到的就是 MIDI 播放的声音。
+
+- 先用“AI 分轨”分成单个乐器再转最准：主唱、和声、贝斯按单音旋律转，钢琴、吉他按和弦转，底鼓、军鼓、踩镲、通鼓、镲片转成对应的 General MIDI 鼓音符
+- 自己导入的音轨，按名字猜是什么乐器（比如名字里有 bass、贝斯、kick、钢琴）
+- 音高识别用 Spotify 开源的 [Basic Pitch](https://github.com/spotify/basic-pitch) 模型（已经打包在 `tools/models` 里，不用下载），在你电脑上本地运行；需要先在分轨窗口里装好 AI 组件
+- MIDI 文件保存在原音频旁边，同名 `.mid`，可以拖到别的软件（Cubase、FL Studio、打谱软件）里用
+
+### 乐器轨
+
+MIDI 乐器轨默认用自带的 General MIDI 音色（TimGM6mb）播放，会按 MIDI 里的乐器自动选音色（贝斯用贝斯、钢琴用钢琴，鼓用鼓组）。在检查器里可以：
+
+- 在下拉框里换音色
+- 点 **换乐器…** 换成你自己的乐器插件（Kontakt、Serum、任何 VST 乐器），换完会问要不要记住：记住以后，转出来的同一种乐器（比如所有贝斯）都自动用它
+- 点 **打开界面** 打开乐器自己的窗口
+
 ## 你自己的插件
 
 插件浏览器下面的 **插件文件夹…** 可以添加你装插件的文件夹（比如 `D:\VST`），VST2、VST3、LV2 都会扫描进来。双击插件就加到选中轨道的插入效果里，单击插槽打开插件自己的界面。
@@ -39,7 +57,7 @@
 
 - 插件格式：VST3、VST2、LV2、LADSPA、SF2/SFZ（由 Carla 加载）
 - 插件浏览器：扫描系统插件目录，按名称、厂商、格式搜索，双击加入机架
-- 多轨：每条轨道是“音频 → 插入效果 → 推子”，所有轨道在 Stereo Out 混合（用 Carla 的 patchbay 模式）
+- 多轨：音轨是“音频 → 插入效果 → 推子”，乐器轨是“MIDI → 乐器 → 插入效果 → 推子”，所有轨道在 Stereo Out 混合（用 Carla 的 patchbay 模式）
 - 插入效果：从上到下串联处理，可启用/旁路、上移/下移、移除
 - 参数面板：每个参数一个滑块，输出类参数（电平、增益衰减等）实时刷新
 - 打开插件自带的界面窗口
@@ -98,9 +116,10 @@ chost-cli run --file song.wav \
 chost-cli mix --driver PulseAudio --track drums.wav --track bass.wav \
     --insert 1:lv2:urn:zamaudio:ZamComp --mute 0 --save song.chost
 chost-cli mix --open song.chost
+chost-cli mix --driver PulseAudio --midi bass.mid@sf2:resources/sounds/TimGM6mb.sf2   # MIDI 乐器轨
 ```
 
-图形界面版启动时也可以带参数：`chost --file a.wav --file b.wav --load <插件> --session <工程.chost>`。
+图形界面版启动时也可以带参数：`chost --file a.wav --file b.mid --load <插件> --session <工程.chost>`。
 
 ## 已知问题
 
@@ -113,8 +132,10 @@ chost-cli mix --open song.chost
 src/core/             宿主核心：封装 libcarla、多轨工程（Session）、插件扫描、音频文件转换
 src/gui/              Qt 图形界面
 src/cli/              命令行版
-tools/                AI 辅助脚本（chost_separate.py：自动分轨）
-tests/                测试用的音频生成脚本
+tools/                AI 辅助脚本（chost_separate.py：自动分轨，chost_transcribe.py：转 MIDI）
+tools/models/         Basic Pitch 音高识别模型（Apache-2.0）
+resources/sounds/     自带的 General MIDI 音色 TimGM6mb（GPL-2）
+tests/                测试用的音频生成和转 MIDI 准确度检查脚本
 scripts/              Windows 下载 Carla 和打包脚本
 third_party/dr_libs/  WAV/FLAC/MP3 解码（公有领域 / MIT-0）
 ```

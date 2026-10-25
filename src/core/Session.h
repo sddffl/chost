@@ -1,7 +1,8 @@
 // Session: audio tracks and a master bus on top of Carla's patchbay.
 //
 // Every track is a chain of plugins wired in series:
-//   [audio file player] -> inserts... -> fader -> master -> Audio Output
+//   audio track:       [audio file player] -> inserts... -> fader -> master -> Audio Output
+//   instrument track:  [MIDI file player] =MIDI=> [instrument] -> inserts... -> fader -> master
 // The fader and the master are Carla's internal stereo gain plugin, scaled with carla's volume.
 
 #pragma once
@@ -13,10 +14,15 @@
 
 namespace chost {
 
+enum class TrackKind { Audio, Instrument };
+
 struct Track {
+    TrackKind kind = TrackKind::Audio;
     std::string name;
-    std::string file;          // original audio file; empty for a track without audio
-    int source = -1;           // carla id of the audio file player, -1 without audio
+    std::string role;          // what the track holds, e.g. "kick" or "bass" after stem separation; may be empty
+    std::string file;          // original audio file, or the MIDI file of an instrument track; may be empty
+    int source = -1;           // carla id of the audio or MIDI file player, -1 without a file
+    int instrument = -1;       // instrument tracks: carla id of the instrument plugin, -1 without one
     std::vector<uint> inserts; // carla ids, in processing order
     uint fader = 0;            // carla id of the track's gain plugin
     float volume = 1.0f;       // 0 .. 1.27
@@ -40,8 +46,10 @@ public:
     uint master() const { return fMaster; }
     float masterVolume() const { return fMasterVolume; }
 
-    int addTrack(const std::string& name);                      // returns the new track's index, -1 on error
-    bool setTrackFile(int track, const std::string& path);      // loads or replaces the track's audio
+    int addTrack(const std::string& name, TrackKind kind = TrackKind::Audio); // the new track's index, -1 on error
+    bool setTrackFile(int track, const std::string& path);      // loads or replaces the track's audio or MIDI file
+    bool setInstrument(int track, const std::string& spec);     // loads or replaces an instrument track's instrument
+    void setRole(int track, const std::string& role);
     bool removeTrack(int track);
     void renameTrack(int track, const std::string& name);
     bool moveTrack(int from, int to); // display order only, the wiring doesn't depend on it
@@ -67,6 +75,7 @@ private:
     bool addFader(const std::string& name, uint& id);
     void removePlugin(uint id);
     void applyGains();
+    void matchProgram(int track);
 
     HostEngine& fHost;
     std::vector<Track> fTracks;

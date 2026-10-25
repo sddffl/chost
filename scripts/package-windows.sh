@@ -29,6 +29,9 @@ done
 # the AI helpers run in the user's own Python, chost finds them next to chost.exe
 mkdir -p "$out/tools"
 cp tools/*.py "$out/tools/"
+mkdir -p "$out/tools/models" "$out/sounds"
+cp tools/models/* "$out/tools/models/"
+cp resources/sounds/*.sf2 resources/sounds/README.md "$out/sounds/"
 
 cp README.md "$out/README.md"
 echo "packaged into $out"

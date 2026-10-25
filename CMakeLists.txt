@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.4.0 LANGUAGES CXX)
+project(chost VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,7 +27,7 @@ endif()
 
 find_package(Threads REQUIRED)
 
-add_library(chost_core STATIC src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/Session.cpp)
+add_library(chost_core STATIC src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp)
 target_include_directories(chost_core PUBLIC src)
 target_include_directories(chost_core PRIVATE third_party/dr_libs)
 target_compile_definitions(chost_core PUBLIC REAL_BUILD)
@@ -48,6 +48,8 @@ if(CHOST_BUILD_GUI)
         src/gui/MainWindow.cpp src/gui/MainWindow.h
         src/gui/PluginWindows.cpp src/gui/PluginWindows.h
         src/gui/StemDialog.cpp src/gui/StemDialog.h
+        src/gui/Resources.cpp src/gui/Resources.h
+        src/gui/TranscribeDialog.cpp src/gui/TranscribeDialog.h
         src/gui/Theme.cpp src/gui/Theme.h
         src/gui/Widgets.cpp src/gui/Widgets.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}" CHOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

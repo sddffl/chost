@@ -4,7 +4,7 @@
 //   chost-cli drivers
 //   chost-cli scan
 //   chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]
-//   chost-cli mix [--driver NAME] [--track AUDIO]... [--insert T:SPEC]... [--mute T] [--solo T] [--volume T=V]
+//   chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]... [--mute T] [--solo T] [--volume T=V]
 //                 [--remove-track T] [--remove-insert T:I] [--seconds S] [--save F.chost] [--open F.chost]
 //
 // Plugin SPEC:
@@ -246,7 +246,7 @@ static int cmdMix(int argc, char* argv[])
 {
     std::string driver = chost::defaultAudioDriver();
     std::string savePath, openPath;
-    std::vector<std::string> files, inserts, volumes;
+    std::vector<std::string> files, midis, inserts, volumes;
     std::vector<int> mutes, solos, removeTracks;
     std::vector<std::string> removeInserts;
     double seconds = 3.0;
@@ -257,6 +257,7 @@ static int cmdMix(int argc, char* argv[])
         const bool hasValue = i + 1 < argc;
         if (arg == "--driver" && hasValue)        driver = argv[++i];
         else if (arg == "--track" && hasValue)    files.emplace_back(argv[++i]);
+        else if (arg == "--midi" && hasValue)     midis.emplace_back(argv[++i]);
         else if (arg == "--insert" && hasValue)   inserts.emplace_back(argv[++i]);
         else if (arg == "--mute" && hasValue)     mutes.push_back(std::stoi(argv[++i]));
         else if (arg == "--solo" && hasValue)     solos.push_back(std::stoi(argv[++i]));
@@ -316,6 +317,20 @@ static int cmdMix(int argc, char* argv[])
             ok = false;
         }
     }
+    // FILE.mid@SPEC: an instrument track playing FILE.mid through the instrument SPEC
+    for (const std::string& m : midis)
+    {
+        const auto at = m.find('@');
+        const int t = session.addTrack("MIDI " + std::to_string(session.tracks().size() + 1), chost::TrackKind::Instrument);
+        bool good = t >= 0 && session.setTrackFile(t, m.substr(0, at));
+        if (good && at != std::string::npos)
+            good = session.setInstrument(t, m.substr(at + 1));
+        if (!good)
+        {
+            std::fprintf(stderr, "midi track %s: %s\n", m.c_str(), session.lastError().c_str());
+            ok = false;
+        }
+    }
     for (const std::string& ins : inserts)
     {
         const auto colon = ins.find(':');
@@ -341,8 +356,8 @@ static int cmdMix(int argc, char* argv[])
     for (size_t i = 0; i < session.tracks().size(); ++i)
     {
         const chost::Track& t = session.tracks()[i];
-        std::printf("track %zu \"%s\": source=%d inserts=%zu fader=%u file=%s\n", i, t.name.c_str(), t.source,
-                    t.inserts.size(), t.fader, t.file.c_str());
+        std::printf("track %zu \"%s\": source=%d instrument=%d inserts=%zu fader=%u file=%s\n", i, t.name.c_str(),
+                    t.source, t.instrument, t.inserts.size(), t.fader, t.file.c_str());
     }
 
     host.relocate(0);
@@ -357,6 +372,14 @@ static int cmdMix(int argc, char* argv[])
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     std::printf("master peak %.3f\n", peak);
+    for (const chost::Track& t : session.tracks())
+        if (t.instrument >= 0)
+        {
+            const auto programs = host.midiPrograms(static_cast<uint>(t.instrument));
+            const int current = host.currentMidiProgram(static_cast<uint>(t.instrument));
+            std::printf("instrument of \"%s\": %s, program %s\n", t.name.c_str(), host.slot(static_cast<uint>(t.instrument)).name.c_str(),
+                        current >= 0 && current < static_cast<int>(programs.size()) ? programs[current].name.c_str() : "-");
+        }
 
     if (!savePath.empty() && !session.save(savePath))
     {
@@ -388,7 +411,8 @@ int main(int argc, char* argv[])
                  "  chost-cli drivers\n"
                  "  chost-cli scan\n"
                  "  chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]\n"
-                 "  chost-cli mix [--driver NAME] [--track AUDIO]... [--insert T:SPEC]... [--mute T] [--solo T]\n"
+                 "  chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]...\n"
+                 "                [--mute T] [--solo T]\n"
                  "                [--volume T=V] [--remove-track T] [--remove-insert T:I]\n"
                  "                [--seconds S] [--save F.chost] [--open F.chost]\n");
     return 2;

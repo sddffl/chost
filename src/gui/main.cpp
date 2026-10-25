@@ -24,8 +24,10 @@ int main(int argc, char* argv[])
     QCommandLineOption shotOpt(QStringLiteral("screenshot"), QStringLiteral("Save a screenshot of the window after startup and quit."), QStringLiteral("png"));
     QCommandLineOption separateOpt(QStringLiteral("separate"), QStringLiteral("Open the AI stem separation for the selected track and start it."));
     QCommandLineOption delayOpt(QStringLiteral("screenshot-delay"), QStringLiteral("Milliseconds before the screenshot (default 1500)."), QStringLiteral("ms"), QStringLiteral("1500"));
+    QCommandLineOption transcribeOpt(QStringLiteral("transcribe"), QStringLiteral("Open AI audio to MIDI for every audio track and start it."));
+    QCommandLineOption selectOpt(QStringLiteral("select"), QStringLiteral("Select a track at startup (0 is the first)."), QStringLiteral("n"));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -40,11 +42,15 @@ int main(int argc, char* argv[])
         window.addPluginSpec(spec);
     for (const QString& file : parser.positionalArguments())
         window.loadAudioFile(file); // "open with" / a file dropped on chost.exe
+    if (parser.isSet(selectOpt))
+        window.selectTrack(parser.value(selectOpt).toInt());
     window.show();
     if (parser.isSet(playOpt))
         window.play();
     if (parser.isSet(separateOpt))
         window.separateStems(true);
+    if (parser.isSet(transcribeOpt))
+        window.transcribe(true, true);
 
     if (parser.isSet(shotOpt))
     {

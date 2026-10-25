@@ -66,12 +66,31 @@ jobs:
           ls song/mysong_stems | tee stems.log
           test "$(ls song/mysong_stems/*.wav | wc -l)" = 14
 
+      - name: Audio to MIDI test
+        run: |
+          python3 -m venv ai-env
+          ai-env/bin/pip install -q onnxruntime librosa scipy
+          # the song's single parts, as stem separation would hand them over, converted from the GUI
+          mkdir midi && cp song/{lead,bass,piano,kick,snare,hh}.wav midi/
+          CHOST_AI_PYTHON=$PWD/ai-env/bin/python QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file midi/lead.wav --file midi/bass.wav --file midi/piano.wav \
+                  --file midi/kick.wav --file midi/snare.wav --file midi/hh.wav \
+                  --transcribe --screenshot midi.png --screenshot-delay 150000
+          python3 tests/check_transcription.py midi
+          # the MIDI plays through the bundled General MIDI sound font
+          sf2=sf2:$PWD/resources/sounds/TimGM6mb.sf2
+          ./build/chost-cli mix --driver PulseAudio --seconds 4 --midi midi/piano.mid@$sf2 --midi midi/bass.mid@$sf2 \
+              | tee midi.log
+          grep -E 'master peak 0\.[1-9]' midi.log
+          grep -q 'program Fingered Bass' midi.log
+
       - uses: actions/upload-artifact@v4
         with:
           name: chost-linux-screenshot
           path: |
             linux.png
             stems*.png
+            midi*.png
 
   windows:
     runs-on: windows-latest
@@ -116,6 +135,12 @@ jobs:
           # no sound card on the runner: multitrack falls back to the Dummy driver's rack
           ./chost-cli.exe mix --driver Dummy --track ../../tone.wav --track ../../tone.wav --seconds 1
           test -f tools/chost_separate.py
+          test -f tools/chost_transcribe.py
+          test -f tools/models/basic_pitch_nmp.onnx
+          test -f sounds/TimGM6mb.sf2
+          # MIDI tracks with the bundled sound font load on Windows too
+          ./chost-cli.exe mix --driver Dummy --midi ../../tests/data/notes.mid@sf2:sounds/TimGM6mb.sf2 --seconds 1 | tee ../../midi.log
+          grep -q 'program' ../../midi.log
 
       - uses: actions/upload-artifact@v4
         with:

@@ -214,8 +214,9 @@ bool parseSpec(const std::string& spec, PluginSpec& out)
     if (kind == "lv2")       { out.type = PLUGIN_LV2;  out.label = rest; }
     else if (kind == "vst3") { out.type = PLUGIN_VST3; out.filename = rest; }
     else if (kind == "vst2") { out.type = PLUGIN_VST2; out.filename = rest; }
-    else if (kind == "sf2")  { out.type = PLUGIN_SF2;  out.filename = rest; }
-    else if (kind == "sfz")  { out.type = PLUGIN_SFZ;  out.filename = rest; }
+    // carla needs a label for sound fonts too: their name
+    else if (kind == "sf2")  { out.type = PLUGIN_SF2;  out.filename = rest; out.label = fs::u8path(rest).stem().u8string(); }
+    else if (kind == "sfz")  { out.type = PLUGIN_SFZ;  out.filename = rest; out.label = fs::u8path(rest).stem().u8string(); }
     else if (kind == "ladspa")
     {
         const auto sep = rest.rfind(':');
@@ -363,6 +364,12 @@ bool HostEngine::loadAudioFile(const std::string& path)
     return true;
 }
 
+bool HostEngine::loadMidiFile(const std::string& path)
+{
+    fError.clear();
+    return carla_load_file(fHandle, path.c_str());
+}
+
 bool HostEngine::removePlugin(uint id) { return carla_remove_plugin(fHandle, id); }
 bool HostEngine::removeAllPlugins() { return carla_remove_all_plugins(fHandle); }
 
@@ -406,6 +413,19 @@ std::pair<float, float> HostEngine::outputPeaks(uint id) const
 {
     return {carla_get_output_peak_value(fHandle, id, true), carla_get_output_peak_value(fHandle, id, false)};
 }
+
+std::vector<HostEngine::MidiProgram> HostEngine::midiPrograms(uint id) const
+{
+    std::vector<MidiProgram> out;
+    const uint32_t count = carla_get_midi_program_count(fHandle, id);
+    for (uint32_t i = 0; i < count; ++i)
+        if (const MidiProgramData* data = carla_get_midi_program_data(fHandle, id, i))
+            out.push_back({data->bank, data->program, data->name != nullptr ? data->name : ""});
+    return out;
+}
+
+int HostEngine::currentMidiProgram(uint id) const { return carla_get_current_midi_program_index(fHandle, id); }
+void HostEngine::setMidiProgram(uint id, uint32_t index) { carla_set_midi_program(fHandle, id, index); }
 
 std::vector<ParamInfo> HostEngine::parameters(uint id) const
 {
@@ -485,7 +505,7 @@ void HostEngine::trackPatchbay(EngineCallbackOpcode action, uint id, int value1,
     switch (action)
     {
     case ENGINE_CALLBACK_PATCHBAY_CLIENT_ADDED:
-        fGroups[id] = Group{value2, valueStr != nullptr ? valueStr : "", {}, {}};
+        fGroups[id] = Group{value2, valueStr != nullptr ? valueStr : "", {}, {}, {}, {}};
         break;
     case ENGINE_CALLBACK_PATCHBAY_CLIENT_REMOVED:
         fGroups.erase(id);
@@ -494,16 +514,22 @@ void HostEngine::trackPatchbay(EngineCallbackOpcode action, uint id, int value1,
         fGroups[id].pluginId = value2;
         break;
     case ENGINE_CALLBACK_PATCHBAY_PORT_ADDED:
+    {
+        Group& g = fGroups[id];
+        const bool input = (value2 & PATCHBAY_PORT_IS_INPUT) != 0;
         if ((value2 & PATCHBAY_PORT_TYPE_AUDIO) != 0)
-        {
-            Group& g = fGroups[id];
-            ((value2 & PATCHBAY_PORT_IS_INPUT) != 0 ? g.audioIns : g.audioOuts).push_back(static_cast<uint>(value1));
-        }
+            (input ? g.audioIns : g.audioOuts).push_back(static_cast<uint>(value1));
+        else if ((value2 & PATCHBAY_PORT_TYPE_MIDI) != 0)
+            (input ? g.midiIns : g.midiOuts).push_back(static_cast<uint>(value1));
         break;
+    }
     case ENGINE_CALLBACK_PATCHBAY_PORT_REMOVED:
-        for (std::vector<uint>* ports : {&fGroups[id].audioIns, &fGroups[id].audioOuts})
+    {
+        Group& g = fGroups[id];
+        for (std::vector<uint>* ports : {&g.audioIns, &g.audioOuts, &g.midiIns, &g.midiOuts})
             ports->erase(std::remove(ports->begin(), ports->end(), static_cast<uint>(value1)), ports->end());
         break;
+    }
     case ENGINE_CALLBACK_PATCHBAY_CONNECTION_ADDED:
         fConnections.push_back(id);
         break;
@@ -590,6 +616,25 @@ bool HostEngine::connect(uint fromPlugin, uint toPlugin)
     const int from = groupOfPlugin(fromPlugin);
     const int to = groupOfPlugin(toPlugin);
     return from >= 0 && to >= 0 && connectGroups(static_cast<uint>(from), static_cast<uint>(to));
+}
+
+bool HostEngine::connectMidi(uint fromPlugin, uint toPlugin)
+{
+    const int from = groupOfPlugin(fromPlugin);
+    const int to = groupOfPlugin(toPlugin);
+    if (from < 0 || to < 0)
+        return false;
+    uint out = 0, in = 0;
+    {
+        const std::lock_guard<std::mutex> lock(fPatchbayMutex);
+        const Group& a = fGroups[static_cast<uint>(from)];
+        const Group& b = fGroups[static_cast<uint>(to)];
+        if (a.midiOuts.empty() || b.midiIns.empty())
+            return false;
+        out = *std::min_element(a.midiOuts.begin(), a.midiOuts.end());
+        in = *std::min_element(b.midiIns.begin(), b.midiIns.end());
+    }
+    return carla_patchbay_connect(fHandle, false, static_cast<uint>(from), out, static_cast<uint>(to), in);
 }
 
 bool HostEngine::connectToOutput(uint plugin)

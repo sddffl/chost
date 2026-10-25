@@ -1,5 +1,7 @@
 #include "Session.h"
 
+#include "MidiFile.h"
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -56,19 +58,21 @@ void Session::removePlugin(uint id)
     shift(fMaster);
     for (Track& t : fTracks)
     {
-        if (t.source > static_cast<int>(id))
-            --t.source;
+        for (int* optional : {&t.source, &t.instrument})
+            if (*optional > static_cast<int>(id))
+                --*optional;
         shift(t.fader);
         for (uint& insert : t.inserts)
             shift(insert);
     }
 }
 
-int Session::addTrack(const std::string& name)
+int Session::addTrack(const std::string& name, TrackKind kind)
 {
     if (!fReady)
         return -1;
     Track t;
+    t.kind = kind;
     t.name = name;
     if (!addFader(name, t.fader))
         return -1;
@@ -87,14 +91,15 @@ bool Session::setTrackFile(int track, const std::string& path)
         fTracks[track].source = -1;
         fTracks[track].file.clear();
     }
-    if (!fHost.loadAudioFile(path))
+    const bool midi = fTracks[track].kind == TrackKind::Instrument;
+    if (!(midi ? fHost.loadMidiFile(path) : fHost.loadAudioFile(path)))
     {
         fError = fHost.lastError();
         reroute();
         return false;
     }
     uint id = fHost.pluginCount() - 1;
-    if (!isRouted())
+    if (!isRouted() && !midi)
     {
         // the rack moved the player to the front, everything else moved down one
         id = 0;
@@ -102,8 +107,9 @@ bool Session::setTrackFile(int track, const std::string& path)
         shift(fMaster);
         for (Track& t : fTracks)
         {
-            if (t.source >= 0)
-                ++t.source;
+            for (int* optional : {&t.source, &t.instrument})
+                if (*optional >= 0)
+                    ++*optional;
             shift(t.fader);
             for (uint& insert : t.inserts)
                 shift(insert);
@@ -115,8 +121,58 @@ bool Session::setTrackFile(int track, const std::string& path)
 
     fTracks[track].source = static_cast<int>(id);
     fTracks[track].file = path;
+    matchProgram(track);
     reroute();
     return true;
+}
+
+// A sound font (or any instrument with MIDI programs) plays the instrument the MIDI file asks for, the
+// General MIDI program of its first program change; plugins without programs, like most samplers, keep theirs.
+void Session::matchProgram(int track)
+{
+    const Track& t = fTracks[track];
+    if (t.kind != TrackKind::Instrument || t.instrument < 0 || t.file.empty())
+        return;
+    const std::vector<HostEngine::MidiProgram> programs = fHost.midiPrograms(static_cast<uint>(t.instrument));
+    if (programs.empty())
+        return;
+    MidiClip clip;
+    std::string error;
+    if (!readMidiFile(t.file, clip, error) || clip.drums || clip.program < 0)
+        return; // drums play on channel 10, which General MIDI synths keep for the drum kit
+    for (size_t i = 0; i < programs.size(); ++i)
+        if (programs[i].bank == 0 && programs[i].program == static_cast<uint32_t>(clip.program))
+        {
+            fHost.setMidiProgram(static_cast<uint>(t.instrument), static_cast<uint32_t>(i));
+            return;
+        }
+}
+
+bool Session::setInstrument(int track, const std::string& spec)
+{
+    if (!valid(track) || fTracks[track].kind != TrackKind::Instrument)
+        return false;
+    if (fTracks[track].instrument >= 0)
+    {
+        removePlugin(static_cast<uint>(fTracks[track].instrument));
+        fTracks[track].instrument = -1;
+    }
+    if (!fHost.addPlugin(spec))
+    {
+        fError = fHost.lastError();
+        reroute();
+        return false;
+    }
+    fTracks[track].instrument = static_cast<int>(fHost.pluginCount() - 1);
+    matchProgram(track);
+    reroute();
+    return true;
+}
+
+void Session::setRole(int track, const std::string& role)
+{
+    if (valid(track))
+        fTracks[track].role = role;
 }
 
 bool Session::removeTrack(int track)
@@ -126,8 +182,9 @@ bool Session::removeTrack(int track)
     // remove from the highest id down so the remaining ids stay valid while we go
     std::vector<uint> ids = fTracks[track].inserts;
     ids.push_back(fTracks[track].fader);
-    if (fTracks[track].source >= 0)
-        ids.push_back(static_cast<uint>(fTracks[track].source));
+    for (int optional : {fTracks[track].source, fTracks[track].instrument})
+        if (optional >= 0)
+            ids.push_back(static_cast<uint>(optional));
     std::sort(ids.rbegin(), ids.rend());
     fTracks.erase(fTracks.begin() + track);
     for (uint id : ids)
@@ -246,8 +303,20 @@ void Session::reroute()
     for (const Track& t : fTracks)
     {
         std::vector<uint> chain;
-        if (t.source >= 0)
+        if (t.kind == TrackKind::Instrument)
+        {
+            // the MIDI player drives the instrument, the instrument's sound starts the audio chain
+            if (t.instrument >= 0)
+            {
+                if (t.source >= 0)
+                    fHost.connectMidi(static_cast<uint>(t.source), static_cast<uint>(t.instrument));
+                chain.push_back(static_cast<uint>(t.instrument));
+            }
+        }
+        else if (t.source >= 0)
+        {
             chain.push_back(static_cast<uint>(t.source));
+        }
         // a bypassed insert is wired around: carla doesn't process an inactive plugin at all
         for (uint insert : t.inserts)
             if (fHost.slot(insert).active)
@@ -269,7 +338,9 @@ void Session::reroute()
 //   master <id> <volume>
 //   track <source> <fader> <volume> <muted> <solo> <insert count> <inserts...>
 //   name <track name>
-//   file <audio file path>
+//   file <audio or MIDI file path>
+//   instrument <id>              only on instrument tracks, -1 without an instrument
+//   role <stem id>               optional
 
 bool Session::save(const std::string& path)
 {
@@ -299,6 +370,10 @@ bool Session::save(const std::string& path)
         for (uint id : t.inserts)
             out << " " << id;
         out << "\nname " << t.name << "\nfile " << t.file << "\n";
+        if (t.kind == TrackKind::Instrument)
+            out << "instrument " << t.instrument << "\n";
+        if (!t.role.empty())
+            out << "role " << t.role << "\n";
     }
     return static_cast<bool>(out);
 }
@@ -342,6 +417,13 @@ bool Session::load(const std::string& path)
             tracks.back().name = rest;
         else if (key == "file" && !tracks.empty())
             tracks.back().file = rest;
+        else if (key == "instrument" && !tracks.empty())
+        {
+            tracks.back().kind = TrackKind::Instrument;
+            fields >> tracks.back().instrument;
+        }
+        else if (key == "role" && !tracks.empty())
+            tracks.back().role = rest;
     }
 
     const fs::path carlaPath = fs::u8path(path).parent_path() / fs::u8path(carlaFile);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/HostEngine.h"
+#include "core/MidiFile.h"
 #include "core/Session.h"
 
 #include <QHash>
@@ -23,6 +24,7 @@ class QTimer;
 class QToolButton;
 class QTreeWidget;
 class StemDialog;
+class TranscribeDialog;
 
 // Cubase-style main window: transport bar on top, inspector on the left, the project's audio tracks in
 // the middle, the plugin browser on the right and the MixConsole below.
@@ -38,10 +40,13 @@ public:
 
     bool addPluginSpec(const QString& spec);       // as an insert of the selected track
     bool loadAudioFile(const QString& path);       // into the selected track, or a new one
-    int addAudioTrack(const QString& path, const QString& name = {}); // returns the track index, -1 on error
+    int addAudioTrack(const QString& path, const QString& name = {}); // a .mid makes an instrument track; -1 on error
+    int addMidiTrack(const QString& path, const QString& name = {}, const QString& role = {});
     bool openSession(const QString& path);
     void selectTrack(int track);
     void separateStems(bool autoStart = false); // AI stem separation of the selected track
+    void transcribe(bool allTracks, bool autoStart = false); // AI audio to MIDI
+    bool isDrumTrack(int track);
     void play();
 
 protected:
@@ -51,6 +56,9 @@ protected:
 
 private:
     struct Clip {
+        bool midi = false;
+        bool drums = false; // a MIDI clip with only General MIDI drums
+        std::vector<chost::MidiNote> notes;
         std::vector<float> peaks;
         double seconds = 0.0;
         int sampleRate = 0;
@@ -80,6 +88,13 @@ private:
     std::vector<uint> selectedInserts() const;
 
     void addEmptyTrack();
+    void addInstrumentTrack();
+    QString instrumentFor(const QString& role) const;
+    QString instrumentText(int track); // instrument and sound, shown on the lane
+    bool fits(int track, const QString& path) const; // MIDI on instrument tracks, audio on audio tracks
+    void chooseInstrument();
+    void editInstrument();
+    void refreshInstrument();
     void importAudio();
     void replaceAudio();
     void removeSelectedTrack();
@@ -118,6 +133,7 @@ private:
     int fSelected = -1;
     QString fSessionPath;
     QPointer<StemDialog> fStemDialog;
+    QPointer<TranscribeDialog> fTranscribeDialog;
 
     // transport
     QToolButton* fPlayButton = nullptr;
@@ -131,6 +147,11 @@ private:
     QLabel* fInspectorInfo = nullptr;
     QPushButton* fInspectorReplace = nullptr;
     QPushButton* fInspectorStems = nullptr;
+    QPushButton* fInspectorMidi = nullptr;
+    QWidget* fInstrumentBox = nullptr;
+    QLabel* fInstrumentName = nullptr;
+    QPushButton* fInstrumentEdit = nullptr;
+    QComboBox* fProgramBox = nullptr;
     InsertRack* fInspectorInserts = nullptr;
     ArrangeView* fArrange = nullptr;
     QLineEdit* fSearch = nullptr;
