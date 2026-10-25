@@ -67,6 +67,15 @@ MIDI 乐器轨默认用自带的 General MIDI 音色（TimGM6mb）播放，会�
 - 点音符或左边的琴键会用这条轨的乐器发声；改动马上生效，播放时就能听到
 - 改过的 MIDI 存成 `<原名>_edit.mid`，不会覆盖原文件；鼓轨左边显示鼓件名称
 
+## AI 自动编曲
+
+**AI → 自动编曲…**（Ctrl+Shift+A，或走带栏的 **AI 编曲** 按钮）按风格自动写出鼓、贝斯、键盘、吉他和弦乐，每样一条 MIDI 乐器轨，用你在“乐器设置”里给每种乐器选的音源（比如 Kontakt、Superior Drummer）播放。
+
+- 和弦可以**跟着一条轨道**：一首歌的录音会自动听出每半小节的和弦和段落（安静的地方编得轻，热闹的地方编得满），一条 MIDI（比如钢琴、旋律）也行
+- 也可以**自己写和弦**：`C G | Am F | Dm7 G7 | C`，竖线分小节，一小节可以写两个和弦；支持 m、7、maj7、m7、sus4、dim、add9、C/E 这样的写法
+- 风格：流行、摇滚、抒情、民谣、电子、中国风；自己写和弦时自动排成 前奏-主歌-副歌-主歌-副歌-尾奏，换段落处有加花和镲
+- 生成的每条轨道都能双击打开钢琴卷帘修改；再生成一次会替换上一次的编曲轨道
+
 ## 导出混音
 
 **文件 → 导出混音（WAV）…**（Ctrl+E）把整个工程按现在听到的样子（音量、静音、独奏、所有插件）混成一个 WAV 文件，可选 24 位、16 位或 32 位浮点。导出不用等歌曲播完，比实时播放快得多；勾选“同时把每条轨道单独导出”还会在旁边的 `_分轨` 文件夹里给每条轨道各导出一个文件。
@@ -181,7 +190,7 @@ src/gui/              Qt 图形界面
 src/cli/              命令行版
 src/render/           chost-render：离线混音
 tools/                AI 辅助脚本（chost_separate.py：自动分轨，chost_transcribe.py：转 MIDI，
-                      chost_analyze.py：速度和调性，chost_master.py：母带）
+                      chost_analyze.py：速度和调性，chost_master.py：母带，chost_arrange.py：编曲）
 tools/models/         Basic Pitch 音高识别模型（Apache-2.0）
 resources/sounds/     自带的 General MIDI 音色 TimGM6mb（GPL-2）
 tests/                测试用的音频生成和转 MIDI 准确度检查脚本

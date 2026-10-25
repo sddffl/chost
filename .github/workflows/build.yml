@@ -92,7 +92,7 @@ jobs:
               --screenshot pianoroll.png --screenshot-delay 3000
           test -f pianoroll-1.png
 
-      - name: Tempo, key and mastering test
+      - name: Tempo, key, mastering and arrangement test
         run: |
           py=$PWD/ai-env/bin/python
           python3 tests/make_song.py fast 137
@@ -108,6 +108,17 @@ jobs:
                   --screenshot master.png --screenshot-delay 40000
           test -f home/Music/chost/mysong.wav
           test -f home/Music/chost/mysong_母带.wav
+          # auto-arrangement: typed chords in every style play the chords in range, the song's chords are heard
+          chords="C G | Am F | Dm7 G7 | C/E"
+          for style in pop rock ballad folk electronic chinese; do
+            $py tools/chost_arrange.py --output-dir arr/$style --tempo 100 --style $style --chords "$chords" > /dev/null
+            python3 tests/check_arrangement.py arr/$style "$chords" 100 $style
+          done
+          $py tools/chost_arrange.py --output-dir arr/song --tempo 120 --audio song/mysong.wav | tee arrange.log
+          grep -E '^CHORDS Am \| F \| C \| G \| Am \| F \| C \| G$' arrange.log
+          CHOST_AI_PYTHON=$py HOME=$PWD/home QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file song/mysong.wav --arrange --screenshot arrange.png --screenshot-delay 25000
+          test "$(ls home/.local/share/chost/chost/mysong_编曲/1/*.mid | wc -l)" = 5
 
       - name: Plugin discovery test
         run: |
@@ -125,6 +136,7 @@ jobs:
             midi*.png
             pianoroll*.png
             master*.png
+            arrange*.png
 
   windows:
     runs-on: windows-latest
@@ -183,6 +195,7 @@ jobs:
           grep -q '^DONE' ../../render.log
           test -f tools/chost_analyze.py
           test -f tools/chost_master.py
+          test -f tools/chost_arrange.py
 
       - uses: actions/upload-artifact@v4
         with:

@@ -32,8 +32,10 @@ int main(int argc, char* argv[])
     QCommandLineOption exportOpt(QStringLiteral("export-mix"), QStringLiteral("Open File > Export mixdown and start it."));
     QCommandLineOption masterOpt(QStringLiteral("master"), QStringLiteral("Open AI mastering and start it."));
     QCommandLineOption analyzeOpt(QStringLiteral("analyze"), QStringLiteral("Find the tempo and key of the selected (or first) audio track."));
+    QCommandLineOption arrangeOpt(QStringLiteral("arrange"), QStringLiteral("Open AI auto-arrangement for the selected track and start it."));
+    QCommandLineOption chordsOpt(QStringLiteral("arrange-chords"), QStringLiteral("Open AI auto-arrangement with these chords and start it."), QStringLiteral("chords"));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -69,6 +71,8 @@ int main(int argc, char* argv[])
         window.exportMix(true);
     if (parser.isSet(masterOpt))
         window.masterMix(true);
+    if (parser.isSet(arrangeOpt) || parser.isSet(chordsOpt))
+        window.arrange(true, parser.value(chordsOpt));
 
     if (parser.isSet(shotOpt))
     {

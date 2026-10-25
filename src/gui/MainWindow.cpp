@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "ArrangeDialog.h"
 #include "ExportDialog.h"
 #include "InstrumentDialog.h"
 #include "Instruments.h"
@@ -222,6 +223,7 @@ MainWindow::~MainWindow()
     delete fPianoRoll;
     delete fExportDialog;
     delete fMasterDialog;
+    delete fArrangeDialog;
     closeEditors();
     fHost.setEventCallback(nullptr);
     fHost.stop();
@@ -270,6 +272,7 @@ void MainWindow::buildMenus()
     ai->addAction(QStringLiteral("转 MIDI（选中轨道）…"), QKeySequence(QStringLiteral("Ctrl+Shift+M")), this, [this] { transcribe(false); });
     ai->addAction(QStringLiteral("转 MIDI（多条轨道）…"), this, [this] { transcribe(true); });
     ai->addAction(QStringLiteral("MIDI 轨全部换成真实音源"), this, &MainWindow::applyInstruments);
+    ai->addAction(QStringLiteral("自动编曲…"), QKeySequence(QStringLiteral("Ctrl+Shift+A")), this, [this] { arrange(); });
     ai->addSeparator();
     ai->addAction(QStringLiteral("识别速度和调性"), this, [this] { analyzeSong(); });
     ai->addAction(QStringLiteral("AI 母带…"), QKeySequence(QStringLiteral("Ctrl+Shift+E")), this, [this] { masterMix(); });
@@ -333,6 +336,11 @@ void MainWindow::buildTransport()
     midi->setToolTip(QStringLiteral("把音轨（最好是分好的单个乐器）转成 MIDI 乐器轨"));
     bar->addWidget(midi);
     connect(midi, &QToolButton::clicked, this, [this] { transcribe(true); });
+    auto* arranging = new QToolButton;
+    arranging->setText(QStringLiteral("AI 编曲"));
+    arranging->setToolTip(QStringLiteral("按风格自动写出鼓、贝斯、键盘、吉他和弦乐"));
+    bar->addWidget(arranging);
+    connect(arranging, &QToolButton::clicked, this, [this] { arrange(); });
     auto* mastering = new QToolButton;
     mastering->setText(QStringLiteral("AI 母带"));
     mastering->setToolTip(QStringLiteral("把整首混音做成可以发布的母带：音色平衡、压缩、响度标准"));
@@ -1962,6 +1970,70 @@ void MainWindow::masterMix(bool autoStart)
     fMasterDialog->raise();
     fMasterDialog->activateWindow();
     fMasterDialog->setAutoStart(autoStart);
+}
+
+void MainWindow::arrange(bool autoStart, const QString& chords)
+{
+    if (!fArrangeDialog)
+    {
+        // what the arrangement can follow: the songs and MIDI parts, the selected one first in line
+        std::vector<ArrangeDialog::Source> sources;
+        int selected = -1;
+        const std::vector<chost::Track>& tracks = fSession.tracks();
+        for (size_t i = 0; i < tracks.size(); ++i)
+        {
+            const chost::Track& t = tracks[i];
+            if (t.file.empty() || t.role == kMasterRole)
+                continue;
+            if (static_cast<int>(i) == fSelected)
+                selected = static_cast<int>(sources.size());
+            sources.push_back({QString::fromStdString(t.name), QString::fromStdString(t.file), t.kind == chost::TrackKind::Instrument});
+        }
+        const QString base = fSessionPath.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+                                                    : QFileInfo(fSessionPath).absolutePath();
+        const QString folder = QDir(base).filePath(projectName() + QStringLiteral("_编曲"));
+        fArrangeDialog = new ArrangeDialog(sources, selected, fSession.tempo(), folder, this);
+        fArrangeDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(fArrangeDialog, &ArrangeDialog::arranged, this, [this, folder](const std::vector<ArrangeDialog::Part>& parts, bool replace) {
+            closeEditors();
+            if (replace)
+            {
+                // the tracks of an earlier arrangement are the ones playing files from its folder
+                const QString prefix = QDir::cleanPath(folder) + QLatin1Char('/');
+                for (int i = static_cast<int>(fSession.tracks().size()) - 1; i >= 0; --i)
+                    if (QDir::cleanPath(QDir::fromNativeSeparators(QString::fromStdString(fSession.tracks()[i].file))).startsWith(prefix))
+                    {
+                        fSession.removeTrack(i);
+                        if (i < static_cast<int>(fColours.size()))
+                            fColours.erase(fColours.begin() + i);
+                    }
+            }
+            int first = -1;
+            for (const ArrangeDialog::Part& part : parts)
+            {
+                statusBar()->showMessage(QStringLiteral("正在加载 %1 的乐器…").arg(part.name));
+                QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                const int track = addMidiTrack(part.file, QStringLiteral("编曲 ") + part.name, part.role);
+                if (track < 0)
+                    continue;
+                // a starting balance: sustained strings and strummed guitars sound louder than their notes
+                static const QHash<QString, float> volumes{{QStringLiteral("other"), 0.4f}, {QStringLiteral("guitar"), 0.75f},
+                                                           {QStringLiteral("bass"), 0.9f}};
+                fSession.setVolume(track, volumes.value(part.role, 1.0f));
+                if (first < 0)
+                    first = track;
+            }
+            refreshTracks();
+            selectTrack(first);
+            statusBar()->showMessage(QStringLiteral("编曲完成：%1 条乐器轨，可以双击轨道改音符").arg(parts.size()), 8000);
+        });
+    }
+    if (!chords.isEmpty())
+        fArrangeDialog->setChords(chords);
+    fArrangeDialog->show();
+    fArrangeDialog->raise();
+    fArrangeDialog->activateWindow();
+    fArrangeDialog->setAutoStart(autoStart);
 }
 
 // A/B: the master alone (soloed), or the mix as it was (master muted, the solo off)

@@ -12,6 +12,7 @@
 #include <map>
 #include <vector>
 
+class ArrangeDialog;
 class ArrangeView;
 class ChannelStrip;
 class ExportDialog;
@@ -62,6 +63,7 @@ public:
     void exportMix(bool autoStart = false);   // File > Export mixdown
     void masterMix(bool autoStart = false);   // AI > AI mastering
     void analyzeSong(bool quiet = false);     // tempo and key of the selected (or first) audio track
+    void arrange(bool autoStart = false, const QString& chords = {}); // AI > auto-arrangement
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -164,6 +166,7 @@ private:
     QPointer<PianoRollDialog> fPianoRoll;
     QPointer<ExportDialog> fExportDialog;
     QPointer<MasterDialog> fMasterDialog;
+    QPointer<ArrangeDialog> fArrangeDialog;
     ScriptJob* fAnalysis = nullptr;
     bool fAnalysisTried = false; // the automatic analysis of the first audio file, once per project
     bool fAnalysisQuiet = false;
