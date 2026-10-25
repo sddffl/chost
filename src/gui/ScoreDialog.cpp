@@ -4,6 +4,7 @@
 #include "core/Scales.h"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -56,6 +57,15 @@ ScoreDialog::ScoreDialog(const QString& title, const QString& key, double tempo,
     fGrid->addItem(QStringLiteral("八分音符（更好读）"), 2);
     fGrid->setToolTip(QStringLiteral("音符对齐的最小单位。转 MIDI 得来的音有快有慢，选八分音符谱子会干净很多"));
     form->addRow(QStringLiteral("最短音符"), fGrid);
+    fMeter = new QComboBox;
+    for (const char* meter : {"4/4", "3/4", "2/4", "6/8", "12/8", "9/8", "3/8"})
+        fMeter->addItem(QString::fromLatin1(meter), QString::fromLatin1(meter));
+    fMeter->setToolTip(QStringLiteral("一小节几拍：流行歌多是 4/4，华尔兹 3/4，进行曲 2/4，摇摆的 6/8、12/8"));
+    form->addRow(QStringLiteral("拍号"), fMeter);
+    fTriplets = new QCheckBox(QStringLiteral("识别三连音"));
+    fTriplets->setChecked(true);
+    fTriplets->setToolTip(QStringLiteral("一拍里弹了三个均匀的音，就写成三连音；关掉就都按最短音符对齐"));
+    form->addRow(QString(), fTriplets);
     fZoom = new QComboBox;
     for (int percent : {50, 75, 100, 125, 150})
         fZoom->addItem(QStringLiteral("%1%").arg(percent), percent / 100.0);
@@ -75,7 +85,7 @@ ScoreDialog::ScoreDialog(const QString& title, const QString& key, double tempo,
     fStatus->setOpenExternalLinks(true);
     fStatus->setStyleSheet(QStringLiteral("color: #8b9096;"));
     side->addWidget(fStatus);
-    auto* note = new QLabel(QStringLiteral("4/4 拍；每行谱一个声部，重叠的音会在下一个音开始的地方截断。要更精细的排版，导出 MusicXML 到 MuseScore 里改。"));
+    auto* note = new QLabel(QStringLiteral("每行谱一个声部，重叠的音会在下一个音开始的地方截断。要更精细的排版，导出 MusicXML 到 MuseScore 里改。"));
     note->setWordWrap(true);
     note->setStyleSheet(QStringLiteral("color: #8b9096;"));
     side->addStretch(1);
@@ -103,6 +113,8 @@ ScoreDialog::ScoreDialog(const QString& title, const QString& key, double tempo,
     connect(fKey, &QComboBox::currentIndexChanged, this, later);
     connect(fStaff, &QComboBox::currentIndexChanged, this, later);
     connect(fGrid, &QComboBox::currentIndexChanged, this, later);
+    connect(fMeter, &QComboBox::currentIndexChanged, this, later);
+    connect(fTriplets, &QCheckBox::toggled, this, later);
     connect(fZoom, &QComboBox::currentIndexChanged, this, [this] { fView->setZoom(fZoom->currentData().toDouble()); });
     connect(fPdf, &QPushButton::clicked, this, [this] { exportAs(true); });
     connect(fXml, &QPushButton::clicked, this, [this] { exportAs(false); });
@@ -176,6 +188,16 @@ std::vector<ScoreDialog::Track> ScoreDialog::chosen() const
     return out;
 }
 
+bool ScoreDialog::setMeter(const QString& meter)
+{
+    const int index = fMeter->findData(meter);
+    if (index < 0)
+        return false;
+    fMeter->setCurrentIndex(index);
+    rebuild();
+    return true;
+}
+
 chost::Score ScoreDialog::build(const std::vector<Track>& tracks, const chost::ScoreOptions& options, chost::StaffMode staff, std::string& error)
 {
     std::vector<chost::ScoreInput> inputs;
@@ -231,6 +253,8 @@ void ScoreDialog::rebuild()
     options.title = fTitle->text().trimmed().toStdString();
     options.tempo = fTempo;
     options.grid = fGrid->currentData().toInt();
+    options.meter = chost::parseMeter(fMeter->currentData().toString().toStdString());
+    options.triplets = fTriplets->isChecked();
     const QString keyText = fKey->currentData().toString();
     options.key = chost::parseKey((keyText.isEmpty() ? fSongKey : keyText).toStdString());
     std::string error;

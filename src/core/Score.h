@@ -3,7 +3,11 @@
 // treble, bass or grand staff for each part. The result is drawn by the GUI's score view and written as
 // MusicXML, which MuseScore, Sibelius, Finale and Dorico open.
 //
-// One time signature (4/4) and one voice per staff: notes that overlap a later one are cut where it starts.
+// One time signature for the whole score (2/4, 3/4, 4/4, 3/8, 6/8, 9/8, 12/8); beats of quarter notes can be
+// written as triplets where the notes were played that way. One voice per staff: notes that overlap a
+// later one are cut where it starts.
+//
+// Times and lengths are in ticks, 12 to a quarter note: a sixteenth is 3, an eighth of a triplet 4.
 
 #pragma once
 
@@ -16,6 +20,21 @@
 namespace chost {
 
 enum class Clef { Treble, Bass };
+
+struct Meter {
+    int beats = 4;
+    int beatType = 4; // 4 or 8
+    bool valid() const
+    {
+        return (beatType == 4 && beats >= 2 && beats <= 4) || (beatType == 8 && (beats == 3 || beats == 6 || beats == 9 || beats == 12));
+    }
+    bool compound() const { return beatType == 8; } // in dotted quarters
+    int barTicks() const { return beats * (beatType == 8 ? 6 : 12); }
+    int pulse() const { return compound() ? 18 : 12; } // the beat, what notes are beamed and split by
+};
+
+// "6/8" -> {6, 8}; an invalid meter (beats 0) when it isn't one
+Meter parseMeter(const std::string& text);
 enum class StaffMode { Auto, Treble, Bass, Grand };
 
 struct ScoreNote {
@@ -29,8 +48,9 @@ struct ScoreNote {
 };
 
 struct ScoreEvent {
-    int start = 0;    // in the bar, sixteenths
-    int duration = 4; // sixteenths: 1, 2, 3, 4, 6, 8, 12 or 16
+    int start = 0;     // in the bar, ticks
+    int duration = 12; // ticks: 3, 6, 9, 12, 18, 24, 36, 48, 72, or in a triplet 4 and 8
+    int tuplet = -1;   // the triplet (>= 0) it's part of: three in the time of two
     bool rest = false;
     bool wholeBar = false;        // a rest filling the bar, drawn as a whole rest in its middle
     std::vector<ScoreNote> notes; // low to high; empty for a rest
@@ -57,7 +77,7 @@ struct Score {
     Key key;
     int fifths = 0; // the key signature: sharps (> 0) or flats (< 0)
     double tempo = 120.0;
-    int beatsPerBar = 4;
+    Meter meter;
     int measures = 0;
     std::vector<ScorePart> parts;
 };
@@ -73,6 +93,8 @@ struct ScoreOptions {
     Key key;              // invalid: guessed from the notes
     double tempo = 120.0; // the song's; what the notes' seconds are in beats
     int grid = 1;         // the shortest note, sixteenths: 1 (a sixteenth) or 2 (an eighth)
+    Meter meter;          // 4/4 unless valid
+    bool triplets = true; // beats played in triplets written so
 };
 
 // Drum parts are left out (they need a percussion staff). Empty, with error, when nothing is left.
@@ -83,7 +105,9 @@ std::string musicXml(const Score& score);
 int keyFifths(const Key& key);
 // A note's letter, alteration and octave as the key spells it.
 ScoreNote spellPitch(int pitch, const Key& key);
-// "quarter", "eighth", ... and its dots, for a duration in sixteenths
+// how long an event looks: a triplet eighth (4) is drawn as an eighth (6)
+int displayLength(const ScoreEvent& e);
+// "quarter", "eighth", ... and its dots, for a displayed length in ticks
 void noteType(int duration, std::string& type, int& dots);
 
 } // namespace chost

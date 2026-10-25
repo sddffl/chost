@@ -157,14 +157,16 @@ static const char* const kTools = R"json([
 },
 {
   "name": "export_score",
-  "description": "Writes MIDI tracks as sheet music: a PDF (A4, to print or send) or MusicXML (for MuseScore, Sibelius, Finale, Dorico). Notes are quantized to sixteenths (or eighths), 4/4, one voice per staff; wide parts like piano get a grand staff. Drum tracks are left out. The user can also do this in File > 出谱.",
+  "description": "Writes MIDI tracks as sheet music: a PDF (A4, to print or send) or MusicXML (for MuseScore, Sibelius, Finale, Dorico). Notes are quantized to sixteenths (or eighths), beats played as triplets are written as triplets, one voice per staff; wide parts like piano get a grand staff. Drum tracks are left out. The user can also do this in File > 出谱.",
   "inputSchema": {"type": "object", "properties": {
     "path": {"type": "string", "description": "Absolute path ending in .pdf or .musicxml."},
     "tracks": {"type": "array", "items": {"type": "integer"}, "description": "MIDI tracks, top to bottom; default every MIDI track that isn't drums."},
     "title": {"type": "string", "description": "Default the project's name."},
     "key": {"type": "string", "description": "The key signature, e.g. \"A minor\"; default the song's key, else guessed from the notes."},
     "staff": {"type": "string", "enum": ["auto", "treble", "bass", "grand"], "description": "Default auto."},
-    "shortest": {"type": "string", "enum": ["sixteenth", "eighth"], "description": "The grid notes snap to; eighth reads more easily for transcribed parts. Default sixteenth."}
+    "shortest": {"type": "string", "enum": ["sixteenth", "eighth"], "description": "The grid notes snap to; eighth reads more easily for transcribed parts. Default sixteenth."},
+    "time_signature": {"type": "string", "enum": ["4/4", "3/4", "2/4", "6/8", "12/8", "9/8", "3/8"], "description": "Default 4/4."},
+    "triplets": {"type": "boolean", "description": "Write beats played in triplets as triplets. Default true."}
   }, "required": ["path"]}
 },
 {

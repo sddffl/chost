@@ -35,7 +35,7 @@ constexpr char32_t kHeadWhole = 0xE0A2, kHeadHalf = 0xE0A3, kHeadBlack = 0xE0A4;
 constexpr char32_t kFlat = 0xE260, kNatural = 0xE261, kSharp = 0xE262;
 constexpr char32_t kRestWhole = 0xE4E3, kRestHalf = 0xE4E4, kRestQuarter = 0xE4E5, kRest8th = 0xE4E6, kRest16th = 0xE4E7;
 constexpr char32_t kFlag8thUp = 0xE240, kFlag8thDown = 0xE241, kFlag16thUp = 0xE242, kFlag16thDown = 0xE243;
-constexpr char32_t kDot = 0xE1E7, kTimeSig0 = 0xE080, kQuarterNoteUp = 0xE1D5;
+constexpr char32_t kDot = 0xE1E7, kTimeSig0 = 0xE080, kQuarterNoteUp = 0xE1D5, kTuplet0 = 0xE880;
 
 QString musicFamily()
 {
@@ -113,10 +113,23 @@ int position(const chost::ScoreNote& n, chost::Clef clef)
     return n.octave * 7 + n.step - (clef == chost::Clef::Treble ? 34 : 22);
 }
 
-// room for a note's length: longer notes get more, but far less than in proportion
-double spacing(int sixteenths)
+// room for a note's length (ticks): longer notes get more, but far less than in proportion
+double spacing(int ticks)
 {
-    return kSpace * (2.2 + 1.05 * std::log2(std::max(1, sixteenths)));
+    return kSpace * (2.2 + 1.05 * std::log2(std::max(1.0, ticks / 3.0)));
+}
+
+// a time signature's number as the music font's digits, centred on x
+void timeDigits(QPainter& p, int number, double x, double y)
+{
+    const QString digits = QString::number(number);
+    const double width = 1.8 * kSpace; // a digit's
+    double at = x - width * digits.size() / 2.0;
+    for (QChar c : digits)
+    {
+        glyph(p, kTimeSig0 + static_cast<char32_t>(c.digitValue()), at, y);
+        at += width;
+    }
 }
 
 // the columns the accidentals of a chord need, top down: one, or more where they would collide
@@ -163,16 +176,9 @@ std::vector<bool> displaced(const chost::ScoreEvent& e, chost::Clef clef, bool u
     return out;
 }
 
-char32_t restGlyph(int duration)
+char32_t restGlyph(int display)
 {
-    switch (duration)
-    {
-    case 16: return kRestWhole;
-    case 8: return kRestHalf;
-    case 4: return kRestQuarter;
-    case 2: return kRest8th;
-    default: return kRest16th;
-    }
+    return display >= 48 ? kRestWhole : display >= 24 ? kRestHalf : display >= 12 ? kRestQuarter : display >= 6 ? kRest8th : kRest16th;
 }
 
 } // namespace
@@ -217,7 +223,7 @@ ScoreEngraving::ScoreEngraving(const chost::Score& score)
         {
             auto next = std::next(it);
             Column c = it->second;
-            c.flex = spacing((next == columns.end() ? 16 : next->first) - c.start);
+            c.flex = spacing((next == columns.end() ? fScore.meter.barTicks() : next->first) - c.start);
             measure.columns.push_back(c);
             measure.fixed += c.fixed;
             measure.flex += c.flex;
@@ -294,7 +300,9 @@ ScoreEngraving::ScoreEngraving(const chost::Score& score)
                     const bool up = stemUp(static_cast<int>(st), mi, e);
                     const int top = position(e.notes.back(), staff.clef);
                     const int bottom = position(e.notes.front(), staff.clef);
-                    const int stem = e.duration < 16 ? 7 : 0;
+                    const int stem = chost::displayLength(e) < 48 ? 7 : 0;
+                    if (e.tuplet >= 0)
+                        high = std::max(high, top + (up ? stem : 0) + 4); // room for its 3
                     high = std::max({high, top + (up ? stem : 0) + 1, up ? 0 : top + 1});
                     low = std::min({low, bottom - (up ? 0 : stem) - 1, bottom - 1});
                 }
@@ -346,8 +354,9 @@ ScoreEngraving::ScoreEngraving(const chost::Score& score)
 
 double ScoreEngraving::headerWidth(bool first) const
 {
-    // clef, key signature, and the time signature on the first line
-    return 4.0 * kSpace + std::abs(fScore.fifths) * 1.05 * kSpace + (first ? 2.6 * kSpace : 0.0);
+    // clef, key signature, and the time signature on the first line (wider with two digits)
+    const int digits = std::max(fScore.meter.beats, fScore.meter.beatType) >= 10 ? 2 : 1;
+    return 4.0 * kSpace + std::abs(fScore.fifths) * 1.05 * kSpace + (first ? (0.8 + 1.8 * digits) * kSpace : 0.0);
 }
 
 const chost::ScoreEvent* ScoreEngraving::eventAt(int staff, int measure, int start) const
@@ -402,9 +411,13 @@ void ScoreEngraving::paint(QPainter& p, int page) const
             const double x = kMargin + s.indent;
             p.setPen(Qt::black);
             glyph(p, kQuarterNoteUp, x, y, 0.75);
+            // in 6/8 and the like the beat is a dotted quarter
+            const bool dotted = fScore.meter.compound();
+            if (dotted)
+                glyph(p, kDot, x + 1.2 * kSpace, y - 0.3 * kSpace, 0.75);
             char tempo[32];
-            std::snprintf(tempo, sizeof tempo, "= %g", std::round(fScore.tempo));
-            text(p, QRectF(x + 1.5 * kSpace, y - 4.0, 30.0, 5.0), Qt::AlignLeft | Qt::AlignBottom, QString::fromLatin1(tempo), 3.2);
+            std::snprintf(tempo, sizeof tempo, "= %g", std::round(dotted ? fScore.tempo / 1.5 : fScore.tempo));
+            text(p, QRectF(x + (dotted ? 2.0 : 1.5) * kSpace, y - 4.0, 30.0, 5.0), Qt::AlignLeft | Qt::AlignBottom, QString::fromLatin1(tempo), 3.2);
         }
     }
     if (page < 0 || page >= pages())
@@ -480,9 +493,10 @@ void ScoreEngraving::paintSystem(QPainter& p, const System& s) const
         }
         if (first)
         {
-            x += 0.4 * kSpace;
-            glyph(p, kTimeSig0 + 4, x, m - kSpace);
-            glyph(p, kTimeSig0 + 4, x, m + kSpace);
+            const int digits = std::max(fScore.meter.beats, fScore.meter.beatType) >= 10 ? 2 : 1;
+            const double centre = x + 0.4 * kSpace + 0.9 * kSpace * digits;
+            timeDigits(p, fScore.meter.beats, centre, m - kSpace);
+            timeDigits(p, fScore.meter.beatType, centre, m + kSpace);
         }
     }
 
@@ -547,7 +561,7 @@ void ScoreEngraving::paintStaffMeasure(QPainter& p, const System& s, int staffIn
         g.stemX = g.up ? x + (kHead - kStem / 2.0) * kSpace : x + kStem / 2.0 * kSpace;
         const double top = yOf(position(e.notes.back(), staff.clef));
         const double bottom = yOf(position(e.notes.front(), staff.clef));
-        const double length = (e.duration == 1 ? 3.75 : 3.5) * kSpace;
+        const double length = (chost::displayLength(e) < 6 ? 3.75 : 3.5) * kSpace;
         g.stemEnd = g.up ? std::min(top - length, middle) : std::max(bottom + length, middle);
     }
     std::map<int, std::vector<size_t>> groups;
@@ -569,7 +583,7 @@ void ScoreEngraving::paintStaffMeasure(QPainter& p, const System& s, int staffIn
         for (size_t i : members)
         {
             const chost::ScoreEvent& e = measure.events[i];
-            const double minimum = (e.duration == 1 ? 3.0 : 2.75) * kSpace;
+            const double minimum = (chost::displayLength(e) < 6 ? 3.0 : 2.75) * kSpace;
             const double note = yOf(position(up ? e.notes.back() : e.notes.front(), staff.clef));
             const double y = at(geometry[i].stemX) + shift;
             if (up && y > note - minimum)
@@ -603,10 +617,11 @@ void ScoreEngraving::paintStaffMeasure(QPainter& p, const System& s, int staffIn
         for (size_t k = 0; k < members.size(); ++k)
         {
             const size_t i = members[k];
-            if (measure.events[i].duration != 1)
+            auto sixteenth = [&](size_t j) { return chost::displayLength(measure.events[j]) < 6; };
+            if (!sixteenth(i))
                 continue;
-            const bool prev16 = k > 0 && measure.events[members[k - 1]].duration == 1;
-            const bool next16 = k + 1 < members.size() && measure.events[members[k + 1]].duration == 1;
+            const bool prev16 = k > 0 && sixteenth(members[k - 1]);
+            const bool next16 = k + 1 < members.size() && sixteenth(members[k + 1]);
             if (next16)
                 beamSegment(geometry[i].stemX - kStem / 2.0 * kSpace, geometry[members[k + 1]].stemX + kStem / 2.0 * kSpace, 1);
             else if (!prev16)
@@ -627,17 +642,27 @@ void ScoreEngraving::paintStaffMeasure(QPainter& p, const System& s, int staffIn
         p.setPen(Qt::black);
         if (e.rest)
         {
+            const int display = chost::displayLength(e);
             if (e.wholeBar)
                 glyph(p, kRestWhole, layout.x + layout.width / 2.0 - 0.8 * kSpace, yOf(2));
             else
-                glyph(p, restGlyph(e.duration), x, yOf(e.duration == 16 ? 2 : 0));
+            {
+                glyph(p, restGlyph(display), x, yOf(display >= 48 ? 2 : 0));
+                int dots = 0;
+                std::string type;
+                chost::noteType(display, type, dots);
+                const double width = (display >= 24 ? 1.2 : display >= 12 ? 1.1 : 1.0) * kSpace;
+                for (int d = 0; d < dots; ++d)
+                    glyph(p, kDot, x + width + (0.3 + d * 0.6) * kSpace, yOf(1));
+            }
             continue;
         }
         const Geometry& g = geometry[i];
         const std::vector<bool> moved = displaced(e, staff.clef, g.up);
-        const bool whole = e.duration == 16;
+        const int display = chost::displayLength(e);
+        const bool whole = display >= 48;
         const double headWidth = (whole ? kWhole : kHead) * kSpace;
-        const char32_t head = whole ? kHeadWhole : e.duration >= 8 ? kHeadHalf : kHeadBlack;
+        const char32_t head = whole ? kHeadWhole : display >= 24 ? kHeadHalf : kHeadBlack;
         int accidentalCount = 0;
         const std::vector<int> accidentalColumn = accidentalColumns(e, staff.clef, &accidentalCount);
         const bool anyLeft = !g.up && std::find(moved.begin(), moved.end(), true) != moved.end();
@@ -668,7 +693,7 @@ void ScoreEngraving::paintStaffMeasure(QPainter& p, const System& s, int staffIn
         // dots, in the space above a note on a line
         int dots = 0;
         std::string type;
-        chost::noteType(e.duration, type, dots);
+        chost::noteType(display, type, dots);
         for (const chost::ScoreNote& n : e.notes)
         {
             const int pos = position(n, staff.clef);
@@ -682,10 +707,10 @@ void ScoreEngraving::paintStaffMeasure(QPainter& p, const System& s, int staffIn
             const double start = g.up ? yOf(position(e.notes.front(), staff.clef)) - 0.17 * kSpace
                                       : yOf(position(e.notes.back(), staff.clef)) + 0.17 * kSpace;
             line(p, g.stemX, start, g.stemX, g.stemEnd, kStem);
-            if (!g.beamed && e.duration < 4)
+            if (!g.beamed && display < 12)
             {
                 p.setPen(Qt::black);
-                const char32_t flag = e.duration == 1 ? (g.up ? kFlag16thUp : kFlag16thDown) : (g.up ? kFlag8thUp : kFlag8thDown);
+                const char32_t flag = display < 6 ? (g.up ? kFlag16thUp : kFlag16thDown) : (g.up ? kFlag8thUp : kFlag8thDown);
                 glyph(p, flag, g.stemX - kStem / 2.0 * kSpace, g.stemEnd);
             }
         }
@@ -724,6 +749,47 @@ void ScoreEngraving::paintStaffMeasure(QPainter& p, const System& s, int staffIn
                 tie(p, x - 2.0 * kSpace, x - 0.15 * kSpace, y, tieUp);
             }
         }
+    }
+
+    // triplets: a 3 by the beam of a beamed group, else a bracket with the 3 over the notes
+    std::map<int, std::vector<size_t>> tuplets;
+    for (size_t i = 0; i < measure.events.size(); ++i)
+        if (measure.events[i].tuplet >= 0)
+            tuplets[measure.events[i].tuplet].push_back(i);
+    p.setPen(Qt::black);
+    for (const auto& [id, members] : tuplets)
+    {
+        const chost::ScoreEvent& front = measure.events[members.front()];
+        const chost::ScoreEvent& back = measure.events[members.back()];
+        const bool beamed = front.beam >= 0 && !front.rest &&
+                            std::all_of(members.begin(), members.end(), [&](size_t i) { return measure.events[i].beam == front.beam; });
+        if (beamed)
+        {
+            const Geometry& a = geometry[members.front()];
+            const Geometry& b = geometry[members.back()];
+            const double x = (a.stemX + b.stemX) / 2.0;
+            const double y = (a.stemEnd + b.stemEnd) / 2.0;
+            glyph(p, kTuplet0 + 3, x - 0.5 * kSpace, a.up ? y - 0.6 * kSpace : y + 2.0 * kSpace);
+            continue;
+        }
+        double top = middle - 3.0 * kSpace;
+        for (size_t i : members)
+        {
+            const chost::ScoreEvent& e = measure.events[i];
+            if (e.rest)
+                continue;
+            top = std::min(top, yOf(position(e.notes.back(), staff.clef)) - 1.5 * kSpace);
+            if (geometry[i].up)
+                top = std::min(top, geometry[i].stemEnd - 1.0 * kSpace);
+        }
+        const double x1 = columnX(front.start);
+        const double x2 = columnX(back.start) + kHead * kSpace;
+        const double mid = (x1 + x2) / 2.0;
+        line(p, x1, top + 0.6 * kSpace, x1, top, kStem);
+        line(p, x1, top, mid - 0.9 * kSpace, top, kStem);
+        line(p, mid + 0.9 * kSpace, top, x2, top, kStem);
+        line(p, x2, top, x2, top + 0.6 * kSpace, kStem);
+        glyph(p, kTuplet0 + 3, mid - 0.5 * kSpace, top + 0.6 * kSpace);
     }
 }
 

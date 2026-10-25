@@ -142,6 +142,9 @@ xml = os.path.abspath("mcp_score.musicxml")
 call("export_score", path=xml, shortest="eighth")
 check("<score-partwise" in open(xml, encoding="utf-8").read(), "score MusicXML")
 call("export_score", path=pdf, tracks=[0], expect_error=True)  # an audio track
+waltz = call("export_score", path=xml, time_signature="3/4", triplets=False)
+check(waltz["time_signature"] == "3/4" and "<beats>3</beats>" in open(xml, encoding="utf-8").read(), "score in 3/4")
+call("export_score", path=xml, time_signature="5/4", expect_error=True)
 
 # clips: a fade on the audio track and a move of the chord part, each into a new file, undoable
 before = call("get_project")["tracks"][0]["file"]

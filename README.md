@@ -151,7 +151,10 @@ chost 会在后台逐个识别 VST 插件（名称、厂商、是乐器还是效
 - 调号默认用歌曲的调（没识别时按音符猜），升降号按调拼写（A 小调的导音写 G#，不写 Ab）
 - **最短音符** 选八分音符，转 MIDI 来的谱子会干净很多
 - **导出 PDF**：A4，可以直接打印或发给别人；**导出 MusicXML**：用 MuseScore、Sibelius、Finale、Dorico 打开，继续加歌词、表情记号、改排版
-- 目前是 4/4 拍、每行谱一个声部（重叠的音在下一个音开始处截断）；鼓轨暂时不能出谱
+- **拍号**：4/4、3/4、2/4、6/8、12/8、9/8、3/8。6/8 这类拍子按附点四分音符一拍来连符杠，速度也写成“附点四分音符 = 多少”
+- **识别三连音**（默认打开）：一拍里弹了三个均匀的音，就写成三连音，带“3”；连着符杠的写在符杠旁边，其它的加括号
+- 弹得稍微断开一点的音（松键早了）会写成一直延续到下一个音，谱面上不会出现一堆零碎的休止符
+- 每行谱一个声部（重叠的音在下一个音开始处截断）；鼓轨暂时不能出谱
 - 乐谱字体是 Steinberg 的 Bravura（SIL 开放字体许可证）
 
 ## 标记点和片段编辑
@@ -297,6 +300,7 @@ chost-cli scale --guess melody.mid --fit melody.mid --output fixed.mid
 
 ```sh
 chost-cli score --midi melody.mid --midi piano.mid --key "A minor" --tempo 96 --grid 8 --output song.musicxml
+chost-cli score --midi jig.mid --time 6/8 --output jig.musicxml     # 拍号；--no-triplets 不识别三连音
 ```
 
 片段编辑（`move`、`silence`、`keep`、`fade_in`、`fade_out`、`gain`、`normalize`，时间都用秒）：

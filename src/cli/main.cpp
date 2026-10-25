@@ -645,6 +645,18 @@ static int cmdScore(int argc, char* argv[])
             options.tempo = std::atof(value().c_str());
         else if (a == "--grid")
             options.grid = value() == "8" ? 2 : 1;
+        else if (a == "--time")
+        {
+            const std::string text = value();
+            options.meter = chost::parseMeter(text);
+            if (!options.meter.valid())
+            {
+                std::fprintf(stderr, "time signatures: 2/4 3/4 4/4 3/8 6/8 9/8 12/8, not %s\n", text.c_str());
+                return 2;
+            }
+        }
+        else if (a == "--no-triplets")
+            options.triplets = false;
         else if (a == "--title")
             options.title = value();
         else if (a == "--output")
@@ -661,18 +673,20 @@ static int cmdScore(int argc, char* argv[])
         std::fprintf(stderr, "%s\n", error.c_str());
         return 1;
     }
-    size_t notes = 0, rests = 0, ties = 0;
+    size_t notes = 0, rests = 0, ties = 0, triplets = 0;
     for (const chost::ScorePart& part : score.parts)
         for (const chost::ScoreStaff& st : part.staves)
             for (const chost::ScoreMeasure& m : st.measures)
                 for (const chost::ScoreEvent& e : m.events)
                 {
                     e.rest ? ++rests : notes += e.notes.size();
+                    if (e.tuplet >= 0 && (&e == &m.events.front() || (&e - 1)->tuplet != e.tuplet))
+                        ++triplets;
                     for (const chost::ScoreNote& n : e.notes)
                         ties += n.tieStart ? 1 : 0;
                 }
-    std::printf("SCORE %s\t%d bars\t%zu parts\t%zu notes\t%zu rests\t%zu ties\n", chost::keyName(score.key).c_str(), score.measures,
-                score.parts.size(), notes, rests, ties);
+    std::printf("SCORE %s\t%d/%d\t%d bars\t%zu parts\t%zu notes\t%zu rests\t%zu ties\t%zu triplets\n", chost::keyName(score.key).c_str(),
+                score.meter.beats, score.meter.beatType, score.measures, score.parts.size(), notes, rests, ties, triplets);
     for (const chost::ScorePart& part : score.parts)
         std::printf("PART %s\t%s\n", part.name.c_str(),
                     part.staves.size() > 1 ? "grand" : part.staves[0].clef == chost::Clef::Treble ? "treble" : "bass");
@@ -872,7 +886,7 @@ int main(int argc, char* argv[])
                  "  chost-cli chords [--key \"A minor\"] [--sevenths] [--after CHORD]\n"
                  "  chost-cli chords [--key K] --progression \"C G | Am F\" [--output F.mid] [--pattern block|arpeggio|rhythm] [--tempo BPM]\n"
                  "  chost-cli scale [--scale \"A minor\"] [--guess F.mid] [--fit F.mid [--output OUT.mid]]\n"
-                 "  chost-cli score [--staff auto|treble|bass|grand] --midi F.mid... [--key K] [--tempo BPM] [--grid 16|8]\n"
+                 "  chost-cli score [--staff auto|treble|bass|grand] --midi F.mid... [--key K] [--tempo BPM] [--grid 16|8] [--time 6/8] [--no-triplets]\n"
                  "                  [--title T] [--output F.musicxml]\n"
                  "  chost-cli clip --input F --output F2 --edit move|silence|keep|fade_in|fade_out|gain|normalize\n"
                  "                 [--start S] [--end S] [--seconds S] [--db DB]\n"

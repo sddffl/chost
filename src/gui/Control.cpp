@@ -793,6 +793,13 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             options.title = args.value(QStringLiteral("title")).toString(w.fSessionPath.isEmpty() ? QString() : w.projectName()).toStdString();
             options.tempo = session.tempo();
             options.grid = args.value(QStringLiteral("shortest")).toString() == QLatin1String("eighth") ? 2 : 1;
+            if (has("time_signature"))
+            {
+                options.meter = chost::parseMeter(args.value(QStringLiteral("time_signature")).toString().toStdString());
+                if (!options.meter.valid())
+                    throw Fail{QStringLiteral("time_signature is one of 4/4, 3/4, 2/4, 6/8, 12/8, 9/8, 3/8")};
+            }
+            options.triplets = args.value(QStringLiteral("triplets")).toBool(true);
             options.key = chost::parseKey(args.value(QStringLiteral("key")).toString(QString::fromStdString(session.key())).toStdString());
             const QString staffText = args.value(QStringLiteral("staff")).toString();
             const chost::StaffMode staff = staffText == QLatin1String("treble") ? chost::StaffMode::Treble
@@ -814,7 +821,8 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                                                                    : part.staves[0].clef == chost::Clef::Treble ? QStringLiteral("treble")
                                                                                                                 : QStringLiteral("bass")}});
             QJsonObject o{{QStringLiteral("file"), path(file)}, {QStringLiteral("key"), QString::fromStdString(chost::keyName(score.key))},
-                          {QStringLiteral("bars"), score.measures}, {QStringLiteral("parts"), parts}};
+                          {QStringLiteral("bars"), score.measures}, {QStringLiteral("parts"), parts},
+                          {QStringLiteral("time_signature"), QStringLiteral("%1/%2").arg(score.meter.beats).arg(score.meter.beatType)}};
             if (pages > 0)
                 o.insert(QStringLiteral("pages"), pages);
             result = o;

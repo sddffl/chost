@@ -10,6 +10,7 @@
 
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -32,6 +33,7 @@ public:
     void setTracks(const std::vector<Track>& tracks, int selected); // MIDI tracks, drums left out
     void setSong(const QString& key, double tempo);
     void setChosen(const std::vector<int>& tracks); // session indices to put in the score (tests)
+    bool setMeter(const QString& meter);            // "6/8"; false when it isn't one the score writes
     bool exportTo(const QString& path, QString& error); // .pdf, else MusicXML
     int pages() const;
 
@@ -57,6 +59,8 @@ private:
     QComboBox* fKey = nullptr;
     QComboBox* fStaff = nullptr;
     QComboBox* fGrid = nullptr;
+    QComboBox* fMeter = nullptr;
+    QCheckBox* fTriplets = nullptr;
     QComboBox* fZoom = nullptr;
     QPushButton* fPdf = nullptr;
     QPushButton* fXml = nullptr;

@@ -6,14 +6,14 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace chost {
 
 namespace {
 
-constexpr int kBar = 16; // sixteenths in a 4/4 bar
-constexpr int kBeat = 4;
+constexpr int kQuarter = 12; // ticks: a sixteenth is 3, an eighth of a triplet 4
 const int kNatural[7] = {0, 2, 4, 5, 7, 9, 11}; // C D E F G A B
 
 int mod(int v, int m)
@@ -41,40 +41,65 @@ int signatureAlter(int letter, int fifths)
     return 0;
 }
 
-// note lengths notation has: in a bar, on a note's position, without hiding the beats
-bool fits(int at, int length, bool rest)
+// note lengths notation has: in a bar, on a note's position, without hiding the beats. Inside a beat of
+// triplets only triplet eighths (4) and quarters (8), or the whole beat; elsewhere none of those.
+bool fits(int at, int length, bool rest, const Meter& meter, const std::vector<bool>& triplets)
 {
     const int end = at + length;
-    if (end > kBar)
+    const int bar = meter.barTicks();
+    const int pulse = meter.pulse();
+    if (end > bar)
         return false;
-    if (at % kBeat != 0)
-        return end <= (at / kBeat + 1) * kBeat; // off the beat: up to the next beat
-    if (length <= kBeat)
-        return !rest || length != 3;
+    auto triplet = [&](int beat) { return beat < static_cast<int>(triplets.size()) && triplets[static_cast<size_t>(beat)]; };
+    if (triplet(at / pulse))
+    {
+        if (end > (at / pulse + 1) * pulse)
+            return false;
+        const int offset = at % pulse;
+        return length == 4 || (length == 8 && offset != 8) || (length == pulse && offset == 0);
+    }
+    for (int beat = at / pulse; beat * pulse < end; ++beat)
+        if (triplet(beat))
+            return false;
+    static const int plain[] = {72, 48, 36, 24, 18, 12, 9, 6, 3};
+    if (std::find(std::begin(plain), std::end(plain), length) == std::end(plain))
+        return false;
+    if (length == bar && at == 0)
+        return true;
+    if (at % pulse != 0)
+        return end <= (at / pulse + 1) * pulse; // off the beat: up to the next beat
+    if (length <= pulse)
+        return !rest || length != 9;
+    if (meter.compound())
+        return length % pulse == 0 && at % (2 * pulse) == 0; // dotted halves on the first or third beat
+    // simple time: a half note or dotted quarter never hides the middle of a 4/4 or 2/4 bar
+    const bool even = meter.beats % 2 == 0;
     switch (length)
     {
-    case 6: return !rest && (at == 0 || at == 8); // dotted quarter on beat 1 or 3
-    case 8: return at == 0 || at == 8;            // a half note never hides the middle of the bar
-    case 12: return !rest && at == 0;
-    case 16: return at == 0;
+    case 18: return !rest && (!even || at % 24 == 0);
+    case 24: return !even || at % 24 == 0;
+    case 36: return !rest && at == 0;
+    case 48: return at == 0;
     default: return false;
     }
 }
 
 // a length from a position in the bar as the notes (or rests) notation writes it, tied
-std::vector<int> pieces(int at, int length, bool rest)
+std::vector<int> pieces(int at, int length, bool rest, const Meter& meter, const std::vector<bool>& triplets)
 {
-    static const int lengths[] = {16, 12, 8, 6, 4, 3, 2, 1};
+    static const int lengths[] = {72, 48, 36, 24, 18, 12, 9, 8, 6, 4, 3};
     std::vector<int> out;
     while (length > 0)
     {
-        int take = 1;
+        int take = 0;
         for (int d : lengths)
-            if (d <= length && fits(at, d, rest))
+            if (d <= length && fits(at, d, rest, meter, triplets))
             {
                 take = d;
                 break;
             }
+        if (take == 0)
+            take = std::min(length, length % 3 == 0 ? 3 : length % 4 == 0 ? 4 : 1); // never expected
         out.push_back(take);
         at += take;
         length -= take;
@@ -89,7 +114,7 @@ struct Timed {
 };
 
 // one staff's notes as chords and rests from the start to the end of the last bar
-std::vector<Timed> chordsAndRests(std::vector<std::pair<int, std::pair<int, int>>> notes /* start, (end, pitch) */, int bars)
+std::vector<Timed> chordsAndRests(std::vector<std::pair<int, std::pair<int, int>>> notes /* start, (end, pitch) */, int bars, int barTicks)
 {
     std::sort(notes.begin(), notes.end());
     std::vector<Timed> chords;
@@ -115,13 +140,16 @@ std::vector<Timed> chordsAndRests(std::vector<std::pair<int, std::pair<int, int>
         out.push_back(c);
         time = c.end;
     }
-    if (time < bars * kBar)
-        out.push_back(Timed{time, bars * kBar, {}});
+    if (time < bars * barTicks)
+        out.push_back(Timed{time, bars * barTicks, {}});
     return out;
 }
 
-ScoreStaff layOut(const std::vector<Timed>& timeline, Clef clef, int bars, const Key& key, int fifths)
+ScoreStaff layOut(const std::vector<Timed>& timeline, Clef clef, int bars, const Key& key, int fifths, const Meter& meter,
+                  const std::vector<std::vector<bool>>& triplets /* per bar, per beat */)
 {
+    const int barTicks = meter.barTicks();
+    const int pulse = meter.pulse();
     ScoreStaff staff;
     staff.clef = clef;
     staff.measures.resize(static_cast<size_t>(bars));
@@ -132,10 +160,10 @@ ScoreStaff layOut(const std::vector<Timed>& timeline, Clef clef, int bars, const
         bool first = true;
         while (at < t.end)
         {
-            const int bar = at / kBar;
-            const int inBar = at % kBar;
-            const int until = std::min(t.end, (bar + 1) * kBar);
-            const std::vector<int> lengths = pieces(inBar, until - at, t.pitches.empty());
+            const int bar = at / barTicks;
+            const int inBar = at % barTicks;
+            const int until = std::min(t.end, (bar + 1) * barTicks);
+            const std::vector<int> lengths = pieces(inBar, until - at, t.pitches.empty(), meter, triplets[static_cast<size_t>(bar)]);
             int offset = inBar;
             for (int length : lengths)
             {
@@ -159,8 +187,10 @@ ScoreStaff layOut(const std::vector<Timed>& timeline, Clef clef, int bars, const
         }
     }
 
-    for (ScoreMeasure& m : staff.measures)
+    const int beats = barTicks / pulse;
+    for (size_t bar = 0; bar < staff.measures.size(); ++bar)
     {
+        ScoreMeasure& m = staff.measures[bar];
         if (m.events.size() == 1 && m.events[0].rest)
             m.events[0].wholeBar = true;
 
@@ -175,10 +205,27 @@ ScoreStaff layOut(const std::vector<Timed>& timeline, Clef clef, int bars, const
                 state[where] = n.alter;
             }
 
-        // beams: the eighths and sixteenths of a beat, two beats of eighths together
+        // triplets: the notes and rests of each beat of triplets
+        int nextTuplet = 0;
+        for (int beat = 0; beat < beats; ++beat)
+        {
+            if (beat >= static_cast<int>(triplets[bar].size()) || !triplets[bar][static_cast<size_t>(beat)])
+                continue;
+            bool any = false;
+            for (ScoreEvent& e : m.events)
+                if (e.start / pulse == beat && e.duration < pulse)
+                {
+                    e.tuplet = nextTuplet;
+                    any = true;
+                }
+            if (any)
+                ++nextTuplet;
+        }
+
+        // beams: the flagged notes of a beat, and in 4/4 and 2/4 two beats of plain eighths together
         int nextBeam = 0;
-        std::vector<std::vector<size_t>> runs(4);
-        for (int beat = 0; beat < 4; ++beat)
+        std::vector<std::vector<size_t>> runs(static_cast<size_t>(beats));
+        for (int beat = 0; beat < beats; ++beat)
         {
             std::vector<size_t> run;
             auto close = [&] {
@@ -194,24 +241,27 @@ ScoreStaff layOut(const std::vector<Timed>& timeline, Clef clef, int bars, const
             for (size_t i = 0; i < m.events.size(); ++i)
             {
                 const ScoreEvent& e = m.events[i];
-                if (e.start / kBeat != beat)
+                if (e.start / pulse != beat)
                     continue;
-                if (e.rest || e.duration >= kBeat)
+                if (e.rest || displayLength(e) >= kQuarter)
                     close();
                 else
                     run.push_back(i);
             }
             close();
         }
-        auto twoEighths = [&](int beat) {
-            const std::vector<size_t>& run = runs[static_cast<size_t>(beat)];
-            return run.size() == 2 && m.events[run[0]].duration == 2 && m.events[run[1]].duration == 2 &&
-                   m.events[run[0]].start == beat * kBeat;
-        };
-        for (int beat : {0, 2})
-            if (twoEighths(beat) && twoEighths(beat + 1))
-                for (size_t i : runs[static_cast<size_t>(beat + 1)])
-                    m.events[i].beam = m.events[runs[static_cast<size_t>(beat)][0]].beam;
+        if (!meter.compound() && meter.beatType == 4 && meter.beats % 2 == 0)
+        {
+            auto twoEighths = [&](int beat) {
+                const std::vector<size_t>& run = runs[static_cast<size_t>(beat)];
+                return run.size() == 2 && m.events[run[0]].duration == 6 && m.events[run[1]].duration == 6 && m.events[run[0]].tuplet < 0 &&
+                       m.events[run[0]].start == beat * pulse;
+            };
+            for (int beat = 0; beat + 1 < beats; beat += 2)
+                if (twoEighths(beat) && twoEighths(beat + 1))
+                    for (size_t i : runs[static_cast<size_t>(beat + 1)])
+                        m.events[i].beam = m.events[runs[static_cast<size_t>(beat)][0]].beam;
+        }
     }
     return staff;
 }
@@ -290,18 +340,42 @@ ScoreNote spellPitch(int pitch, const Key& key)
     return n;
 }
 
+Meter parseMeter(const std::string& text)
+{
+    Meter m;
+    const size_t slash = text.find('/');
+    if (slash == std::string::npos)
+        return Meter{0, 4};
+    try
+    {
+        m.beats = std::stoi(text.substr(0, slash));
+        m.beatType = std::stoi(text.substr(slash + 1));
+    }
+    catch (...)
+    {
+        return Meter{0, 4};
+    }
+    return m.valid() ? m : Meter{0, 4};
+}
+
+int displayLength(const ScoreEvent& e)
+{
+    return e.tuplet >= 0 ? e.duration * 3 / 2 : e.duration;
+}
+
 void noteType(int duration, std::string& type, int& dots)
 {
     dots = 0;
     switch (duration)
     {
-    case 16: type = "whole"; break;
-    case 12: type = "half"; dots = 1; break;
-    case 8: type = "half"; break;
-    case 6: type = "quarter"; dots = 1; break;
-    case 4: type = "quarter"; break;
-    case 3: type = "eighth"; dots = 1; break;
-    case 2: type = "eighth"; break;
+    case 72: type = "whole"; dots = 1; break;
+    case 48: type = "whole"; break;
+    case 36: type = "half"; dots = 1; break;
+    case 24: type = "half"; break;
+    case 18: type = "quarter"; dots = 1; break;
+    case 12: type = "quarter"; break;
+    case 9: type = "eighth"; dots = 1; break;
+    case 6: type = "eighth"; break;
     default: type = "16th"; break;
     }
 }
@@ -311,33 +385,96 @@ Score makeScore(const std::vector<ScoreInput>& inputs, const ScoreOptions& optio
     Score score;
     score.title = options.title;
     score.tempo = options.tempo > 0.0 ? options.tempo : 120.0;
-    const double perSecond = score.tempo / 60.0 * kBeat; // sixteenths
-    const int grid = std::clamp(options.grid, 1, 4);
+    score.meter = options.meter.valid() ? options.meter : Meter{};
+    const Meter meter = score.meter;
+    const int barTicks = meter.barTicks();
+    const int pulse = meter.pulse();
+    const double perSecond = score.tempo / 60.0 * kQuarter; // ticks
+    const int step = 3 * std::clamp(options.grid, 1, 2);   // the shortest plain note: a sixteenth or an eighth
+    // triplets only where beats are quarters; in 6/8 and 12/8 the beat divides in three anyway
+    const bool triplets = options.triplets && !meter.compound() && pulse == kQuarter;
 
     struct Part {
         const ScoreInput* input;
         std::vector<std::pair<int, std::pair<int, int>>> notes;
+        std::set<int> tripletBeats; // beats (counted from the start) written as triplets
     };
     std::vector<Part> parts;
     std::vector<MidiNote> all;
     int end = 0;
     for (const ScoreInput& input : inputs)
     {
-        Part part{&input, {}};
+        Part part{&input, {}, {}};
+        std::vector<std::pair<double, double>> raw; // start, end in ticks
+        std::vector<int> pitches;
         for (const MidiNote& n : input.clip.notes)
         {
             if (n.channel == 9)
                 continue;
-            int start = static_cast<int>(std::lround(n.start * perSecond / grid)) * grid;
-            int stop = static_cast<int>(std::lround(n.end * perSecond / grid)) * grid;
-            start = std::max(0, start);
-            stop = std::max(stop, start + grid);
-            part.notes.push_back({start, {stop, n.pitch}});
+            raw.push_back({std::max(0.0, n.start * perSecond), std::max(0.0, n.end * perSecond)});
+            pitches.push_back(n.pitch);
             all.push_back(n);
+        }
+        if (raw.empty())
+            continue;
+
+        // a note let go a little before the next one (or the bar line) is written as lasting until it,
+        // so detached playing doesn't fill the page with short rests
+        {
+            std::vector<double> onsets;
+            for (const auto& r : raw)
+                onsets.push_back(r.first);
+            std::sort(onsets.begin(), onsets.end());
+            for (auto& [a, b] : raw)
+            {
+                const auto next = std::upper_bound(onsets.begin(), onsets.end(), a + 0.5);
+                const double until = next != onsets.end() ? *next : std::ceil(b / barTicks - 1e-9) * barTicks;
+                const double gap = until - b;
+                if (gap > 0.0 && gap <= std::max(2.0, 0.3 * (b - a)))
+                    b = until;
+            }
+        }
+
+        // a beat is in triplets when its starts and ends sit clearly closer to thirds of the beat than to
+        // the plain grid, and at least one is on a third the plain grid doesn't have
+        if (triplets)
+        {
+            std::map<int, std::pair<double, double>> errors; // beat -> (plain, triplet)
+            std::set<int> thirds;
+            auto distance = [](double x, int grid) { return std::abs(x - std::round(x / grid) * grid); };
+            for (const auto& [a, b] : raw)
+                for (double x : {a, b})
+                {
+                    const double weight = x == a ? 1.0 : 0.5; // where a note stops is played less exactly
+                    const int beat = static_cast<int>(std::floor(x / pulse));
+                    const double inBeat = x - beat * pulse;
+                    if (inBeat < 0.75 || inBeat > pulse - 0.75)
+                        continue; // on a beat: either way
+                    errors[beat].first += weight * distance(x, step);
+                    errors[beat].second += weight * distance(x, 4);
+                    const int third = static_cast<int>(std::lround(inBeat / 4.0)) * 4;
+                    if (third % step != 0 && x == a)
+                        thirds.insert(beat);
+                }
+            for (const auto& [beat, error] : errors)
+                if (thirds.count(beat) && error.second < 0.6 * error.first)
+                    part.tripletBeats.insert(beat);
+        }
+        auto snap = [&](double x) {
+            const int beat = static_cast<int>(std::floor(x / pulse));
+            const int grid = part.tripletBeats.count(beat) ? 4 : step;
+            return static_cast<int>(std::lround(x / grid)) * grid;
+        };
+        for (size_t i = 0; i < raw.size(); ++i)
+        {
+            const int start = snap(raw[i].first);
+            int stop = snap(raw[i].second);
+            if (stop <= start)
+                stop = start + (part.tripletBeats.count(start / pulse) ? 4 : step);
+            part.notes.push_back({start, {stop, pitches[i]}});
             end = std::max(end, stop);
         }
-        if (!part.notes.empty())
-            parts.push_back(part);
+        parts.push_back(part);
     }
     if (parts.empty())
     {
@@ -349,7 +486,7 @@ Score makeScore(const std::vector<ScoreInput>& inputs, const ScoreOptions& optio
     if (!score.key.valid)
         score.key = Key{0, false, true};
     score.fifths = keyFifths(score.key);
-    score.measures = std::max(1, (end + kBar - 1) / kBar);
+    score.measures = std::max(1, (end + barTicks - 1) / barTicks);
 
     for (const Part& part : parts)
     {
@@ -373,18 +510,23 @@ Score makeScore(const std::vector<ScoreInput>& inputs, const ScoreOptions& optio
             const double count = static_cast<double>(part.notes.size());
             mode = single / count > 0.6 && grand < 0.5 * single ? StaffMode::Grand : treble <= bass ? StaffMode::Treble : StaffMode::Bass;
         }
+        // the part's beats of triplets, bar by bar
+        std::vector<std::vector<bool>> tripletMap(static_cast<size_t>(score.measures), std::vector<bool>(static_cast<size_t>(barTicks / pulse), false));
+        for (int beat : part.tripletBeats)
+            if (beat / (barTicks / pulse) < score.measures)
+                tripletMap[static_cast<size_t>(beat / (barTicks / pulse))][static_cast<size_t>(beat % (barTicks / pulse))] = true;
         if (mode == StaffMode::Grand)
         {
             std::vector<std::pair<int, std::pair<int, int>>> upper, lower;
             for (const auto& n : part.notes)
                 (n.second.second >= 60 ? upper : lower).push_back(n);
-            out.staves.push_back(layOut(chordsAndRests(upper, score.measures), Clef::Treble, score.measures, score.key, score.fifths));
-            out.staves.push_back(layOut(chordsAndRests(lower, score.measures), Clef::Bass, score.measures, score.key, score.fifths));
+            out.staves.push_back(layOut(chordsAndRests(upper, score.measures, barTicks), Clef::Treble, score.measures, score.key, score.fifths, meter, tripletMap));
+            out.staves.push_back(layOut(chordsAndRests(lower, score.measures, barTicks), Clef::Bass, score.measures, score.key, score.fifths, meter, tripletMap));
         }
         else
         {
-            out.staves.push_back(layOut(chordsAndRests(part.notes, score.measures), mode == StaffMode::Bass ? Clef::Bass : Clef::Treble,
-                                        score.measures, score.key, score.fifths));
+            out.staves.push_back(layOut(chordsAndRests(part.notes, score.measures, barTicks), mode == StaffMode::Bass ? Clef::Bass : Clef::Treble,
+                                        score.measures, score.key, score.fifths, meter, tripletMap));
         }
         score.parts.push_back(out);
     }
@@ -423,8 +565,9 @@ std::string musicXml(const Score& score)
             x << "    <measure number=\"" << m + 1 << "\">\n";
             if (m == 0)
             {
-                x << "      <attributes><divisions>4</divisions><key><fifths>" << score.fifths << "</fifths><mode>"
-                  << (score.key.minor ? "minor" : "major") << "</mode></key><time><beats>4</beats><beat-type>4</beat-type></time>";
+                x << "      <attributes><divisions>12</divisions><key><fifths>" << score.fifths << "</fifths><mode>"
+                  << (score.key.minor ? "minor" : "major") << "</mode></key><time><beats>" << score.meter.beats << "</beats><beat-type>"
+                  << score.meter.beatType << "</beat-type></time>";
                 if (part.staves.size() > 1)
                     x << "<staves>" << part.staves.size() << "</staves>";
                 for (size_t s = 0; s < part.staves.size(); ++s)
@@ -438,23 +581,33 @@ std::string musicXml(const Score& score)
                 x << "</attributes>\n";
                 if (p == 0)
                 {
-                    char tempo[32];
+                    char tempo[32], beat[32];
                     std::snprintf(tempo, sizeof tempo, "%g", std::round(score.tempo * 10.0) / 10.0);
-                    x << "      <direction placement=\"above\"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>" << tempo
-                      << "</per-minute></metronome></direction-type><sound tempo=\"" << tempo << "\"/></direction>\n";
+                    // the beat: a dotted quarter in 6/8 and the like (the sound's tempo is in quarters either way)
+                    const bool dotted = score.meter.compound();
+                    std::snprintf(beat, sizeof beat, "%g", std::round((dotted ? score.tempo / 1.5 : score.tempo) * 10.0) / 10.0);
+                    x << "      <direction placement=\"above\"><direction-type><metronome><beat-unit>quarter</beat-unit>"
+                      << (dotted ? "<beat-unit-dot/>" : "") << "<per-minute>" << beat << "</per-minute></metronome></direction-type><sound tempo=\""
+                      << tempo << "\"/></direction>\n";
                 }
             }
             for (size_t s = 0; s < part.staves.size(); ++s)
             {
                 if (s > 0)
-                    x << "      <backup><duration>" << kBar << "</duration></backup>\n";
+                    x << "      <backup><duration>" << score.meter.barTicks() << "</duration></backup>\n";
                 const ScoreMeasure& measure = part.staves[s].measures[static_cast<size_t>(m)];
                 for (size_t i = 0; i < measure.events.size(); ++i)
                 {
                     const ScoreEvent& e = measure.events[i];
                     std::string type;
                     int dots = 0;
-                    noteType(e.duration, type, dots);
+                    noteType(displayLength(e), type, dots);
+                    // a triplet's bracket and number, from its first to its last note or rest
+                    auto inTuplet = [&](int j) {
+                        return e.tuplet >= 0 && j >= 0 && j < static_cast<int>(measure.events.size()) && measure.events[static_cast<size_t>(j)].tuplet == e.tuplet;
+                    };
+                    const bool tupletStart = e.tuplet >= 0 && !inTuplet(static_cast<int>(i) - 1);
+                    const bool tupletStop = e.tuplet >= 0 && !inTuplet(static_cast<int>(i) + 1);
 
                     // beams: one level for eighths, a second for sixteenths, hooks for a lone sixteenth
                     std::string beams;
@@ -464,10 +617,10 @@ std::string musicXml(const Score& score)
                         const int at = static_cast<int>(i);
                         const bool before = inBeam(at - 1), after = inBeam(at + 1);
                         beams += std::string("<beam number=\"1\">") + (!before ? "begin" : !after ? "end" : "continue") + "</beam>";
-                        if (e.duration == 1)
+                        if (displayLength(e) < 6)
                         {
-                            const bool b16 = before && measure.events[i - 1].duration == 1;
-                            const bool a16 = after && measure.events[i + 1].duration == 1;
+                            const bool b16 = before && displayLength(measure.events[i - 1]) < 6;
+                            const bool a16 = after && displayLength(measure.events[i + 1]) < 6;
                             const char* level = b16 && a16 ? "continue" : a16 ? "begin" : b16 ? "end" : (!before ? "forward hook" : "backward hook");
                             beams += std::string("<beam number=\"2\">") + level + "</beam>";
                         }
@@ -511,17 +664,25 @@ std::string musicXml(const Score& score)
                             const int a = e.notes[k].alter;
                             x << "<accidental>" << (a > 0 ? "sharp" : a < 0 ? "flat" : "natural") << "</accidental>";
                         }
+                        if (e.tuplet >= 0)
+                            x << "<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>";
                         if (part.staves.size() > 1)
                             x << "<staff>" << s + 1 << "</staff>";
                         if (k == 0)
                             x << beams;
-                        if (!e.rest && (e.notes[k].tieStart || e.notes[k].tieStop))
+                        const bool tied = !e.rest && (e.notes[k].tieStart || e.notes[k].tieStop);
+                        const bool bracket = k == 0 && (tupletStart || tupletStop);
+                        if (tied || bracket)
                         {
                             x << "<notations>";
-                            if (e.notes[k].tieStop)
+                            if (tied && e.notes[k].tieStop)
                                 x << "<tied type=\"stop\"/>";
-                            if (e.notes[k].tieStart)
+                            if (tied && e.notes[k].tieStart)
                                 x << "<tied type=\"start\"/>";
+                            if (bracket && tupletStart)
+                                x << "<tuplet type=\"start\"/>";
+                            if (bracket && tupletStop)
+                                x << "<tuplet type=\"stop\"/>";
                             x << "</notations>";
                         }
                         x << "</note>\n";

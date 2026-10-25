@@ -130,7 +130,7 @@ jobs:
           ./build/chost-cli scale --scale "D major" --fit prog_edit.mid | grep -q 'FIT 0 of'
           # sheet music: MusicXML from the CLI, PDF and a preview from the GUI
           ./build/chost-cli score --midi prog.mid --key "A minor" --title CI --output prog.musicxml | tee score.log
-          grep -P '^SCORE A minor\t2 bars\t1 parts' score.log
+          grep -P '^SCORE A minor\t4/4\t2 bars\t1 parts' score.log
           grep -q '<score-partwise' prog.musicxml
           QT_QPA_PLATFORM=offscreen ./build/chost --file prog.mid --score $PWD/prog.pdf --screenshot score.png --screenshot-delay 2500 \
               | tee scorepdf.log
@@ -186,6 +186,19 @@ jobs:
               --output midi/song.musicxml
           ai-env/bin/pip install -q music21
           ai-env/bin/python tests/check_score.py midi/song.musicxml 3
+          # time signatures and triplets, from melodies played a little unevenly
+          for f in triplets waltz jig; do python3 tests/make_rhythms.py $f.mid; done
+          ./build/chost-cli score --midi triplets.mid --key "C major" --output triplets.musicxml | tee rhythm.log
+          ./build/chost-cli score --midi waltz.mid --key "C major" --time 3/4 --output waltz.musicxml | tee -a rhythm.log
+          ./build/chost-cli score --midi jig.mid --key "G major" --time 6/8 --output jig.musicxml | tee -a rhythm.log
+          grep -P '^SCORE C major\t4/4\t3 bars\t1 parts\t19 notes\t0 rests\t1 ties\t4 triplets' rhythm.log
+          grep -P '^SCORE C major\t3/4\t4 bars\t1 parts\t10 notes\t0 rests\t1 ties\t0 triplets' rhythm.log
+          grep -P '^SCORE G major\t6/8\t3 bars\t1 parts\t10 notes\t0 rests\t0 ties\t0 triplets' rhythm.log
+          ai-env/bin/python tests/check_score.py triplets.musicxml 1 4
+          ai-env/bin/python tests/check_score.py waltz.musicxml 1 0
+          ai-env/bin/python tests/check_score.py jig.musicxml 1 0
+          QT_QPA_PLATFORM=offscreen ./build/chost --file jig.mid --score $PWD/jig.pdf --score-time 6/8 --screenshot jig.png \
+              --screenshot-delay 2500 | grep -q 'SCORE WRITTEN .*(1 pages)'
 
       - name: Tempo, key, mastering, arrangement and pitch correction test
         run: |

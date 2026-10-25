@@ -61,6 +61,7 @@ int main(int argc, char* argv[])
     QCommandLineOption recogniseOpt(QStringLiteral("recognise-chords"), QStringLiteral("Open the chord pad and recognise the chords of the first audio track (tests)."));
     QCommandLineOption noteScaleOpt(QStringLiteral("note-scale"), QStringLiteral("With --edit-notes: show this scale (\"A minor\", \"D dorian\", \"off\")."), QStringLiteral("scale"));
     QCommandLineOption fitScaleOpt(QStringLiteral("fit-scale"), QStringLiteral("With --edit-notes: move the notes outside the scale into it (tests)."));
+    QCommandLineOption scoreTimeOpt(QStringLiteral("score-time"), QStringLiteral("The time signature for --score, e.g. 6/8."), QStringLiteral("meter"));
     QCommandLineOption scoreOpt(QStringLiteral("score"), QStringLiteral("Open File > Sheet music (the selected track, else every MIDI track) and export it: .pdf or .musicxml (tests)."), QStringLiteral("path"));
     QCommandLineOption markerOpt(QStringLiteral("marker"), QStringLiteral("Add a marker on the timeline (repeatable)."), QStringLiteral("seconds:name"));
     QCommandLineOption rangeOpt(QStringLiteral("range"), QStringLiteral("Select a range of the timeline."), QStringLiteral("start:end"));
@@ -68,7 +69,7 @@ int main(int argc, char* argv[])
     QCommandLineOption reverbOpt(QStringLiteral("reverb"), QStringLiteral("Send these tracks to a new reverb bus (e.g. 0,1)."), QStringLiteral("tracks"));
     QCommandLineOption foldOpt(QStringLiteral("fold"), QStringLiteral("Fold the groups."));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, balanceOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, markerOpt, rangeOpt, groupOpt, reverbOpt, foldOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, balanceOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, scoreOpt, scoreTimeOpt, markerOpt, rangeOpt, groupOpt, reverbOpt, foldOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -131,6 +132,8 @@ int main(int argc, char* argv[])
         ScoreDialog* dialog = window.scoreDialog();
         if (!parser.isSet(selectOpt))
             dialog->setChosen(window.scoreTracks());
+        if (parser.isSet(scoreTimeOpt) && !dialog->setMeter(parser.value(scoreTimeOpt)))
+            std::printf("SCORE TIME %s is not one of 4/4 3/4 2/4 6/8 12/8 9/8 3/8\n", qPrintable(parser.value(scoreTimeOpt)));
         QString error;
         const bool ok = dialog->exportTo(parser.value(scoreOpt), error);
         std::printf("%s\n", ok ? qPrintable(QStringLiteral("SCORE WRITTEN %1 (%2 pages)").arg(parser.value(scoreOpt)).arg(dialog->pages()))
