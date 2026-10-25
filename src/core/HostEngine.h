@@ -53,8 +53,11 @@ struct RackSlot {
 enum class HostEvent { PluginAdded, PluginRemoved, PluginRenamed, ParameterChanged, UiClosed, Reload, Error, EngineStopped };
 using HostEventFunc = std::function<void(HostEvent event, uint pluginId, int index, float value, const std::string& text)>;
 
-// Default search paths, overridable with LV2_PATH / VST3_PATH / VST2_PATH
+// Search paths: the platform defaults (overridable with LV2_PATH / VST3_PATH / VST2_PATH) plus the
+// user's own plugin folders, which are searched for every format.
 std::string defaultPluginPath(CarlaBackend::PluginType type);
+void setExtraPluginFolders(const std::vector<std::string>& folders); // UTF-8 paths
+std::vector<std::string> extraPluginFolders();
 std::vector<PluginEntry> scanPlugins();
 
 std::vector<std::string> audioDrivers();

@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y carla carla-dev qt6-base-dev cmake g++ pkg-config
+          sudo apt-get install -y carla carla-dev qt6-base-dev cmake g++ pkg-config pulseaudio python3-numpy
 
       - name: Build
         run: |
@@ -39,10 +39,39 @@ jobs:
           grep -E '^\[1\] .*peak L/R: 0\.24' run.log
           QT_QPA_PLATFORM=offscreen ./build/chost --file tone.wav --screenshot linux.png
 
+      - name: Multitrack test
+        run: |
+          # multitrack mixing needs Carla's patchbay, which needs a real driver: a silent PulseAudio sink
+          pulseaudio -D --exit-idle-time=-1 --disallow-exit -n \
+              --load="module-null-sink sink_name=null" --load="module-native-protocol-unix"
+          sleep 1
+          python3 tests/make_tone.py a.wav 44100
+          python3 tests/make_tone.py b.wav 48000
+          gain=lv2:http://kxstudio.sf.net/carla/plugins/audiogain_s
+          mix() { ./build/chost-cli mix --driver PulseAudio --seconds 4 "$@" | tee mix.log; grep "master peak" mix.log; }
+          # every tone peaks at 0.488: two tracks sum, mute and solo remove one, a fader at 0.5 halves one
+          mix --track a.wav --track b.wav | grep -q 'master peak 0.97'
+          mix --track a.wav --track b.wav --mute 1 | grep -q 'master peak 0.48'
+          mix --track a.wav --track b.wav --solo 0 --volume 0=0.5 | grep -q 'master peak 0.24'
+          mix --track a.wav --track b.wav --track a.wav --insert 0:$gain --insert 2:$gain --remove-track 1 | grep -q 'master peak 0.97'
+          mix --track a.wav --track b.wav --insert 1:$gain --mute 0 --volume 1=0.5 --save s.chost | grep -q 'master peak 0.24'
+          mix --open s.chost | grep -q 'master peak 0.24'
+
+      - name: Stem separation test
+        run: |
+          # the separation itself needs the AI models; --selftest hands out prepared parts instead
+          python3 tests/make_song.py song
+          CHOST_STEMS_SELFTEST=1 CHOST_SELFTEST_STEMS=$PWD/song QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file song/mysong.wav --separate --play --screenshot stems.png --screenshot-delay 9000
+          ls song/mysong_stems | tee stems.log
+          test "$(ls song/mysong_stems/*.wav | wc -l)" = 14
+
       - uses: actions/upload-artifact@v4
         with:
           name: chost-linux-screenshot
-          path: linux.png
+          path: |
+            linux.png
+            stems*.png
 
   windows:
     runs-on: windows-latest
@@ -84,6 +113,9 @@ jobs:
           grep -E '^\[0\] tone .*peak L/R: 0\.4' ../../run.log
           ./chost.exe --file ../../tone.wav --screenshot ../../windows.png
           ls -la ../../windows.png
+          # no sound card on the runner: multitrack falls back to the Dummy driver's rack
+          ./chost-cli.exe mix --driver Dummy --track ../../tone.wav --track ../../tone.wav --seconds 1
+          test -f tools/chost_separate.py
 
       - uses: actions/upload-artifact@v4
         with:

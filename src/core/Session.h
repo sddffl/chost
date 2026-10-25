@@ -28,9 +28,12 @@ class Session {
 public:
     explicit Session(HostEngine& host);
 
-    // Creates the master bus. The engine must be running in patchbay mode and hold no plugins.
+    // Creates the master bus. The engine must be running and hold no plugins.
     bool init();
     bool isReady() const { return fReady; }
+    // Tracks are only mixed in patchbay mode. In rack mode (the Dummy driver, which has no sound anyway)
+    // the plugins sit in one chain and the model is kept without wiring.
+    bool isRouted() const { return fHost.mode() == HostEngine::Mode::Patchbay; }
     std::string lastError() const { return fError; }
 
     const std::vector<Track>& tracks() const { return fTracks; }
@@ -41,6 +44,7 @@ public:
     bool setTrackFile(int track, const std::string& path);      // loads or replaces the track's audio
     bool removeTrack(int track);
     void renameTrack(int track, const std::string& name);
+    bool moveTrack(int from, int to); // display order only, the wiring doesn't depend on it
 
     bool addInsert(int track, const std::string& spec);
     bool removeInsert(int track, int index);

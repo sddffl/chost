@@ -26,5 +26,9 @@ for _ in 1 2 3; do
     done
 done
 
+# the AI helpers run in the user's own Python, chost finds them next to chost.exe
+mkdir -p "$out/tools"
+cp tools/*.py "$out/tools/"
+
 cp README.md "$out/README.md"
 echo "packaged into $out"

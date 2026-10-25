@@ -21,9 +21,9 @@ bool Session::init()
     fTracks.clear();
     fReady = false;
     fError.clear();
-    if (fHost.mode() != HostEngine::Mode::Patchbay || !fHost.isRunning())
+    if (!fHost.isRunning())
     {
-        fError = "multitrack needs an audio driver in patchbay mode";
+        fError = "the audio engine is not running";
         return false;
     }
     if (!addFader("Stereo Out", fMaster))
@@ -93,7 +93,22 @@ bool Session::setTrackFile(int track, const std::string& path)
         reroute();
         return false;
     }
-    const uint id = fHost.pluginCount() - 1;
+    uint id = fHost.pluginCount() - 1;
+    if (!isRouted())
+    {
+        // the rack moved the player to the front, everything else moved down one
+        id = 0;
+        auto shift = [](uint& other) { ++other; };
+        shift(fMaster);
+        for (Track& t : fTracks)
+        {
+            if (t.source >= 0)
+                ++t.source;
+            shift(t.fader);
+            for (uint& insert : t.inserts)
+                shift(insert);
+        }
+    }
     // the player follows the timeline once instead of looping
     if (const int loop = fHost.findParameter(id, "Loop Mode"); loop >= 0)
         fHost.setParameter(id, static_cast<uint32_t>(loop), 0.0f);
@@ -125,6 +140,16 @@ void Session::renameTrack(int track, const std::string& name)
 {
     if (valid(track))
         fTracks[track].name = name;
+}
+
+bool Session::moveTrack(int from, int to)
+{
+    if (!valid(from) || !valid(to))
+        return false;
+    const Track t = fTracks[from];
+    fTracks.erase(fTracks.begin() + from);
+    fTracks.insert(fTracks.begin() + to, t);
+    return true;
 }
 
 bool Session::addInsert(int track, const std::string& spec)
@@ -210,8 +235,11 @@ void Session::applyGains()
 
 void Session::reroute()
 {
-    if (!fReady)
+    if (!fReady || !isRouted())
+    {
+        applyGains();
         return;
+    }
     fHost.refreshPatchbay();
     fHost.disconnectAll();
 
@@ -220,7 +248,10 @@ void Session::reroute()
         std::vector<uint> chain;
         if (t.source >= 0)
             chain.push_back(static_cast<uint>(t.source));
-        chain.insert(chain.end(), t.inserts.begin(), t.inserts.end());
+        // a bypassed insert is wired around: carla doesn't process an inactive plugin at all
+        for (uint insert : t.inserts)
+            if (fHost.slot(insert).active)
+                chain.push_back(insert);
         chain.push_back(t.fader);
         chain.push_back(fMaster);
         for (size_t i = 0; i + 1 < chain.size(); ++i)
@@ -315,6 +346,7 @@ bool Session::load(const std::string& path)
 
     const fs::path carlaPath = fs::u8path(path).parent_path() / fs::u8path(carlaFile);
     fHost.removeAllPlugins();
+    fReady = false;
     if (!fHost.loadProject(carlaPath.u8string()))
     {
         fError = fHost.lastError();

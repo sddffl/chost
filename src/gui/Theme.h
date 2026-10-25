@@ -24,6 +24,11 @@ inline const QColor meterLow{0x3f, 0xbf, 0x5f};
 inline const QColor meterMid{0xe0, 0xc0, 0x40};
 inline const QColor meterHigh{0xe0, 0x40, 0x40};
 inline const QColor mute{0xe0, 0x8a, 0x2c};
+inline const QColor solo{0xe6, 0xc8, 0x2e};
+inline const QColor selection{0x45, 0x4c, 0x55};
+
+// track colours, handed out in turn like Cubase's auto-colour
+QColor trackColour(int index);
 
 void apply(QApplication& app);
 

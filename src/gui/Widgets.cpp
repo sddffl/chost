@@ -2,6 +2,7 @@
 
 #include "Theme.h"
 
+#include <QContextMenuEvent>
 #include <QDragEnterEvent>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -118,27 +119,46 @@ ArrangeView::ArrangeView(QWidget* parent)
     setAcceptDrops(true);
     setMinimumHeight(kRulerHeight + kLaneHeight + 30);
     fScroll = new QScrollBar(Qt::Horizontal, this);
+    fVScroll = new QScrollBar(Qt::Vertical, this);
     connect(fScroll, &QScrollBar::valueChanged, this, qOverload<>(&QWidget::update));
+    connect(fVScroll, &QScrollBar::valueChanged, this, qOverload<>(&QWidget::update));
     updateScrollRange();
 }
 
-void ArrangeView::setTrack(const QString& trackName, const QString& clipName, const std::vector<float>& peaks, double seconds)
+void ArrangeView::setLanes(const std::vector<Lane>& lanes)
 {
-    fHasTrack = true;
-    fTrackName = trackName;
-    fClipName = clipName;
-    fPeaks = peaks;
-    fSeconds = seconds;
+    fLanes = lanes;
+    fLongest = 0.0;
+    for (const Lane& lane : fLanes)
+        fLongest = std::max(fLongest, lane.seconds);
+    if (fSelected >= static_cast<int>(fLanes.size()))
+        fSelected = static_cast<int>(fLanes.size()) - 1;
     updateScrollRange();
     update();
 }
 
-void ArrangeView::clearTrack()
+void ArrangeView::setLaneState(int lane, bool muted, bool solo)
 {
-    fHasTrack = false;
-    fPeaks.clear();
-    fSeconds = 0.0;
-    updateScrollRange();
+    if (lane < 0 || lane >= static_cast<int>(fLanes.size()))
+        return;
+    fLanes[lane].muted = muted;
+    fLanes[lane].solo = solo;
+    update();
+}
+
+void ArrangeView::setSelected(int lane)
+{
+    fSelected = lane;
+    // keep the selected track in view
+    if (lane >= 0)
+    {
+        const int top = lane * kLaneHeight;
+        const int visible = height() - kRulerHeight - fScroll->height();
+        if (top < fVScroll->value())
+            fVScroll->setValue(top);
+        else if (top + kLaneHeight > fVScroll->value() + visible)
+            fVScroll->setValue(top + kLaneHeight - visible);
+    }
     update();
 }
 
@@ -152,15 +172,9 @@ void ArrangeView::setPlayhead(double seconds, bool followPlayback)
     if (followPlayback)
     {
         const int x = secondsToX(seconds);
-        if (x > width() - 20 || x < kHeaderWidth)
+        if (x > width() - fVScroll->width() - 20 || x < kHeaderWidth)
             fScroll->setValue(static_cast<int>(seconds * fPixelsPerSecond) - 40);
     }
-    update();
-}
-
-void ArrangeView::setMuted(bool muted)
-{
-    fMuted = muted;
     update();
 }
 
@@ -180,29 +194,54 @@ int ArrangeView::secondsToX(double seconds) const
     return kHeaderWidth + static_cast<int>(seconds * fPixelsPerSecond) - fScroll->value();
 }
 
-QRect ArrangeView::laneRect() const
+int ArrangeView::laneAt(int y) const
 {
-    return {0, kRulerHeight, width(), kLaneHeight};
+    if (y < kRulerHeight || y >= height() - fScroll->height())
+        return -1;
+    const int lane = (y - kRulerHeight + fVScroll->value()) / kLaneHeight;
+    return lane < static_cast<int>(fLanes.size()) ? lane : -1;
 }
 
-QRect ArrangeView::muteRect() const
+QRect ArrangeView::laneRect(int lane) const
 {
-    return {kHeaderWidth - 34, kRulerHeight + 10, 24, 20};
+    return {0, kRulerHeight + lane * kLaneHeight - fVScroll->value(), width(), kLaneHeight};
+}
+
+QRect ArrangeView::muteRect(int lane) const
+{
+    const QRect r = laneRect(lane);
+    return {kHeaderWidth - 58, r.top() + 8, 22, 18};
+}
+
+QRect ArrangeView::soloRect(int lane) const
+{
+    const QRect r = laneRect(lane);
+    return {kHeaderWidth - 32, r.top() + 8, 22, 18};
 }
 
 void ArrangeView::updateScrollRange()
 {
-    const double visible = std::max(1, width() - kHeaderWidth) / fPixelsPerSecond;
-    const double total = std::max(fSeconds + 10.0, 60.0);
+    const int areaWidth = std::max(1, width() - kHeaderWidth - fVScroll->sizeHint().width());
+    const double visible = areaWidth / fPixelsPerSecond;
+    const double total = std::max(fLongest + 10.0, 60.0);
     fScroll->setRange(0, std::max(0, static_cast<int>((total - visible) * fPixelsPerSecond)));
-    fScroll->setPageStep(std::max(1, width() - kHeaderWidth));
+    fScroll->setPageStep(areaWidth);
     fScroll->setSingleStep(20);
+
+    // one empty lane's worth of room below the last track, to drop files on
+    const int areaHeight = std::max(1, height() - kRulerHeight - fScroll->sizeHint().height());
+    const int content = (static_cast<int>(fLanes.size()) + 1) * kLaneHeight;
+    fVScroll->setRange(0, std::max(0, content - areaHeight));
+    fVScroll->setPageStep(areaHeight);
+    fVScroll->setSingleStep(kLaneHeight / 3);
 }
 
 void ArrangeView::resizeEvent(QResizeEvent*)
 {
     const int h = fScroll->sizeHint().height();
-    fScroll->setGeometry(kHeaderWidth, height() - h, width() - kHeaderWidth, h);
+    const int w = fVScroll->sizeHint().width();
+    fScroll->setGeometry(kHeaderWidth, height() - h, width() - kHeaderWidth - w, h);
+    fVScroll->setGeometry(width() - w, kRulerHeight, w, height() - kRulerHeight - h);
     updateScrollRange();
 }
 
@@ -211,31 +250,59 @@ void ArrangeView::paintEvent(QPaintEvent*)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, false);
     const int scrollH = fScroll->height();
-    const QRect content(kHeaderWidth, kRulerHeight, width() - kHeaderWidth, height() - kRulerHeight - scrollH);
+    const int right = width() - fVScroll->width();
+    const QRect content(kHeaderWidth, kRulerHeight, right - kHeaderWidth, height() - kRulerHeight - scrollH);
 
     p.fillRect(rect(), theme::window);
 
-    // ---- grid and ruler: bars and beats at the project tempo, 4/4
-    const double beat = 60.0 / fBpm;
-    const double bar = beat * 4.0;
-    p.fillRect(QRect(kHeaderWidth, 0, width() - kHeaderWidth, kRulerHeight), theme::panelLight);
-    p.setClipRect(QRect(kHeaderWidth, 0, width() - kHeaderWidth, height() - scrollH));
-
-    const double firstSecond = xToSeconds(kHeaderWidth);
-    const double lastSecond = xToSeconds(width());
-    const bool showBeats = beat * fPixelsPerSecond > 14.0;
     QFont small = font();
     small.setPointSizeF(small.pointSizeF() * 0.85);
     p.setFont(small);
 
+    // ---- lane backgrounds, then grid lines over them
+    p.setClipRect(content);
+    for (int i = 0; i < static_cast<int>(fLanes.size()); ++i)
+    {
+        const QRect lane = laneRect(i);
+        p.fillRect(QRect(kHeaderWidth, lane.top(), right, lane.height()),
+                   i == fSelected ? QColor(0x2c, 0x31, 0x37) : QColor(0x26, 0x2a, 0x2f));
+        p.setPen(theme::border);
+        p.drawLine(kHeaderWidth, lane.bottom(), right, lane.bottom());
+    }
+
+    const double beat = 60.0 / fBpm;
+    const double bar = beat * 4.0;
+    const double firstSecond = xToSeconds(kHeaderWidth);
+    const double lastSecond = xToSeconds(right);
+    const bool showBeats = beat * fPixelsPerSecond > 14.0;
     for (int b = static_cast<int>(firstSecond / beat); b * beat <= lastSecond + beat; ++b)
     {
-        const int x = secondsToX(b * beat);
         const bool isBar = b % 4 == 0;
         if (!isBar && !showBeats)
             continue;
-        p.setPen(isBar ? QColor(0x4a, 0x50, 0x57) : QColor(0x30, 0x34, 0x39));
+        const int x = secondsToX(b * beat);
+        p.setPen(isBar ? QColor(0x4a, 0x50, 0x57, 160) : QColor(0x3a, 0x3f, 0x45, 110));
         p.drawLine(x, kRulerHeight, x, content.bottom());
+    }
+
+    for (int i = 0; i < static_cast<int>(fLanes.size()); ++i)
+        paintLane(p, i);
+
+    if (fLanes.empty())
+    {
+        p.setPen(theme::textDim);
+        p.drawText(content, Qt::AlignCenter, QStringLiteral("把音频文件拖到这里（可以一次拖多个），每个文件会成为一条音轨"));
+    }
+
+    // ---- ruler: bars and beats at the project tempo, 4/4
+    p.setClipRect(QRect(kHeaderWidth, 0, right - kHeaderWidth, height() - scrollH));
+    p.fillRect(QRect(kHeaderWidth, 0, right - kHeaderWidth, kRulerHeight), theme::panelLight);
+    for (int b = static_cast<int>(firstSecond / beat); b * beat <= lastSecond + beat; ++b)
+    {
+        const bool isBar = b % 4 == 0;
+        if (!isBar && !showBeats)
+            continue;
+        const int x = secondsToX(b * beat);
         p.setPen(isBar ? theme::text : theme::textDim);
         p.drawLine(x, isBar ? 12 : 22, x, kRulerHeight - 1);
         if (isBar && bar * fPixelsPerSecond > 26.0)
@@ -244,53 +311,6 @@ void ArrangeView::paintEvent(QPaintEvent*)
     p.setPen(theme::textDim);
     for (int s = static_cast<int>(firstSecond / 10.0) * 10; s <= lastSecond; s += 10)
         p.drawText(secondsToX(s) + 4, kRulerHeight - 4, formatTime(s));
-
-    // ---- the audio lane
-    const QRect lane = laneRect();
-    p.fillRect(QRect(kHeaderWidth, lane.top(), width(), lane.height()), QColor(0x26, 0x2a, 0x2f));
-    p.setPen(theme::border);
-    p.drawLine(kHeaderWidth, lane.bottom(), width(), lane.bottom());
-
-    if (fHasTrack && fSeconds > 0.0)
-    {
-        const int x0 = secondsToX(0.0);
-        const int x1 = secondsToX(fSeconds);
-        const QRect clip(x0, lane.top() + 2, x1 - x0, lane.height() - 4);
-        const QColor body = fMuted ? theme::event.darker(170) : theme::event;
-
-        p.setRenderHint(QPainter::Antialiasing, true);
-        QPainterPath shape;
-        shape.addRoundedRect(clip, 4, 4);
-        p.fillPath(shape, body);
-        p.fillRect(QRect(clip.left(), clip.top(), clip.width(), 16), body.darker(125));
-        p.setRenderHint(QPainter::Antialiasing, false);
-
-        p.setPen(Qt::white);
-        p.drawText(QRect(clip.left() + 6, clip.top(), clip.width() - 8, 16), Qt::AlignVCenter, fClipName);
-
-        // waveform: one vertical line per pixel column from the peak buckets
-        if (!fPeaks.empty())
-        {
-            const QRect wave(clip.left(), clip.top() + 18, clip.width(), clip.height() - 20);
-            const int mid = wave.center().y();
-            const double half = wave.height() / 2.0 - 1.0;
-            p.setPen(fMuted ? theme::waveform.lighter(130) : theme::waveform);
-            const int from = std::max(wave.left(), kHeaderWidth);
-            const int to = std::min(wave.right(), width());
-            for (int x = from; x <= to; ++x)
-            {
-                const size_t a = static_cast<size_t>(double(x - wave.left()) / wave.width() * fPeaks.size());
-                const size_t b = std::max(a + 1, static_cast<size_t>(double(x + 1 - wave.left()) / wave.width() * fPeaks.size()));
-                float peak = 0.0f;
-                for (size_t i = a; i < b && i < fPeaks.size(); ++i)
-                    peak = std::max(peak, fPeaks[i]);
-                const int dy = static_cast<int>(std::min(1.0f, peak) * half);
-                p.drawLine(x, mid - dy, x, mid + dy);
-            }
-            p.setPen(QColor(0x14, 0x2c, 0x44, 90));
-            p.drawLine(wave.left(), mid, wave.right(), mid);
-        }
-    }
 
     // ---- project cursor
     const int cx = secondsToX(fPlayhead);
@@ -302,22 +322,20 @@ void ArrangeView::paintEvent(QPaintEvent*)
         tri << QPoint(cx - 6, 0) << QPoint(cx + 6, 0) << QPoint(cx, 8);
         p.setBrush(theme::cursor);
         p.drawPolygon(tri);
+        p.setBrush(Qt::NoBrush);
     }
 
     // ---- track header column (drawn last so it covers the scrolled content)
-    p.setClipping(false);
+    p.setClipRect(QRect(0, 0, kHeaderWidth, height()));
     p.fillRect(QRect(0, 0, kHeaderWidth, height()), theme::panel);
-    p.setPen(theme::textDim);
-    p.drawText(QRect(10, 0, kHeaderWidth - 10, kRulerHeight), Qt::AlignVCenter, QStringLiteral("轨道"));
-    p.setPen(theme::border);
-    p.drawLine(kHeaderWidth - 1, 0, kHeaderWidth - 1, height());
-    p.drawLine(0, kRulerHeight - 1, width(), kRulerHeight - 1);
-
-    if (fHasTrack)
+    p.setClipRect(QRect(0, kRulerHeight, kHeaderWidth, height() - kRulerHeight));
+    for (int i = 0; i < static_cast<int>(fLanes.size()); ++i)
     {
+        const Lane& l = fLanes[i];
+        const QRect lane = laneRect(i);
         const QRect header(0, lane.top(), kHeaderWidth - 1, lane.height());
-        p.fillRect(header, theme::panelLight);
-        p.fillRect(QRect(0, lane.top(), 6, lane.height()), theme::trackColor);
+        p.fillRect(header, i == fSelected ? theme::selection : theme::panelLight);
+        p.fillRect(QRect(0, lane.top(), 6, lane.height()), l.colour);
         p.setPen(theme::border);
         p.drawLine(0, lane.bottom(), kHeaderWidth, lane.bottom());
 
@@ -325,39 +343,134 @@ void ArrangeView::paintEvent(QPaintEvent*)
         bold.setBold(true);
         p.setFont(bold);
         p.setPen(theme::text);
-        p.drawText(QRect(14, lane.top() + 8, kHeaderWidth - 60, 22), Qt::AlignVCenter, fTrackName);
+        p.drawText(QRect(14, lane.top() + 6, kHeaderWidth - 80, 22), Qt::AlignVCenter,
+                   p.fontMetrics().elidedText(l.name, Qt::ElideRight, kHeaderWidth - 80));
         p.setFont(small);
         p.setPen(theme::textDim);
-        p.drawText(QRect(14, lane.top() + 32, kHeaderWidth - 20, 18), Qt::AlignVCenter,
-                   QStringLiteral("音频 · %1").arg(formatTime(fSeconds)));
+        p.drawText(QRect(14, lane.top() + 30, kHeaderWidth - 20, 18), Qt::AlignVCenter,
+                   l.clipName.isEmpty() ? QStringLiteral("音频 · 空") : QStringLiteral("音频 · %1").arg(formatTime(l.seconds)));
 
-        const QRect m = muteRect();
-        p.fillRect(m, fMuted ? theme::mute : theme::panel);
-        p.setBrush(Qt::NoBrush);
-        p.setPen(fMuted ? Qt::black : theme::text);
-        p.drawRect(m.adjusted(0, 0, -1, -1));
-        p.drawText(m, Qt::AlignCenter, QStringLiteral("M"));
+        auto button = [&](const QRect& r, bool on, const QColor& colour, const QString& text) {
+            p.fillRect(r, on ? colour : theme::panel);
+            p.setPen(on ? Qt::black : theme::text);
+            p.drawRect(r.adjusted(0, 0, -1, -1));
+            p.drawText(r, Qt::AlignCenter, text);
+        };
+        button(muteRect(i), l.muted, theme::mute, QStringLiteral("M"));
+        button(soloRect(i), l.solo, theme::solo, QStringLiteral("S"));
     }
-    else
+
+    p.setClipping(false);
+    p.fillRect(QRect(0, 0, kHeaderWidth, kRulerHeight), theme::panel);
+    p.setPen(theme::textDim);
+    p.drawText(QRect(10, 0, kHeaderWidth - 10, kRulerHeight), Qt::AlignVCenter,
+               QStringLiteral("轨道（%1）").arg(fLanes.size()));
+    p.setPen(theme::border);
+    p.drawLine(kHeaderWidth - 1, 0, kHeaderWidth - 1, height());
+    p.drawLine(0, kRulerHeight - 1, right, kRulerHeight - 1);
+}
+
+void ArrangeView::paintLane(QPainter& p, int i)
+{
+    const Lane& l = fLanes[i];
+    if (l.clipName.isEmpty() || l.seconds <= 0.0)
+        return;
+
+    const QRect lane = laneRect(i);
+    const bool silent = l.muted || (!l.solo && std::any_of(fLanes.begin(), fLanes.end(), [](const Lane& o) { return o.solo; }));
+    const int x0 = secondsToX(0.0);
+    const int x1 = secondsToX(l.seconds);
+    const QRect clip(x0, lane.top() + 2, x1 - x0, lane.height() - 5);
+    const QColor body = silent ? l.colour.darker(220) : l.colour.lighter(135);
+    const QColor wave = silent ? l.colour.darker(140) : l.colour.darker(230);
+
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPainterPath shape;
+    shape.addRoundedRect(clip, 4, 4);
+    p.fillPath(shape, body);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.fillRect(QRect(clip.left(), clip.top(), clip.width(), 15), body.darker(125));
+
+    p.setPen(Qt::white);
+    const int labelLeft = std::max(clip.left(), kHeaderWidth) + 6;
+    p.drawText(QRect(labelLeft, clip.top(), std::max(0, clip.right() - labelLeft - 4), 15), Qt::AlignVCenter, l.clipName);
+
+    // waveform: one vertical line per pixel column from the peak buckets
+    if (l.peaks.empty())
+        return;
+    const QRect area(clip.left(), clip.top() + 16, clip.width(), clip.height() - 17);
+    const int mid = area.center().y();
+    const double half = area.height() / 2.0 - 1.0;
+    p.setPen(wave);
+    const int from = std::max(area.left(), kHeaderWidth);
+    const int to = std::min(area.right(), width());
+    const size_t count = l.peaks.size();
+    for (int x = from; x <= to; ++x)
     {
-        p.setPen(theme::textDim);
-        p.drawText(QRect(kHeaderWidth, lane.top(), width() - kHeaderWidth, lane.height()), Qt::AlignCenter,
-                   QStringLiteral("把音频文件拖到这里，或用 文件 → 打开音频文件"));
+        const size_t a = static_cast<size_t>(double(x - area.left()) / area.width() * count);
+        const size_t b = std::max(a + 1, static_cast<size_t>(double(x + 1 - area.left()) / area.width() * count));
+        float peak = 0.0f;
+        for (size_t k = a; k < b && k < count; ++k)
+            peak = std::max(peak, l.peaks[k]);
+        const int dy = static_cast<int>(std::min(1.0f, peak) * half);
+        p.drawLine(x, mid - dy, x, mid + dy);
     }
 }
 
 void ArrangeView::mousePressEvent(QMouseEvent* event)
 {
     const QPoint pos = event->position().toPoint();
-    if (fHasTrack && muteRect().contains(pos))
+    const int lane = laneAt(pos.y());
+    if (lane >= 0 && pos.x() < kHeaderWidth)
     {
-        fMuted = !fMuted;
-        emit muteToggled(fMuted);
+        Lane& l = fLanes[lane];
+        if (muteRect(lane).contains(pos))
+        {
+            l.muted = !l.muted;
+            emit muteToggled(lane, l.muted);
+        }
+        else if (soloRect(lane).contains(pos))
+        {
+            l.solo = !l.solo;
+            emit soloToggled(lane, l.solo);
+        }
+        fSelected = lane;
+        emit trackSelected(lane);
         update();
         return;
     }
     if (pos.x() >= kHeaderWidth && pos.y() < height() - fScroll->height())
-        emit seekRequested(xToSeconds(pos.x()));
+    {
+        if (lane >= 0 && lane != fSelected && event->button() == Qt::LeftButton && pos.y() >= kRulerHeight)
+        {
+            fSelected = lane;
+            emit trackSelected(lane);
+        }
+        if (event->button() == Qt::LeftButton)
+            emit seekRequested(xToSeconds(pos.x()));
+    }
+}
+
+void ArrangeView::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    // double click below the tracks adds one, as in Cubase
+    const QPoint pos = event->position().toPoint();
+    if (pos.y() > kRulerHeight && laneAt(pos.y()) < 0)
+        emit trackMenuRequested(-1, mapToGlobal(pos));
+}
+
+void ArrangeView::contextMenuEvent(QContextMenuEvent* event)
+{
+    const int lane = event->pos().y() > kRulerHeight ? laneAt(event->pos().y()) : -2;
+    if (lane == -2)
+        return;
+    if (lane >= 0)
+    {
+        fSelected = lane;
+        emit trackSelected(lane);
+        update();
+    }
+    emit trackMenuRequested(lane, event->globalPos());
 }
 
 void ArrangeView::wheelEvent(QWheelEvent* event)
@@ -373,9 +486,13 @@ void ArrangeView::wheelEvent(QWheelEvent* event)
         fScroll->setValue(static_cast<int>(anchor * fPixelsPerSecond) - (mx - kHeaderWidth));
         update();
     }
-    else
+    else if (event->modifiers() & Qt::ShiftModifier)
     {
         fScroll->setValue(fScroll->value() - delta);
+    }
+    else
+    {
+        fVScroll->setValue(fVScroll->value() - delta / 2);
     }
     event->accept();
 }
@@ -388,14 +505,21 @@ void ArrangeView::dragEnterEvent(QDragEnterEvent* event)
 
 void ArrangeView::dropEvent(QDropEvent* event)
 {
-    const QList<QUrl> urls = event->mimeData()->urls();
-    if (!urls.isEmpty() && urls.first().isLocalFile())
-        emit fileDropped(urls.first().toLocalFile());
+    QStringList paths;
+    for (const QUrl& url : event->mimeData()->urls())
+        if (url.isLocalFile())
+            paths << url.toLocalFile();
+    if (paths.isEmpty())
+        return;
+    // one file on a track replaces its audio, anything else makes new tracks
+    const int lane = paths.size() == 1 ? laneAt(event->position().toPoint().y()) : -1;
+    emit filesDropped(paths, lane);
+    event->acceptProposedAction();
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-InsertRack::InsertRack(int slotCount, QWidget* parent)
+InsertRack::InsertRack(int slotCount, QWidget* parent, int rowHeight)
     : QWidget(parent)
 {
     auto* layout = new QVBoxLayout(this);
@@ -411,13 +535,13 @@ InsertRack::InsertRack(int slotCount, QWidget* parent)
         row.power = new QToolButton;
         row.power->setObjectName(QStringLiteral("insertPower"));
         row.power->setCheckable(true);
-        row.power->setFixedSize(14, 20);
+        row.power->setFixedSize(14, rowHeight);
         row.power->setToolTip(QStringLiteral("启用 / 旁路"));
         line->addWidget(row.power);
 
         row.name = new QPushButton;
         row.name->setObjectName(QStringLiteral("insertSlot"));
-        row.name->setFixedHeight(20);
+        row.name->setFixedHeight(rowHeight);
         row.name->setContextMenuPolicy(Qt::CustomContextMenu);
         line->addWidget(row.name, 1);
         layout->addLayout(line);
@@ -448,6 +572,8 @@ InsertRack::InsertRack(int slotCount, QWidget* parent)
 void InsertRack::setSlots(const std::vector<Slot>& items)
 {
     fFilled = static_cast<int>(std::min(items.size(), fRows.size()));
+    setToolTip(items.size() > fRows.size() ? QStringLiteral("还有 %1 个插件，在左边的检查器里能看到全部").arg(items.size() - fRows.size())
+                                           : QString());
     for (int i = 0; i < static_cast<int>(fRows.size()); ++i)
     {
         Row& row = fRows[i];
@@ -472,7 +598,7 @@ ChannelStrip::ChannelStrip(const QString& name, bool isOutput, QWidget* parent)
 {
     setObjectName(QStringLiteral("channelStrip"));
     setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(isOutput ? 110 : 170);
+    setFixedWidth(isOutput ? 110 : 150);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
@@ -483,18 +609,31 @@ ChannelStrip::ChannelStrip(const QString& name, bool isOutput, QWidget* parent)
         auto* title = new QLabel(QStringLiteral("插入效果"));
         title->setStyleSheet(QStringLiteral("color: #8b9096;"));
         layout->addWidget(title);
-        fInserts = new InsertRack(8, this);
+        fInserts = new InsertRack(6, this, 17);
         layout->addWidget(fInserts);
     }
 
+    auto* buttons = new QHBoxLayout;
+    buttons->setSpacing(4);
+    buttons->addStretch();
     fMute = new QToolButton;
     fMute->setObjectName(QStringLiteral("mute"));
     fMute->setText(QStringLiteral("M"));
     fMute->setCheckable(true);
     fMute->setToolTip(QStringLiteral("静音"));
+    buttons->addWidget(fMute);
+    fSolo = new QToolButton;
+    fSolo->setObjectName(QStringLiteral("solo"));
+    fSolo->setText(QStringLiteral("S"));
+    fSolo->setCheckable(true);
+    fSolo->setToolTip(QStringLiteral("独奏"));
+    buttons->addWidget(fSolo);
+    buttons->addStretch();
     fMute->setVisible(!isOutput);
-    layout->addWidget(fMute, 0, Qt::AlignHCenter);
+    fSolo->setVisible(!isOutput);
+    layout->addLayout(buttons);
     connect(fMute, &QToolButton::toggled, this, &ChannelStrip::muteToggled);
+    connect(fSolo, &QToolButton::toggled, this, &ChannelStrip::soloToggled);
 
     auto* faderRow = new QHBoxLayout;
     faderRow->addStretch();
@@ -518,21 +657,22 @@ ChannelStrip::ChannelStrip(const QString& name, bool isOutput, QWidget* parent)
     fVolumeLabel->setObjectName(QStringLiteral("lcdSmall"));
     layout->addWidget(fVolumeLabel);
 
-    fName = new QLabel(name);
-    fName->setObjectName(isOutput ? QStringLiteral("channelNameOut") : QStringLiteral("channelName"));
-    fName->setAlignment(Qt::AlignCenter);
+    fName = new QToolButton;
+    fName->setObjectName(QStringLiteral("channelName"));
+    fName->setText(name);
+    fName->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     layout->addWidget(fName);
-
+    connect(fName, &QToolButton::clicked, this, &ChannelStrip::selected);
     if (isOutput)
-    {
-        // the rack has no master bus to scale, the output strip only meters
-        fFader->setVisible(false);
-        fVolumeLabel->setText(QStringLiteral("输出"));
-    }
-    else
-    {
-        setVolume(1.0f);
-    }
+        setColour(QColor(0x6b, 0x4f, 0xa0));
+
+    setVolume(1.0f);
+}
+
+void ChannelStrip::mousePressEvent(QMouseEvent* event)
+{
+    emit selected();
+    QWidget::mousePressEvent(event);
 }
 
 void ChannelStrip::setLevels(float left, float right)
@@ -553,15 +693,27 @@ void ChannelStrip::setMuted(bool muted)
     fMute->setChecked(muted);
 }
 
+void ChannelStrip::setSolo(bool solo)
+{
+    const QSignalBlocker blocker(fSolo);
+    fSolo->setChecked(solo);
+}
+
 void ChannelStrip::setName(const QString& name)
 {
     fName->setText(name);
 }
 
-void ChannelStrip::setFaderEnabled(bool enabled)
+void ChannelStrip::setColour(const QColor& colour)
 {
-    fFader->setEnabled(enabled);
-    fMute->setEnabled(enabled);
+    fName->setStyleSheet(QStringLiteral("background: %1;").arg(colour.name()));
+}
+
+void ChannelStrip::setSelected(bool selected)
+{
+    setProperty("selected", selected);
+    style()->unpolish(this);
+    style()->polish(this);
 }
 
 void ChannelStrip::updateVolumeLabel(float volume)

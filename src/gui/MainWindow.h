@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/HostEngine.h"
+#include "core/Session.h"
 
+#include <QHash>
 #include <QMainWindow>
 #include <QPointer>
 
@@ -13,17 +15,20 @@ class ChannelStrip;
 class InsertRack;
 class PluginEditor;
 class QComboBox;
+class QHBoxLayout;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTimer;
 class QToolButton;
 class QTreeWidget;
+class StemDialog;
 
-// Cubase-style main window: transport bar on top, inspector on the left, the project's audio track in
+// Cubase-style main window: transport bar on top, inspector on the left, the project's audio tracks in
 // the middle, the plugin browser on the right and the MixConsole below.
 //
-// The engine is Carla's rack: the audio file player sits in slot 0 and acts as the audio track,
-// every plugin after it is one of the track's inserts.
+// The tracks live in a chost::Session on Carla's patchbay: every track is an audio file player, its
+// inserts and a fader, all summed into the "Stereo Out" master.
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -31,15 +36,28 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
-    bool addPluginSpec(const QString& spec);
-    bool loadAudioFile(const QString& path);
+    bool addPluginSpec(const QString& spec);       // as an insert of the selected track
+    bool loadAudioFile(const QString& path);       // into the selected track, or a new one
+    int addAudioTrack(const QString& path, const QString& name = {}); // returns the track index, -1 on error
+    bool openSession(const QString& path);
+    void selectTrack(int track);
+    void separateStems(bool autoStart = false); // AI stem separation of the selected track
     void play();
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
 
 private:
+    struct Clip {
+        std::vector<float> peaks;
+        double seconds = 0.0;
+        int sampleRate = 0;
+        int channels = 0;
+        bool decoded = false;
+    };
+
     void buildMenus();
     void buildTransport();
     QWidget* buildInspector();
@@ -51,35 +69,55 @@ private:
     void onHostEvent(chost::HostEvent event, uint pluginId, int index, float value, const QString& text);
     void tick();
 
-    // track model on top of the rack
-    int trackSlot() const;
-    std::vector<uint> insertIds() const;
-    void refreshTrack();
+    // views of the session
+    const Clip& clip(const QString& path);
+    QColor trackColour(int track) const;
+    void refreshTracks();      // after tracks were added, removed or renamed
+    void refreshSelection();   // inspector and highlights for the selected track
     void refreshInserts();
+    void refreshMixState();    // mute / solo / volume on every view
     void closeEditors();
+    std::vector<uint> selectedInserts() const;
+
+    void addEmptyTrack();
+    void importAudio();
+    void replaceAudio();
+    void removeSelectedTrack();
+    void renameSelectedTrack(const QString& name);
+    void trackMenu(int track, const QPoint& globalPos);
+    void dropFiles(const QStringList& paths, int track);
 
     void addInsert();
     void editInsert(int index);
     void setInsertActive(int index, bool active);
     void removeInsert(int index);
     void moveInsert(int index, int delta);
-    void setTrackMuted(bool muted);
-    void setTrackVolume(float volume);
+    void setMuted(int track, bool muted);
+    void setSolo(int track, bool solo);
+    void setVolume(int track, float volume);
 
+    void editPluginFolders();
     void rescanPlugins();
-    void openAudioFile();
-    void openProject();
-    void saveProject();
+    void newSession();
+    void openSessionDialog();
+    void saveSession();
+    void saveSessionAs();
     void togglePlay();
     void stop();
     void seek(double seconds);
     void showError(const QString& what);
+    void updateTitle();
 
     chost::HostEngine fHost;
+    chost::Session fSession{fHost};
     std::vector<chost::PluginEntry> fPlugins;
     std::map<uint, QPointer<PluginEditor>> fEditors;
-    QString fTrackFile;
-    double fTrackSeconds = 0.0;
+    QHash<QString, Clip> fClips;
+    std::vector<QColor> fColours; // one per track, parallel to the session's tracks
+    int fNextColour = 0;
+    int fSelected = -1;
+    QString fSessionPath;
+    QPointer<StemDialog> fStemDialog;
 
     // transport
     QToolButton* fPlayButton = nullptr;
@@ -89,13 +127,16 @@ private:
     QLabel* fDspLabel = nullptr;
 
     // zones
-    QLabel* fInspectorTrack = nullptr;
+    QLineEdit* fInspectorName = nullptr;
     QLabel* fInspectorInfo = nullptr;
+    QPushButton* fInspectorReplace = nullptr;
+    QPushButton* fInspectorStems = nullptr;
     InsertRack* fInspectorInserts = nullptr;
     ArrangeView* fArrange = nullptr;
     QLineEdit* fSearch = nullptr;
     QTreeWidget* fBrowser = nullptr;
-    ChannelStrip* fTrackStrip = nullptr;
+    QHBoxLayout* fStripRow = nullptr;
+    std::vector<ChannelStrip*> fStrips;
     ChannelStrip* fOutputStrip = nullptr;
 
     QTimer* fTimer = nullptr;

@@ -6,6 +6,16 @@
 
 namespace theme {
 
+QColor trackColour(int index)
+{
+    static const QColor colours[] = {
+        {0x3d, 0x7f, 0xc4}, {0xc4, 0x5a, 0x3d}, {0x4f, 0xa8, 0x5c}, {0x9a, 0x5f, 0xc4}, {0xc4, 0x9a, 0x3d},
+        {0x3d, 0xaa, 0xb0}, {0xc4, 0x4f, 0x86}, {0x7f, 0x96, 0x3d},
+    };
+    constexpr int count = sizeof(colours) / sizeof(colours[0]);
+    return colours[((index % count) + count) % count];
+}
+
 void apply(QApplication& app)
 {
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
@@ -63,7 +73,9 @@ void apply(QApplication& app)
         QLabel#lcdSmall { background: #101215; color: #9fb7cf; border: 1px solid #14161a; border-radius: 3px; padding: 2px 8px; font-family: "Consolas", "DejaVu Sans Mono", monospace; font-size: 13px; }
         QToolButton#transport { min-width: 30px; min-height: 26px; font-size: 15px; }
         QToolButton#transport:checked { background: #2f8f4e; }
-        QToolButton#mute:checked { background: #e08a2c; }
+        QToolButton#mute:checked { background: #e08a2c; color: black; }
+        QToolButton#solo:checked { background: #e6c82e; color: black; }
+        QWidget#channelStrip[selected="true"] { border: 1px solid #c8ccd0; background: #30353b; }
         QToolButton#insertPower { padding: 0; border-radius: 2px; background: #24282c; }
         QToolButton#insertPower:checked { background: #4a90d9; }
         QToolButton#insertPower:disabled { background: #2a2e33; }
@@ -72,6 +84,7 @@ void apply(QApplication& app)
         QPushButton#insertSlot[bypassed="true"] { color: #6c7176; background: #2a2e33; }
         QWidget#channelStrip { background: #2a2e33; border: 1px solid #14161a; border-radius: 3px; }
         QLabel#channelName { background: #3d7fc4; color: white; padding: 3px; border-radius: 2px; }
+        QToolButton#channelName { background: #3d7fc4; color: white; padding: 3px; border-radius: 2px; border: none; }
         QLabel#channelNameOut { background: #6b4fa0; color: white; padding: 3px; border-radius: 2px; }
     )"));
 }

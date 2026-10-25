@@ -4,6 +4,7 @@
 #include "CarlaUtils.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <sstream>
@@ -40,7 +41,23 @@ static std::vector<std::string> splitPath(const std::string& s)
     return out;
 }
 
+static std::vector<std::string> gExtraFolders;
+
+void setExtraPluginFolders(const std::vector<std::string>& folders) { gExtraFolders = folders; }
+std::vector<std::string> extraPluginFolders() { return gExtraFolders; }
+
+static std::string platformPluginPath(PluginType type);
+
 std::string defaultPluginPath(PluginType type)
+{
+    std::string path = platformPluginPath(type);
+    if (type == PLUGIN_LV2 || type == PLUGIN_VST3 || type == PLUGIN_VST2)
+        for (const std::string& folder : gExtraFolders)
+            path += (path.empty() ? "" : std::string(1, kPathSep)) + folder;
+    return path;
+}
+
+static std::string platformPluginPath(PluginType type)
 {
 #ifdef _WIN32
     const std::string common = env("COMMONPROGRAMFILES");
@@ -99,9 +116,10 @@ static void scanLv2(std::vector<PluginEntry>& out)
 static void scanFiles(std::vector<PluginEntry>& out, PluginType type, const char* format,
                       const char* prefix, const std::vector<std::string>& extensions)
 {
-    for (const std::string& dir : splitPath(defaultPluginPath(type)))
+    for (const std::string& dirName : splitPath(defaultPluginPath(type)))
     {
         std::error_code ec;
+        const fs::path dir = fs::u8path(dirName);
         if (!fs::is_directory(dir, ec))
             continue;
 
@@ -111,18 +129,24 @@ static void scanFiles(std::vector<PluginEntry>& out, PluginType type, const char
             if (ec)
                 break;
             const fs::path& p = it->path();
-            if (std::find(extensions.begin(), extensions.end(), p.extension().string()) == extensions.end())
+            std::string ext = p.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+
+            // never look inside plugin bundles (a .vst3 or .lv2 is usually a directory), their helper
+            // libraries are not plugins
+            const bool bundle = (ext == ".vst3" || ext == ".lv2") && it->is_directory(ec);
+            if (bundle)
+                it.disable_recursion_pending();
+            if (std::find(extensions.begin(), extensions.end(), ext) == extensions.end())
                 continue;
 
             PluginEntry e;
-            e.spec = std::string(prefix) + p.string();
+            e.spec = std::string(prefix) + p.u8string();
+            if (std::any_of(out.begin(), out.end(), [&](const PluginEntry& o) { return o.spec == e.spec; }))
+                continue; // a folder listed twice, or inside another one
             e.format = format;
-            e.name = p.stem().string();
+            e.name = p.stem().u8string();
             out.push_back(std::move(e));
-
-            // don't descend into bundles (a .vst3 is a directory on Linux and macOS)
-            if (it->is_directory(ec))
-                it.disable_recursion_pending();
         }
     }
 }

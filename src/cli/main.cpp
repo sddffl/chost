@@ -5,7 +5,7 @@
 //   chost-cli scan
 //   chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]
 //   chost-cli mix [--driver NAME] [--track AUDIO]... [--insert T:SPEC]... [--mute T] [--solo T] [--volume T=V]
-//                 [--seconds S] [--save F.chost] [--open F.chost]
+//                 [--remove-track T] [--remove-insert T:I] [--seconds S] [--save F.chost] [--open F.chost]
 //
 // Plugin SPEC:
 //   lv2:<URI>            e.g. lv2:urn:zamaudio:ZamComp
@@ -247,7 +247,8 @@ static int cmdMix(int argc, char* argv[])
     std::string driver = chost::defaultAudioDriver();
     std::string savePath, openPath;
     std::vector<std::string> files, inserts, volumes;
-    std::vector<int> mutes, solos;
+    std::vector<int> mutes, solos, removeTracks;
+    std::vector<std::string> removeInserts;
     double seconds = 3.0;
 
     for (int i = 0; i < argc; ++i)
@@ -263,6 +264,8 @@ static int cmdMix(int argc, char* argv[])
         else if (arg == "--seconds" && hasValue)  seconds = std::stod(argv[++i]);
         else if (arg == "--save" && hasValue)     savePath = argv[++i];
         else if (arg == "--open" && hasValue)     openPath = argv[++i];
+        else if (arg == "--remove-track" && hasValue)  removeTracks.push_back(std::stoi(argv[++i]));
+        else if (arg == "--remove-insert" && hasValue) removeInserts.emplace_back(argv[++i]);
         else
         {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
@@ -279,8 +282,13 @@ static int cmdMix(int argc, char* argv[])
     });
     if (!host.start(driver, HostEngine::Mode::Patchbay))
     {
-        std::fprintf(stderr, "engine init failed (%s): %s\n", driver.c_str(), host.lastError().c_str());
-        return 1;
+        // the Dummy driver only has the rack: the tracks are kept but not mixed
+        if (!host.start(driver, HostEngine::Mode::Rack))
+        {
+            std::fprintf(stderr, "engine init failed (%s): %s\n", driver.c_str(), host.lastError().c_str());
+            return 1;
+        }
+        std::printf("%s has no patchbay, tracks are not mixed\n", driver.c_str());
     }
 
     chost::Session session(host);
@@ -317,6 +325,11 @@ static int cmdMix(int argc, char* argv[])
             ok = false;
         }
     }
+    for (const std::string& r : removeInserts)
+        if (const auto colon = r.find(':'); colon != std::string::npos)
+            ok = session.removeInsert(std::stoi(r.substr(0, colon)), std::stoi(r.substr(colon + 1))) && ok;
+    for (int t : removeTracks)
+        ok = session.removeTrack(t) && ok;
     for (int t : mutes)
         session.setMuted(t, true);
     for (int t : solos)
@@ -376,6 +389,7 @@ int main(int argc, char* argv[])
                  "  chost-cli scan\n"
                  "  chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]\n"
                  "  chost-cli mix [--driver NAME] [--track AUDIO]... [--insert T:SPEC]... [--mute T] [--solo T]\n"
-                 "                [--volume T=V] [--seconds S] [--save F.chost] [--open F.chost]\n");
+                 "                [--volume T=V] [--remove-track T] [--remove-insert T:I]\n"
+                 "                [--seconds S] [--save F.chost] [--open F.chost]\n");
     return 2;
 }
