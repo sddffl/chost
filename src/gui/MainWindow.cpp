@@ -23,6 +23,7 @@
 #include "TuneDialog.h"
 #include "Widgets.h"
 #include "core/AudioConvert.h"
+#include "core/Click.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -159,6 +160,10 @@ MainWindow::MainWindow(QWidget* parent)
 
     buildMenus();
     buildTransport();
+    {
+        const QSignalBlocker blocker(fClickAction);
+        fClickAction->setChecked(QSettings().value(QStringLiteral("metronome/on"), false).toBool());
+    }
 
     auto* top = new QSplitter(Qt::Horizontal);
     top->addWidget(buildInspector());
@@ -354,6 +359,15 @@ void MainWindow::buildMenus()
     });
     transport->addAction(QStringLiteral("跳到上一个标记"), QKeySequence(QStringLiteral("Alt+Left")), this, [this] { jumpToMarker(-1); });
     transport->addAction(QStringLiteral("跳到下一个标记"), QKeySequence(QStringLiteral("Alt+Right")), this, [this] { jumpToMarker(1); });
+    transport->addSeparator();
+    fClickAction = transport->addAction(QStringLiteral("节拍器"));
+    fClickAction->setShortcut(QKeySequence(QStringLiteral("C")));
+    fClickAction->setCheckable(true);
+    fClickAction->setToolTip(QStringLiteral("节拍器（C）：按歌曲速度打拍子，第一拍重音；不会进导出的混音"));
+    connect(fClickAction, &QAction::toggled, this, &MainWindow::setMetronome);
+    QMenu* clickVolume = transport->addMenu(QStringLiteral("节拍器音量"));
+    for (const auto& [text, db] : {std::pair{QStringLiteral("小声"), -18.0}, {QStringLiteral("正常"), -10.0}, {QStringLiteral("大声"), -4.0}})
+        clickVolume->addAction(text, this, [this, db = db] { setMetronomeVolume(db); });
 
     QMenu* plugins = menuBar()->addMenu(QStringLiteral("插件"));
     plugins->addAction(QStringLiteral("给选中轨道添加插入效果…"), this, &MainWindow::addInsert);
@@ -396,6 +410,12 @@ void MainWindow::buildTransport()
     fPlayButton = transportButton(QStringLiteral("▶"), QStringLiteral("播放（空格）"));
     fPlayButton->setCheckable(true);
     connect(fPlayButton, &QToolButton::clicked, this, &MainWindow::togglePlay);
+    auto* click = new QToolButton;
+    click->setObjectName(QStringLiteral("transport"));
+    click->setDefaultAction(fClickAction);
+    click->setText(QStringLiteral("♩"));
+    connect(fClickAction, &QAction::changed, click, [click] { click->setText(QStringLiteral("♩")); });
+    bar->addWidget(click);
 
     bar->addSeparator();
     fTimeLcd = new QLabel(QStringLiteral("00:00:00.000"));
@@ -944,6 +964,7 @@ void MainWindow::refreshTracks()
     refreshSelection();
     refreshChordPad();
     refreshMarkers();
+    refreshClick();
     if (fScoreDialog)
     {
         std::vector<ScoreDialog::Track> list;
@@ -2710,8 +2731,72 @@ void MainWindow::setTempo(double bpm)
     fHistory->record(QStringLiteral("速度"), QStringLiteral("tempo"));
 }
 
+bool MainWindow::metronomeOn() const
+{
+    return fClickAction && fClickAction->isChecked();
+}
+
+void MainWindow::setMetronome(bool on)
+{
+    QSettings().setValue(QStringLiteral("metronome/on"), on);
+    if (fClickAction->isChecked() != on)
+    {
+        const QSignalBlocker blocker(fClickAction);
+        fClickAction->setChecked(on);
+    }
+    refreshClick();
+    if (on && !fSession.clickOn())
+    {
+        // no instrument or a driver that doesn't mix: say so once and switch back off
+        const QSignalBlocker blocker(fClickAction);
+        fClickAction->setChecked(false);
+        QSettings().setValue(QStringLiteral("metronome/on"), false);
+        statusBar()->showMessage(QStringLiteral("节拍器没能打开：%1").arg(QString::fromStdString(fSession.lastError())), 8000);
+    }
+}
+
+void MainWindow::setMetronomeVolume(double db)
+{
+    QSettings().setValue(QStringLiteral("metronome/volume_db"), db);
+    fSession.setClickVolume(static_cast<float>(std::pow(10.0, db / 20.0)));
+    statusBar()->showMessage(QStringLiteral("节拍器音量 %1 dB").arg(db), 3000);
+}
+
+void MainWindow::refreshClick()
+{
+    if (!metronomeOn())
+    {
+        fSession.setClickOn(false);
+        return;
+    }
+    // long enough for the song and a while after it, in whole minutes so it isn't rewritten all the time
+    double longest = 0.0;
+    for (const chost::Track& t : fSession.tracks())
+        if (!t.file.empty())
+            longest = std::max(longest, clip(QString::fromStdString(t.file)).seconds);
+    const int minutes = static_cast<int>(std::ceil((longest + 60.0) / 60.0));
+    const QString folder = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    QDir().mkpath(folder);
+    const QString file = QDir(folder).filePath(QStringLiteral("metronome-%1bpm-%2min.mid").arg(fSession.tempo(), 0, 'f', 2).arg(minutes));
+    if (file != fClickFile || fSession.clickGain() < 0)
+    {
+        std::string error;
+        if (!QFileInfo::exists(file) && !chost::writeClickTrack(file.toStdString(), fSession.tempo(), 4, minutes * 60.0, error))
+        {
+            statusBar()->showMessage(QStringLiteral("节拍器没能打开：%1").arg(QString::fromStdString(error)), 8000);
+            return;
+        }
+        if (!fSession.setClick(file.toStdString(), instruments::bundledSpec().toStdString()))
+            return;
+        fClickFile = file;
+    }
+    fSession.setClickVolume(static_cast<float>(std::pow(10.0, QSettings().value(QStringLiteral("metronome/volume_db"), -10.0).toDouble() / 20.0)));
+    fSession.setClickOn(true);
+}
+
 void MainWindow::refreshSongInfo()
 {
+    refreshClick();
     {
         const QSignalBlocker blocker(fTempoBox);
         fTempoBox->setValue(fSession.tempo());

@@ -59,6 +59,7 @@ private:
     QLineEdit* fPath = nullptr;
     QComboBox* fFormat = nullptr;
     QCheckBox* fStems = nullptr;
+    QCheckBox* fDither = nullptr;
     QLabel* fStatus = nullptr;
     QProgressBar* fProgress = nullptr;
     QPushButton* fStart = nullptr;

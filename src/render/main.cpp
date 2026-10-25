@@ -1,11 +1,12 @@
 // chost-render - renders a .chost session to a WAV file faster than real time.
 //
 //   chost-render --session song.chost --output mix.wav [--seconds S] [--rate HZ] [--bits 16|24|32]
-//                [--solo T]... [--mute T]...
+//                [--no-dither] [--solo T]... [--mute T]...
 //
 // Prints "PROGRESS <percent>" while rendering and "DONE <file>\t<seconds>\t<peak dB>" at the end, or
 // "ERROR <message>". --solo renders only the given tracks, in place of the session's own solos; --mute
-// leaves tracks out. Runs in its own process so a plugin crashing during the render can't take chost down.
+// leaves tracks out. 16 and 24 bit files are dithered (TPDF, one bit) unless --no-dither: rounding to the
+// nearest step instead would turn quiet fades and reverb tails into distortion. Runs in its own process so a plugin crashing during the render can't take chost down.
 
 #include "core/AudioConvert.h"
 #include "core/HostEngine.h"
@@ -35,9 +36,10 @@ static void put32(std::ofstream& out, uint32_t v) { put16(out, uint16_t(v & 0xFF
 
 class WavWriter {
 public:
-    bool open(const std::string& path, uint32_t rate, int bits)
+    bool open(const std::string& path, uint32_t rate, int bits, bool dither)
     {
         fBits = bits;
+        fDither = dither && bits != 32;
         fOut.open(fs::u8path(path), std::ios::binary | std::ios::trunc);
         if (!fOut)
             return false;
@@ -70,14 +72,17 @@ public:
                     put32(fOut, raw);
                     continue;
                 }
-                const double clamped = std::clamp(double(v), -1.0, 1.0);
+                const double scale = fBits == 16 ? 32767.0 : 8388607.0;
+                // triangular noise of one step either way, added before rounding
+                const double noise = fDither ? random() - random() : 0.0;
+                const double step = std::clamp(double(v) * scale + noise, -scale - 1.0, scale);
                 if (fBits == 16)
                 {
-                    put16(fOut, uint16_t(int16_t(std::lround(clamped * 32767.0))));
+                    put16(fOut, uint16_t(int16_t(std::lround(step))));
                 }
                 else
                 {
-                    const int32_t s = int32_t(std::lround(clamped * 8388607.0));
+                    const int32_t s = int32_t(std::lround(step));
                     fOut.put(char(s & 0xFF)).put(char((s >> 8) & 0xFF)).put(char((s >> 16) & 0xFF));
                 }
             }
@@ -95,8 +100,18 @@ public:
     }
 
 private:
+    double random() // uniform in [0, 1), xorshift: fast and the same file every time
+    {
+        fSeed ^= fSeed << 13;
+        fSeed ^= fSeed >> 7;
+        fSeed ^= fSeed << 17;
+        return double(fSeed >> 11) * (1.0 / 9007199254740992.0);
+    }
+
     std::ofstream fOut;
     int fBits = 32;
+    bool fDither = true;
+    uint64_t fSeed = 0x9E3779B97F4A7C15ull;
     uint64_t fData = 0;
 };
 
@@ -106,6 +121,7 @@ int main(int argc, char* argv[])
     double seconds = 0.0;
     uint32_t rate = 0;
     int bits = 24;
+    bool dither = true;
     std::vector<int> solos, mutes;
     for (int i = 1; i < argc; ++i)
     {
@@ -121,6 +137,8 @@ int main(int argc, char* argv[])
             rate = uint32_t(std::atoi(value().c_str()));
         else if (arg == "--bits")
             bits = std::atoi(value().c_str());
+        else if (arg == "--no-dither")
+            dither = false;
         else if (arg == "--solo")
             solos.push_back(std::atoi(value().c_str()));
         else if (arg == "--mute")
@@ -129,7 +147,7 @@ int main(int argc, char* argv[])
             return fail("unknown option " + arg);
     }
     if (sessionPath.empty() || output.empty())
-        return fail("usage: chost-render --session FILE.chost --output FILE.wav [--seconds S] [--rate HZ] [--bits 16|24|32] [--solo T] [--mute T]");
+        return fail("usage: chost-render --session FILE.chost --output FILE.wav [--seconds S] [--rate HZ] [--bits 16|24|32] [--no-dither] [--solo T] [--mute T]");
     if (bits != 16 && bits != 24 && bits != 32)
         return fail("--bits must be 16, 24 or 32");
 
@@ -185,7 +203,7 @@ int main(int argc, char* argv[])
     }
 
     WavWriter wav;
-    if (!wav.open(output, rate, bits))
+    if (!wav.open(output, rate, bits, dither))
         return fail("cannot write " + output);
 
     const uint64_t total = uint64_t(seconds * rate);

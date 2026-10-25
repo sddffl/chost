@@ -98,6 +98,11 @@ public:
     bool setTrackSend(int track, int bus, float level); // adds the send or sets its level; level < 0 removes it
     void setFolded(int track, bool folded);
     void foldGroups(); // every group folded (tests)
+
+    // the metronome (Transport > Metronome, C): on or off and its volume are remembered for every project
+    void setMetronome(bool on);
+    void setMetronomeVolume(double db);
+    bool metronomeOn() const;
     int testUndo(const QString& insertSpec);  // the self test of undo and redo (CI), 0 when it passes
 
 protected:
@@ -161,6 +166,7 @@ private:
     void refreshMarkers();
     QString editFolder() const;                  // where edited clips are written
     void dropFiles(const QStringList& paths, int track);
+    void refreshClick();       // the metronome follows the tempo and the song's length
     void outputMenu(int track, const QPoint& globalPos);
     void sendMenu(int track, int slot, const QPoint& globalPos);
     void addBusMenu(QMenu* menu, int track);             // new group / effect bus entries
@@ -239,6 +245,8 @@ private:
 
     // transport
     QToolButton* fPlayButton = nullptr;
+    QAction* fClickAction = nullptr;
+    QString fClickFile;        // the click part the metronome plays, made for the tempo and length it has
     QLabel* fTimeLcd = nullptr;
     QLabel* fBarsLcd = nullptr;
     QDoubleSpinBox* fTempoBox = nullptr;

@@ -31,7 +31,7 @@ RenderJob::~RenderJob()
 }
 
 void RenderJob::start(const QString& session, const QString& output, int bits, const QList<int>& solo,
-                      const QList<int>& mute)
+                      const QList<int>& mute, bool dither)
 {
     fOutput = output;
     fResult.clear();
@@ -43,6 +43,8 @@ void RenderJob::start(const QString& session, const QString& output, int bits, c
         args << QStringLiteral("--solo") << QString::number(track);
     for (int track : mute)
         args << QStringLiteral("--mute") << QString::number(track);
+    if (!dither)
+        args << QStringLiteral("--no-dither");
     const QString tool = resources::renderTool();
     if (tool.isEmpty())
     {

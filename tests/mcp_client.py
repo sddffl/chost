@@ -202,6 +202,12 @@ call("set_send", track=g, bus=room, remove=True, expect_error=True)  # the group
 call("set_output", track=room, bus=g)
 call("set_send", track=g, bus=room, expect_error=True)  # Room goes into the group: a loop
 
+# the metronome: on, not part of the project's tracks or its export, off again
+check(call("set_metronome", on=True, volume_db=-6)["metronome"], "metronome on")
+check(call("get_project")["metronome"], "get_project says so")
+call("set_metronome", on=False)
+check(not call("get_project")["metronome"], "metronome off")
+
 proc.stdin.close()
 proc.wait(timeout=10)
 print("MCP TEST PASSED")

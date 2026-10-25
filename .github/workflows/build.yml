@@ -56,6 +56,20 @@ jobs:
           mix --track a.wav --track b.wav --track a.wav --insert 0:$gain --insert 2:$gain --remove-track 1 | grep -q 'master peak 0.97'
           mix --track a.wav --track b.wav --insert 1:$gain --mute 0 --volume 1=0.5 --save s.chost | grep -q 'master peak 0.24'
           mix --open s.chost | grep -q 'master peak 0.24'
+          # the metronome clicks outside the mix (master silent), and keeps clicking after the first bar
+          ./build/chost-cli mix --driver PulseAudio --seconds 7 --tempo 120 --click 1 --click-sound sf2:$PWD/resources/sounds/TimGM6mb.sf2 | tee click.log
+          grep -q 'master peak 0.000' click.log
+          grep -P 'click peak 0\.[3-9]\d*, after 2.5 s 0\.[3-9]' click.log
+          # dither: silence in a 16-bit export becomes a one-step noise floor, without it exact zeros
+          ./build/chost-render --session s.chost --output quiet.wav --bits 16 --seconds 2 --mute 0 --mute 1 | grep -q DONE
+          ./build/chost-render --session s.chost --output quiet-plain.wav --bits 16 --seconds 2 --mute 0 --mute 1 --no-dither | grep -q DONE
+          python3 -c "
+          import struct, sys, wave
+          def samples(f):
+              w = wave.open(f); return struct.unpack('<%dh' % (w.getnframes() * 2), w.readframes(w.getnframes()))
+          d, p = samples('quiet.wav'), samples('quiet-plain.wav')
+          ok = max(map(abs, d)) == 1 and 0.2 < sum(1 for x in d if x) / len(d) < 0.3 and not any(p)
+          print('dither', 'ok' if ok else 'WRONG'); sys.exit(0 if ok else 1)"
           # buses: a group at half volume; a send doubling a muted-free track; a solo keeps its reverb; saved and reopened
           mix --track a.wav --track b.wav --bus 组 --output 0=2 --output 1=2 --volume 2=0.5 | grep -q 'master peak 0.4[89]'
           mix --track a.wav --track b.wav --bus 混响 --send 0=2:1.0 --mute 1 | grep -q 'master peak 0.97'

@@ -23,9 +23,10 @@ public:
     explicit RenderJob(QObject* parent = nullptr);
     ~RenderJob() override;
 
-    // solo: the only tracks to render, empty for the mix as it sounds; mute: tracks to leave out
+    // solo: the only tracks to render, empty for the mix as it sounds; mute: tracks to leave out;
+    // dither: 16 and 24 bit files get TPDF dither
     void start(const QString& session, const QString& output, int bits = 24, const QList<int>& solo = {},
-               const QList<int>& mute = {});
+               const QList<int>& mute = {}, bool dither = true);
     void cancel();
     bool isRunning() const { return fProcess.state() != QProcess::NotRunning; }
 

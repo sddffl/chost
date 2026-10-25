@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.16.0 LANGUAGES CXX)
+project(chost VERSION 0.17.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,7 +36,7 @@ endif()
 find_package(Threads REQUIRED)
 
 # the core is compiled once and linked against either flavour of carla
-add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp src/core/Chords.cpp src/core/Scales.cpp src/core/Score.cpp src/core/ClipEdit.cpp)
+add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp src/core/Chords.cpp src/core/Scales.cpp src/core/Score.cpp src/core/ClipEdit.cpp src/core/Click.cpp)
 target_include_directories(chost_core_objects PUBLIC src)
 target_include_directories(chost_core_objects PRIVATE third_party/dr_libs)
 target_compile_definitions(chost_core_objects PUBLIC REAL_BUILD)

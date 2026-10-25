@@ -17,12 +17,14 @@
 #include "core/AudioConvert.h"
 #include "core/Chords.h"
 #include "core/ClipEdit.h"
+#include "core/Click.h"
 #include "core/HostEngine.h"
 #include "core/Scales.h"
 #include "core/Score.h"
 #include "core/Session.h"
 
 #include <algorithm>
+#include <filesystem>
 
 #include <atomic>
 #include <chrono>
@@ -306,7 +308,8 @@ static int cmdMix(int argc, char* argv[])
     std::vector<std::string> files, midis, inserts, volumes;
     std::vector<int> mutes, solos, removeTracks;
     std::vector<std::string> removeInserts, buses, outputs, sends;
-    double seconds = 3.0;
+    double seconds = 3.0, click = -1.0, tempo = 0.0;
+    std::string clickSpec;
 
     for (int i = 0; i < argc; ++i)
     {
@@ -327,6 +330,9 @@ static int cmdMix(int argc, char* argv[])
         else if (arg == "--bus" && hasValue)      buses.emplace_back(argv[++i]);
         else if (arg == "--output" && hasValue)   outputs.emplace_back(argv[++i]);
         else if (arg == "--send" && hasValue)     sends.emplace_back(argv[++i]);
+        else if (arg == "--click" && hasValue)    click = std::stod(argv[++i]);
+        else if (arg == "--tempo" && hasValue)    tempo = std::stod(argv[++i]);
+        else if (arg == "--click-sound" && hasValue) clickSpec = argv[++i];
         else
         {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
@@ -448,18 +454,45 @@ static int cmdMix(int argc, char* argv[])
                     session.trackOf(t.output), t.sends.size());
     }
 
+    if (tempo > 0.0)
+        session.setTempo(tempo);
+    if (click >= 0.0)
+    {
+        // the metronome at that volume, played by the given (or the first) MIDI track's instrument spec
+        const std::string clickFile = (std::filesystem::temp_directory_path() / "chost-cli-click.mid").u8string();
+        std::string error, spec = clickSpec;
+        if (spec.empty() && !midis.empty() && midis.front().find('@') != std::string::npos)
+            spec = midis.front().substr(midis.front().find('@') + 1);
+        if (!chost::writeClickTrack(clickFile, session.tempo(), 4, seconds + 30.0, error) || !session.setClick(clickFile, spec))
+        {
+            std::fprintf(stderr, "click: %s%s\n", error.c_str(), session.lastError().c_str());
+            ok = false;
+        }
+        session.setClickOn(true);
+        session.setClickVolume(static_cast<float>(click));
+    }
+
     host.relocate(0);
     host.play();
-    float peak = 0.0f;
+    float peak = 0.0f, clickPeak = 0.0f, clickLate = 0.0f;
     const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
     while (!gQuit && host.isRunning() && std::chrono::steady_clock::now() < until)
     {
         host.idle();
         const auto [l, r] = host.outputPeaks(session.master());
         peak = std::max({peak, l, r});
+        if (session.clickGain() >= 0)
+        {
+            const auto [cl, cr] = host.outputPeaks(static_cast<uint>(session.clickGain()));
+            clickPeak = std::max({clickPeak, cl, cr});
+            if (host.transportFrame() > static_cast<uint64_t>(2.5 * host.sampleRate()))
+                clickLate = std::max({clickLate, cl, cr}); // still clicking after the first bar
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     std::printf("master peak %.3f\n", peak);
+    if (click >= 0.0)
+        std::printf("click peak %.3f, after 2.5 s %.3f\n", clickPeak, clickLate);
     for (const chost::Track& t : session.tracks())
         if (t.instrument >= 0)
         {
@@ -800,7 +833,7 @@ int main(int argc, char* argv[])
                  "  chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]...\n"
                  "                [--mute T] [--solo T]\n"
                  "                [--volume T=V] [--remove-track T] [--remove-insert T:I]\n"
-                 "                [--bus NAME]... [--output T=BUS] [--send T=BUS:LEVEL]\n"
+                 "                [--bus NAME]... [--output T=BUS] [--send T=BUS:LEVEL] [--click VOLUME [--click-sound SPEC]] [--tempo BPM]\n"
                  "                [--seconds S] [--save F.chost] [--open F.chost]\n"
                  "  chost-cli chords [--key \"A minor\"] [--sevenths] [--after CHORD]\n"
                  "  chost-cli chords [--key K] --progression \"C G | Am F\" [--output F.mid] [--pattern block|arpeggio|rhythm] [--tempo BPM]\n"

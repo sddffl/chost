@@ -27,6 +27,7 @@ bool Session::init()
     fTempo = 120.0;
     fKey.clear();
     fMarkers.clear();
+    fClick = fClickInstrument = fClickGain = -1;
     fReady = false;
     fError.clear();
     if (!fHost.isRunning())
@@ -99,6 +100,9 @@ void Session::removePlugin(uint id)
             shift(send.gain);
     };
     shift(fMaster);
+    for (int* click : {&fClick, &fClickInstrument, &fClickGain})
+        if (*click > static_cast<int>(id))
+            --*click;
     for (Track& t : fTracks)
         shiftTrack(t);
     for (Track& t : fParkedTracks)
@@ -515,6 +519,65 @@ void Session::applyGains()
     }
     if (fReady)
         fHost.setVolume(fMaster, fMasterVolume);
+    if (fClickGain >= 0)
+        fHost.setVolume(static_cast<uint>(fClickGain), fClickOn ? fClickVolume : 0.0f);
+}
+
+bool Session::setClick(const std::string& midiPath, const std::string& instrumentSpec)
+{
+    if (!fReady || !isRouted())
+    {
+        fError = "the metronome needs an audio driver that mixes tracks";
+        return false;
+    }
+    if (fClick >= 0)
+    {
+        fHost.setPlayerFile(static_cast<uint>(fClick), midiPath);
+        return true;
+    }
+    if (!fHost.loadMidiFile(midiPath))
+    {
+        fError = fHost.lastError();
+        return false;
+    }
+    registerAdded();
+    const int player = static_cast<int>(fHost.pluginCount() - 1);
+    if (!fHost.addPlugin(instrumentSpec))
+    {
+        fError = fHost.lastError();
+        removePlugin(static_cast<uint>(player));
+        return false;
+    }
+    registerAdded();
+    const int instrument = static_cast<int>(fHost.pluginCount() - 1);
+    uint gain = 0;
+    if (!addFader("Metronome", gain))
+    {
+        removePlugin(static_cast<uint>(instrument));
+        removePlugin(static_cast<uint>(player));
+        return false;
+    }
+    fClick = player;
+    fClickInstrument = instrument;
+    fClickGain = static_cast<int>(gain);
+    setClickOn(fClickOn);
+    reroute();
+    return true;
+}
+
+void Session::setClickOn(bool on)
+{
+    fClickOn = on;
+    for (int id : {fClick, fClickInstrument})
+        if (id >= 0)
+            fHost.setActive(static_cast<uint>(id), on); // off: no work for the processor
+    applyGains();
+}
+
+void Session::setClickVolume(float volume)
+{
+    fClickVolume = volume;
+    applyGains();
 }
 
 void Session::reroute()
@@ -563,6 +626,12 @@ void Session::reroute()
         }
     }
     fHost.connectToOutput(fMaster);
+    if (fClick >= 0 && fClickInstrument >= 0 && fClickGain >= 0)
+    {
+        fHost.connectMidi(static_cast<uint>(fClick), static_cast<uint>(fClickInstrument));
+        fHost.connect(static_cast<uint>(fClickInstrument), static_cast<uint>(fClickGain));
+        fHost.connectToOutput(static_cast<uint>(fClickGain));
+    }
     applyGains();
 }
 
@@ -741,6 +810,7 @@ bool Session::load(const std::string& path)
 
     const fs::path carlaPath = fs::u8path(path).parent_path() / fs::u8path(carlaFile);
     fHost.removeAllPlugins();
+    fClick = fClickInstrument = fClickGain = -1; // gone with the plugins: whoever wants it loads it again
     fReady = false;
     if (!fHost.loadProject(carlaPath.u8string()))
     {

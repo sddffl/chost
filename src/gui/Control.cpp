@@ -364,7 +364,8 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                                 {QStringLiteral("selected_track"), w.fSelected},
                                 {QStringLiteral("audio_driver"), QString::fromStdString(host.driverName())},
                                 {QStringLiteral("tracks"), list},
-                                {QStringLiteral("markers"), markersJson()}};
+                                {QStringLiteral("markers"), markersJson()},
+                                {QStringLiteral("metronome"), session.clickOn()}};
             if (!session.isRouted())
                 project.insert(QStringLiteral("warning"), QStringLiteral("this audio driver plays no multitrack mix: choose another driver in chost"));
             result = project;
@@ -958,6 +959,16 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             if (!remove)
                 o.insert(QStringLiteral("level_db"), std::round(toDb(level) * 10.0) / 10.0);
             result = o;
+        }
+        else if (tool == QLatin1String("set_metronome"))
+        {
+            if (has("volume_db"))
+                w.setMetronomeVolume(std::min(0.0, args.value(QStringLiteral("volume_db")).toDouble()));
+            const bool on = args.value(QStringLiteral("on")).toBool();
+            w.setMetronome(on);
+            if (on && !session.clickOn())
+                throw Fail{QStringLiteral("the metronome didn't start: %1").arg(QString::fromStdString(session.lastError()))};
+            result = QJsonObject{{QStringLiteral("metronome"), session.clickOn()}};
         }
         else if (tool == QLatin1String("get_parameters"))
         {

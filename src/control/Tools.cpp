@@ -225,6 +225,14 @@ static const char* const kTools = R"json([
   }, "required": ["track", "bus"]}
 },
 {
+  "name": "set_metronome",
+  "description": "Turns the metronome on or off and sets its volume. It clicks on every beat at the song's tempo, the first beat of each bar higher; it is heard only while playing in chost and is never in an export.",
+  "inputSchema": {"type": "object", "properties": {
+    "on": {"type": "boolean"},
+    "volume_db": {"type": "number", "maximum": 0, "description": "Default -10."}
+  }, "required": ["on"]}
+},
+{
   "name": "get_parameters",
   "description": "The parameters of a plugin: an insert of a track, or its instrument. Each has its index, name, unit, range, default and current value; outputs (meters) are marked.",
   "inputSchema": {"type": "object", "properties": {

@@ -61,6 +61,10 @@ ExportDialog::ExportDialog(const QString& defaultPath, const std::vector<Track>&
     fFormat->addItem(QStringLiteral("WAV 16 位（CD 音质，文件小一点）"), 16);
     fFormat->addItem(QStringLiteral("WAV 32 位浮点（超过 0 dB 也不会削波）"), 32);
     form->addRow(QStringLiteral("格式"), fFormat);
+    fDither = new QCheckBox(QStringLiteral("抖动（dither）：让很轻的地方（淡出、混响尾巴）不发毛，16 位和 24 位推荐打开"));
+    fDither->setChecked(true);
+    form->addRow(QString(), fDither);
+    connect(fFormat, &QComboBox::currentIndexChanged, this, [this] { fDither->setEnabled(bits() != 32); });
     fStems = new QCheckBox(QStringLiteral("同时把每条轨道单独导出（分轨文件，放在旁边的“_分轨”文件夹里）"));
     fStems->setEnabled(!fTracks.empty());
     form->addRow(QString(), fStems);
@@ -223,7 +227,7 @@ void ExportDialog::next()
         return;
     }
     const Job& job = fJobs[fCurrent];
-    fRender.start(fSession, job.output, bits(), job.solo);
+    fRender.start(fSession, job.output, bits(), job.solo, {}, fDither->isChecked());
 }
 
 void ExportDialog::setBusy(bool busy)

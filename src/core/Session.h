@@ -144,6 +144,14 @@ public:
     const std::vector<Marker>& markers() const { return fMarkers; }
     void setMarkers(std::vector<Marker> markers);
 
+    // The metronome: a click part (see Click.h) played by an instrument straight to the output, outside the
+    // mix, so it is neither saved nor exported. Its player is made once and then just reads another file.
+    bool setClick(const std::string& midiPath, const std::string& instrumentSpec);
+    void setClickOn(bool on);
+    void setClickVolume(float volume);
+    bool clickOn() const { return fClickOn && fClick >= 0; }
+    int clickGain() const { return fClickGain; } // carla id, -1 without a metronome
+
     // Undo. With keepRemoved, a removed track, insert or replaced instrument isn't deleted but set aside,
     // silent and switched off, so restore() can bring it back exactly as it was (the library loaded in
     // Kontakt, every knob); dropUnused() deletes what no state kept for undo refers to any more.
@@ -189,6 +197,11 @@ private:
     double fTempo = 120.0;
     std::string fKey;
     std::vector<Marker> fMarkers;
+    int fClick = -1;      // carla ids of the metronome's MIDI player, instrument and gain, -1 until there is one
+    int fClickInstrument = -1;
+    int fClickGain = -1;
+    bool fClickOn = false;
+    float fClickVolume = 0.5f;
     bool fReady = false;
     std::string fError;
 };
