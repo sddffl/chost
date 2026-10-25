@@ -1,6 +1,6 @@
 """Synthesises a sung melody that is out of tune, for the pitch correction tests and screenshots.
 
-    python3 tests/make_vocal.py <folder>
+    python tests/make_vocal.py <folder>      (needs numpy and scipy)
 
 Writes vocal.wav (mono, 44.1 kHz): a voice singing an A minor line on the vowel "ah", each note a bit
 sharp or flat, with a scoop into it, vibrato and an "s" at either end; and vocal_notes.txt, one line per

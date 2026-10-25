@@ -120,7 +120,7 @@ jobs:
               ./build/chost --file song/mysong.wav --arrange --screenshot arrange.png --screenshot-delay 25000
           test "$(ls home/.local/share/chost/chost/mysong_编曲/1/*.mid | wc -l)" = 5
           # pitch correction: every note in tune, the vibrato kept (or gone, the Auto-Tune effect), the key heard
-          python3 tests/make_vocal.py vocal
+          $py tests/make_vocal.py vocal
           $py tools/chost_tune.py --input vocal/vocal.wav --output tuned.wav --key auto | tee tune.log
           grep -E '^KEY A minor$' tune.log
           $py tests/check_tuning.py vocal tuned.wav
