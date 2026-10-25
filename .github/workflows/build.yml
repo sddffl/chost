@@ -77,6 +77,13 @@ jobs:
           QT_QPA_PLATFORM=offscreen timeout 300 python3 tests/mcp_client.py ./build/chost-mcp $PWD/a.wav $PWD/b.wav $gain | tee mcp.log
           grep -q 'MCP TEST PASSED' mcp.log
           pkill -x chost || true
+          # the chord pad's harmony: G7 goes home to C, and a progression becomes a MIDI part
+          ./build/chost-cli chords --key "C major" --after G7 | tee chords.log
+          grep -P '^PAD 0\tC\tI\t1\.00' chords.log
+          ./build/chost-cli chords --key "A minor" --progression "Am F | C G G7" --output prog.mid --pattern arpeggio | tee prog.log
+          grep -q 'PROGRESSION Am F | C G G7' prog.log
+          QT_QPA_PLATFORM=offscreen ./build/chost --chord-progression "Am F | C G" --screenshot chordpad.png --screenshot-delay 3000
+          test -f chordpad-1.png
           echo '{"mcpServers": {"other": {"command": "x"}}}' > claude.json
           QT_QPA_PLATFORM=offscreen ./build/chost --claude-config claude.json | grep -q 'CLAUDE CONFIG WRITTEN'
           python3 -c "import json; s = json.load(open('claude.json'))['mcpServers']; assert 'other' in s and s['chost']['command'].endswith('chost-mcp')"
@@ -117,6 +124,9 @@ jobs:
           py=$PWD/ai-env/bin/python
           python3 tests/make_song.py fast 137
           $py tools/chost_analyze.py --input fast/mysong.wav | tee analyze.log
+          # the chord pad recognises a song's chords (the arranger's recognition, without arranging)
+          $py tools/chost_arrange.py --chords-only --output-dir chords --tempo 120 --audio song/mysong.wav | tee chords-only.log
+          grep -q '^CHORDS Am | F | C | G' chords-only.log
           grep -P '^TEMPO 137\.0\t' analyze.log
           grep -E '^KEY (C major|A minor)' analyze.log
           $py tools/chost_master.py --input song/mysong.wav --output master.wav --style warm | tee master.log

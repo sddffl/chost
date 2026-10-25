@@ -3,6 +3,7 @@
 chost runs this script with the Python of its AI environment and reads stdout line by line:
 
     PROGRESS <0-100> <message>
+    START <seconds>                       with --chords-only: where the first bar starts
     CHORDS <bar 1> | <bar 2> | ...        the chords it played, a bar each ("Am F" shares a bar)
     MIDI <path>\t<role>\t<part name>\t<note count>
     ERROR <message>
@@ -11,6 +12,7 @@ chost runs this script with the Python of its AI environment and reads stdout li
     python chost_arrange.py --output-dir DIR --tempo 120 --style pop
         (--chords "C G | Am F" | --audio song.wav | --midi melody.mid)
         [--parts drums,bass,keys,guitar,strings] [--structure song|loop|follow] [--name mysong] [--seed 1]
+    python chost_arrange.py --chords-only --output-dir DIR --tempo 120 --audio song.wav    (the chords alone)
 
 Where the harmony comes from:
   --chords   typed chord symbols: C, Am, F#m7, Bb, Gsus4, C/E ... "|" separates bars; without "|" every
@@ -880,6 +882,7 @@ def main():
     parser.add_argument("--structure", default="", choices=["", "song", "loop", "follow"])
     parser.add_argument("--name", default="arrangement")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--chords-only", action="store_true", help="only recognise the chords: START and CHORDS, no parts")
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -912,7 +915,12 @@ def main():
                 levels[0] = min(levels[0], 2)
         else:
             raise ValueError("give --chords, --audio or --midi")
+        if args.chords_only:
+            print("START %.3f" % start, flush=True)
         print("CHORDS " + " | ".join(" ".join(c.name for c in bar) for bar in bars_chords), flush=True)
+        if args.chords_only:
+            print("DONE", flush=True)
+            return 0
 
         progress(60, "arranging")
         result = arrange(bars_chords, levels, start, tempo, args.style, parts, args.seed)

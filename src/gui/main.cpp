@@ -1,3 +1,4 @@
+#include "ChordPad.h"
 #include "ClaudeConnect.h"
 #include "MainWindow.h"
 #include "Theme.h"
@@ -48,8 +49,11 @@ int main(int argc, char* argv[])
     QCommandLineOption recoverOpt(QStringLiteral("recover"), QStringLiteral("Bring back a project a crashed chost left in the autosave, without asking."));
     QCommandLineOption saveOpt(QStringLiteral("save"), QStringLiteral("Save the project (over the --open file) once everything is loaded."));
     QCommandLineOption claudeOpt(QStringLiteral("claude-config"), QStringLiteral("Add chost-mcp to this Claude Desktop settings file and quit (tests)."), QStringLiteral("json"));
+    QCommandLineOption chordPadOpt(QStringLiteral("chord-pad"), QStringLiteral("Open the chord pad."));
+    QCommandLineOption progressionOpt(QStringLiteral("chord-progression"), QStringLiteral("Open the chord pad with these chords and write them as a MIDI track (tests)."), QStringLiteral("chords"));
+    QCommandLineOption recogniseOpt(QStringLiteral("recognise-chords"), QStringLiteral("Open the chord pad and recognise the chords of the first audio track (tests)."));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -99,6 +103,17 @@ int main(int argc, char* argv[])
         window.arrange(true, parser.value(chordsOpt));
     if (parser.isSet(tuneOpt))
         window.tune(true);
+    if (parser.isSet(chordPadOpt) || parser.isSet(progressionOpt) || parser.isSet(recogniseOpt))
+    {
+        ChordPadDialog* pad = window.chordPad();
+        if (parser.isSet(recogniseOpt))
+            pad->recognise(0);
+        if (parser.isSet(progressionOpt))
+        {
+            pad->setProgression(parser.value(progressionOpt));
+            pad->write();
+        }
+    }
     if (parser.isSet(undoOpt))
     {
         app.setProperty("chost-noninteractive", true);

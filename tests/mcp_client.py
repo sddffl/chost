@@ -108,7 +108,9 @@ check(len(call("get_project")["tracks"]) == 2, "undo brings it back (%s)" % undo
 call("redo")
 call("undo")
 
-check(call("wait_for_jobs", timeout_seconds=2)["jobs"] == [], "no jobs to wait for")
+# (the first song gets its tempo and key found by itself when chost has its AI components)
+waited = call("wait_for_jobs", timeout_seconds=60)
+check(not any(job["running"] for job in waited["jobs"]), "no jobs left running (%d done)" % len(waited["jobs"]))
 call("save_project", expect_error=True)  # never saved, no path
 path = os.path.abspath("mcp_test.chost")
 saved = call("save_project", path=path)
@@ -117,6 +119,13 @@ call("new_project", discard_unsaved=False)
 check(call("get_project")["tracks"] == [], "a new project (nothing unsaved)")
 opened = call("open_project", path=path)
 check(opened["tracks"] == 2, "reopened with both tracks")
+
+# chords: what follows G7 in C, and a progression written as a piano part
+sugg = call("suggest_chords", key="C major", after="G7")
+check(sugg["chords"][0]["chord"] == "C", "after G7 comes C (%s)" % ", ".join(c["chord"] for c in sugg["chords"][:3]))
+part = call("add_chord_track", chords="Am F | C G", pattern="arpeggio")
+check(part["notes"] >= 16 and len(call("get_project")["tracks"]) == 3, "a chord track with %d notes" % part["notes"])
+call("add_chord_track", chords="Am H7", expect_error=True)
 
 proc.stdin.close()
 proc.wait(timeout=10)

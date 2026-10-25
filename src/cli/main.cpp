@@ -14,6 +14,7 @@
 //
 // Without --seconds, run drops into an interactive shell (type "help").
 
+#include "core/Chords.h"
 #include "core/HostEngine.h"
 #include "core/Session.h"
 
@@ -23,6 +24,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -441,6 +443,82 @@ static int cmdMix(int argc, char* argv[])
     return ok ? 0 : 1;
 }
 
+// the chord pad's harmony, without the GUI: the pads of a key and what fits after a chord, or a
+// progression written as a MIDI part
+static int cmdChords(int argc, char* argv[])
+{
+    std::string keyText = "C major", after, progression, output, patternText = "block";
+    double tempo = 120.0;
+    bool sevenths = false;
+    for (int i = 0; i < argc; ++i)
+    {
+        const std::string a = argv[i];
+        auto value = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+        if (a == "--key")
+            keyText = value();
+        else if (a == "--sevenths")
+            sevenths = true;
+        else if (a == "--after")
+            after = value();
+        else if (a == "--progression")
+            progression = value();
+        else if (a == "--pattern")
+            patternText = value();
+        else if (a == "--tempo")
+            tempo = std::atof(value().c_str());
+        else if (a == "--output")
+            output = value();
+    }
+    const chost::Key key = chost::parseKey(keyText);
+    if (!key.valid)
+    {
+        std::fprintf(stderr, "unknown key: %s\n", keyText.c_str());
+        return 1;
+    }
+    std::printf("KEY %s\n", chost::keyName(key).c_str());
+    if (!progression.empty())
+    {
+        std::string error;
+        const auto chords = chost::parseProgression(progression, error);
+        if (chords.empty())
+        {
+            std::fprintf(stderr, "%s\n", error.c_str());
+            return 1;
+        }
+        std::printf("PROGRESSION %s\n", chost::progressionText(chords, key).c_str());
+        if (!output.empty())
+        {
+            const chost::ChordPattern pattern = patternText == "arpeggio" ? chost::ChordPattern::Arpeggio
+                                                : patternText == "rhythm" ? chost::ChordPattern::Rhythm
+                                                                          : chost::ChordPattern::Block;
+            const chost::MidiClip clip = chost::chordClip(chords, tempo, pattern);
+            if (!chost::writeMidiFile(output, clip, error))
+            {
+                std::fprintf(stderr, "%s\n", error.c_str());
+                return 1;
+            }
+            std::printf("MIDI %s\t%zu notes\t%.2f s\n", output.c_str(), clip.notes.size(), clip.seconds);
+        }
+        return 0;
+    }
+    const std::vector<chost::Pad> pads = chost::chordPads(key, sevenths);
+    const chost::Chord previous = chost::parseChord(after);
+    if (!after.empty() && !previous.valid())
+    {
+        std::fprintf(stderr, "unknown chord: %s\n", after.c_str());
+        return 1;
+    }
+    const std::vector<float> scores = chost::nextChordScores(key, pads, previous.valid() ? &previous : nullptr);
+    for (size_t i = 0; i < pads.size(); ++i)
+    {
+        std::string notes;
+        for (int n : chost::voiceChord(pads[i].chord, {}))
+            notes += " " + std::to_string(n);
+        std::printf("PAD %zu\t%s\t%s\t%.2f\t%s\n", i, pads[i].chord.name(key).c_str(), pads[i].numeral.c_str(), scores[i], notes.c_str() + 1);
+    }
+    return 0;
+}
+
 int main(int argc, char* argv[])
 {
     std::signal(SIGINT, onSignal);
@@ -456,6 +534,8 @@ int main(int argc, char* argv[])
         return cmdRun(argc - 2, argv + 2);
     if (cmd == "mix")
         return cmdMix(argc - 2, argv + 2);
+    if (cmd == "chords")
+        return cmdChords(argc - 2, argv + 2);
 
     std::fprintf(stderr,
                  "usage:\n"
@@ -465,6 +545,8 @@ int main(int argc, char* argv[])
                  "  chost-cli mix [--driver NAME] [--track AUDIO]... [--midi FILE.mid@SPEC]... [--insert T:SPEC]...\n"
                  "                [--mute T] [--solo T]\n"
                  "                [--volume T=V] [--remove-track T] [--remove-insert T:I]\n"
-                 "                [--seconds S] [--save F.chost] [--open F.chost]\n");
+                 "                [--seconds S] [--save F.chost] [--open F.chost]\n"
+                 "  chost-cli chords [--key \"A minor\"] [--sevenths] [--after CHORD]\n"
+                 "  chost-cli chords [--key K] --progression \"C G | Am F\" [--output F.mid] [--pattern block|arpeggio|rhythm] [--tempo BPM]\n");
     return 2;
 }

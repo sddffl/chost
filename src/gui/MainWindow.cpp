@@ -4,6 +4,7 @@
 #include "ExportDialog.h"
 #include "InstrumentDialog.h"
 #include "Autosave.h"
+#include "ChordPad.h"
 #include "ClaudeConnect.h"
 #include "Control.h"
 #include "History.h"
@@ -242,6 +243,7 @@ MainWindow::~MainWindow()
     delete fExportDialog;
     delete fMasterDialog;
     delete fArrangeDialog;
+    delete fChordPad;
     closeEditors();
     fHost.setEventCallback(nullptr);
     fHost.stop();
@@ -316,6 +318,7 @@ void MainWindow::buildMenus()
     ai->addAction(QStringLiteral("MIDI 轨全部换成真实音源"), this, &MainWindow::applyInstruments);
     ai->addAction(QStringLiteral("自动编曲…"), QKeySequence(QStringLiteral("Ctrl+Shift+A")), this, [this] { arrange(); });
     ai->addAction(QStringLiteral("AI 修音…"), QKeySequence(QStringLiteral("Ctrl+Shift+T")), this, [this] { tune(); });
+    ai->addAction(QStringLiteral("和弦板（和弦提示）…"), QKeySequence(QStringLiteral("Ctrl+Shift+K")), this, [this] { chordPad(); });
     ai->addSeparator();
     ai->addAction(QStringLiteral("识别速度和调性"), this, [this] { analyzeSong(); });
     ai->addAction(QStringLiteral("AI 母带…"), QKeySequence(QStringLiteral("Ctrl+Shift+E")), this, [this] { masterMix(); });
@@ -698,6 +701,8 @@ void MainWindow::tick()
     fArrange->setPlayhead(seconds, playing);
     if (fPianoRoll)
         fPianoRoll->setPlayhead(seconds);
+    if (fChordPad)
+        fChordPad->setPlayhead(seconds, playing);
 
     const int ms = static_cast<int>(seconds * 1000.0);
     fTimeLcd->setText(QStringLiteral("%1:%2:%3.%4")
@@ -849,6 +854,7 @@ void MainWindow::refreshTracks()
         fSelected = 0;
     refreshMixState();
     refreshSelection();
+    refreshChordPad();
 }
 
 void MainWindow::refreshSelection()
@@ -2010,6 +2016,8 @@ void MainWindow::refreshSongInfo()
     fKeyLabel->setToolTip(fSession.key().empty()
                               ? QStringLiteral("调性还不知道：点“识别”让 AI 听一下")
                               : QStringLiteral("调性：%1（关系调 %2，用的音完全一样）").arg(keyText(fSession.key()), relativeKeyText(fSession.key())));
+    if (fChordPad)
+        fChordPad->setSong(QString::fromStdString(fSession.key()), fSession.tempo());
 }
 
 void MainWindow::analyzeSong(bool quiet)
@@ -2227,6 +2235,91 @@ void MainWindow::arrange(bool autoStart, const QString& chords)
     fArrangeDialog->raise();
     fArrangeDialog->activateWindow();
     fArrangeDialog->setAutoStart(autoStart);
+}
+
+QString MainWindow::chordFolder() const
+{
+    const QString base = fSessionPath.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+                                                : QFileInfo(fSessionPath).absolutePath();
+    return QDir(base).filePath(projectName() + QStringLiteral("_和弦"));
+}
+
+ChordPadDialog* MainWindow::chordPad()
+{
+    if (!fChordPad)
+    {
+        fChordPad = new ChordPadDialog(QString::fromStdString(fSession.key()), fSession.tempo(), chordFolder(), this);
+        fChordPad->setAttribute(Qt::WA_DeleteOnClose);
+        connect(fChordPad, &ChordPadDialog::notes, this, [this](int track, const std::vector<int>& pitches, bool on) {
+            const std::vector<chost::Track>& tracks = fSession.tracks();
+            if (track < 0 || track >= static_cast<int>(tracks.size()) || tracks[track].instrument < 0)
+                return;
+            const uint id = static_cast<uint>(tracks[track].instrument);
+            for (int pitch : pitches)
+                fHost.sendNote(id, 0, static_cast<uint8_t>(pitch), on ? 96 : 0);
+        });
+        connect(fChordPad, &ChordPadDialog::newTrackRequested, this, [this] {
+            const int track = fSession.addTrack(QStringLiteral("和弦").toStdString(), chost::TrackKind::Instrument);
+            if (track < 0)
+            {
+                showError(QStringLiteral("无法添加轨道：%1").arg(QString::fromStdString(fSession.lastError())));
+                return;
+            }
+            fSession.setRole(track, "piano");
+            loadInstrument(track, instruments::choiceFor(QStringLiteral("piano")));
+            fSelected = track;
+            refreshTracks();
+            fHistory->record(QStringLiteral("添加和弦轨"));
+        });
+        connect(fChordPad, &ChordPadDialog::written, this, [this](int track, const QString& path) { placeChords(track, path); });
+        connect(fChordPad, &ChordPadDialog::arrangeRequested, this, [this](const QString& chords) {
+            delete fArrangeDialog; // fresh, with these chords
+            arrange(false, chords);
+        });
+        refreshChordPad();
+    }
+    fChordPad->show();
+    fChordPad->raise();
+    fChordPad->activateWindow();
+    return fChordPad;
+}
+
+void MainWindow::refreshChordPad()
+{
+    if (!fChordPad)
+        return;
+    std::vector<ChordPadDialog::Track> instruments, audio;
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    for (size_t i = 0; i < tracks.size(); ++i)
+    {
+        const chost::Track& t = tracks[i];
+        const ChordPadDialog::Track entry{QString::fromStdString(t.name), static_cast<int>(i), QString::fromStdString(t.file)};
+        if (t.kind == chost::TrackKind::Instrument && t.instrument >= 0 && !isDrumTrack(static_cast<int>(i)))
+            instruments.push_back(entry);
+        else if (t.kind == chost::TrackKind::Audio && !t.file.empty() && t.role != kMasterRole)
+            audio.push_back(entry);
+    }
+    fChordPad->setTracks(instruments, audio, fSelected);
+}
+
+int MainWindow::placeChords(int track, const QString& midiPath)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    closeEditors();
+    // the track the pads were heard on takes the chords while it has none yet
+    if (track >= 0 && track < static_cast<int>(tracks.size()) && tracks[track].kind == chost::TrackKind::Instrument && tracks[track].file.empty())
+    {
+        if (!fSession.setTrackFile(track, midiPath.toStdString()))
+        {
+            showError(QStringLiteral("无法打开 MIDI 文件：%1\n\n%2").arg(midiPath, QString::fromStdString(fSession.lastError())));
+            return -1;
+        }
+        fSelected = track;
+        refreshTracks();
+        fHistory->record(QStringLiteral("写入和弦"));
+        return track;
+    }
+    return addMidiTrack(midiPath, QStringLiteral("和弦"), QStringLiteral("piano"));
 }
 
 void MainWindow::tune(bool autoStart)

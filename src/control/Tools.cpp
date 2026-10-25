@@ -127,6 +127,25 @@ static const char* const kTools = R"json([
   "inputSchema": {"type": "object", "properties": {}}
 },
 {
+  "name": "suggest_chords",
+  "description": "Chord help for writing a song: the chords of the song's key (or the key given) with their roman numerals, and how well each would follow the given chord (score 0 to 1, best first). Without after: the chords songs usually start on.",
+  "inputSchema": {"type": "object", "properties": {
+    "key": {"type": "string", "description": "e.g. \"A minor\"; default the song's key."},
+    "after": {"type": "string", "description": "The chord before, e.g. \"G7\"."},
+    "sevenths": {"type": "boolean", "description": "Seventh chords instead of triads."}
+  }}
+},
+{
+  "name": "add_chord_track",
+  "description": "Writes a chord progression as a MIDI part played on a piano (or the instrument the user set for piano parts) and adds it as an instrument track, from the start of the song or from a bar. Chord symbols as C, Am, F#m7, Bb, Gsus4, C/E; \"|\" separates bars, chords in one bar share it. To have drums, bass and more play the chords, use ai_arrange with chords instead.",
+  "inputSchema": {"type": "object", "properties": {
+    "chords": {"type": "string", "description": "e.g. \"Am F | C G\" or \"C G Am F\" (a bar each)."},
+    "pattern": {"type": "string", "enum": ["block", "arpeggio", "rhythm"], "description": "Held chords, broken in eighths, or a pop piano rhythm. Default block."},
+    "start_bar": {"type": "integer", "minimum": 1, "description": "The bar it starts in, default 1."},
+    "name": {"type": "string", "description": "The track's name, default 和弦."}
+  }, "required": ["chords"]}
+},
+{
   "name": "get_parameters",
   "description": "The parameters of a plugin: an insert of a track, or its instrument. Each has its index, name, unit, range, default and current value; outputs (meters) are marked.",
   "inputSchema": {"type": "object", "properties": {

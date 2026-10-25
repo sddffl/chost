@@ -17,6 +17,7 @@ class ArrangeView;
 class ChannelStrip;
 class ExportDialog;
 class Autosave;
+class ChordPadDialog;
 class Control;
 class History;
 class MasterDialog;
@@ -74,6 +75,7 @@ public:
     void analyzeSong(bool quiet = false);     // tempo and key of the selected (or first) audio track
     void arrange(bool autoStart = false, const QString& chords = {}); // AI > auto-arrangement
     void tune(bool autoStart = false);        // AI > pitch correction of a vocal track
+    ChordPadDialog* chordPad();               // AI > chord pad, opened (or raised)
     int testUndo(const QString& insertSpec);  // the self test of undo and redo (CI), 0 when it passes
 
 protected:
@@ -169,6 +171,9 @@ private:
     QString originalOf(const QString& file) const;          // the take a tuned file was made from, else the file
     int trackPlaying(const QString& original) const;        // the track with this take or its tuned one
     void playTake(const QString& original, bool tuned);     // swaps a track between the take and its tuned one
+    void refreshChordPad();                                 // the tracks the chord pad plays on and listens to
+    int placeChords(int track, const QString& midiPath);    // chords onto that empty instrument track, else a new one
+    QString chordFolder() const;                            // where chord parts are written
 
     chost::HostEngine fHost;
     chost::Session fSession{fHost};
@@ -187,6 +192,7 @@ private:
     QPointer<MasterDialog> fMasterDialog;
     QPointer<ArrangeDialog> fArrangeDialog;
     QPointer<TuneDialog> fTuneDialog;
+    QPointer<ChordPadDialog> fChordPad;
     History* fHistory = nullptr;
     Autosave* fAutosave = nullptr;
     Control* fControl = nullptr;

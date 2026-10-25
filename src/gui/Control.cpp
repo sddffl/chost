@@ -13,6 +13,7 @@
 #include "TuneDialog.h"
 #include "Widgets.h"
 #include "control/Tools.h"
+#include "core/Chords.h"
 
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -31,6 +32,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 namespace {
 
@@ -590,6 +592,67 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
                     list.append(QJsonObject{{QStringLiteral("track"), static_cast<int>(i)}, {QStringLiteral("name"), QString::fromStdString(tracks[i].name)},
                                             {QStringLiteral("instrument"), QString::fromStdString(host.slot(static_cast<uint>(tracks[i].instrument)).name)}});
             result = QJsonObject{{QStringLiteral("instrument_tracks"), list}};
+        }
+        else if (tool == QLatin1String("suggest_chords"))
+        {
+            const QString keyText = args.value(QStringLiteral("key")).toString(QString::fromStdString(session.key()));
+            chost::Key key = chost::parseKey(keyText.toStdString());
+            const bool guessed = !key.valid;
+            if (!key.valid)
+                key = chost::Key{0, false, true};
+            chost::Chord after;
+            if (has("after"))
+            {
+                after = chost::parseChord(args.value(QStringLiteral("after")).toString().toStdString());
+                if (!after.valid())
+                    throw Fail{QStringLiteral("not a chord: %1").arg(args.value(QStringLiteral("after")).toString())};
+            }
+            const std::vector<chost::Pad> pads = chost::chordPads(key, args.value(QStringLiteral("sevenths")).toBool());
+            const std::vector<float> scores = chost::nextChordScores(key, pads, after.valid() ? &after : nullptr);
+            std::vector<size_t> order(pads.size());
+            std::iota(order.begin(), order.end(), 0);
+            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return scores[a] > scores[b]; });
+            QJsonArray list;
+            for (size_t i : order)
+                list.append(QJsonObject{{QStringLiteral("chord"), QString::fromStdString(pads[i].chord.name(key))},
+                                        {QStringLiteral("numeral"), QString::fromStdString(pads[i].numeral)},
+                                        {QStringLiteral("score"), std::round(scores[i] * 100.0) / 100.0},
+                                        {QStringLiteral("in_key"), i < 7}});
+            QJsonObject o{{QStringLiteral("key"), QString::fromStdString(chost::keyName(key))}, {QStringLiteral("chords"), list}};
+            if (guessed)
+                o.insert(QStringLiteral("note"), QStringLiteral("the song's key is not known (ai_analyze finds it): C major assumed"));
+            result = o;
+        }
+        else if (tool == QLatin1String("add_chord_track"))
+        {
+            std::string error;
+            const std::vector<chost::ProgressionChord> chords = chost::parseProgression(args.value(QStringLiteral("chords")).toString().toStdString(), error);
+            if (chords.empty())
+                throw Fail{QString::fromStdString(error)};
+            const QString patternText = args.value(QStringLiteral("pattern")).toString(QStringLiteral("block"));
+            const chost::ChordPattern pattern = patternText == QLatin1String("arpeggio") ? chost::ChordPattern::Arpeggio
+                                                : patternText == QLatin1String("rhythm") ? chost::ChordPattern::Rhythm
+                                                                                         : chost::ChordPattern::Block;
+            const int bar = std::max(1, args.value(QStringLiteral("start_bar")).toInt(1));
+            const double start = (bar - 1) * 4.0 * 60.0 / session.tempo();
+            const chost::MidiClip clip = chost::chordClip(chords, session.tempo(), pattern, start);
+            const QString folder = w.chordFolder();
+            QDir().mkpath(folder);
+            QString file;
+            for (int n = 1; file.isEmpty() || QFileInfo::exists(file); ++n)
+                file = QDir(folder).filePath(QStringLiteral("和弦_%1.mid").arg(n));
+            if (!chost::writeMidiFile(file.toStdString(), clip, error))
+                throw Fail{QString::fromStdString(error)};
+            const int track = w.addMidiTrack(file, args.value(QStringLiteral("name")).toString(QStringLiteral("和弦")), QStringLiteral("piano"));
+            check();
+            if (track < 0)
+                throw Fail{QStringLiteral("the chord track could not be added")};
+            QJsonObject o = okTrack(track);
+            o.insert(QStringLiteral("chords"), QString::fromStdString(chost::progressionText(chords, chost::parseKey(session.key()))));
+            o.insert(QStringLiteral("notes"), static_cast<int>(clip.notes.size()));
+            o.insert(QStringLiteral("seconds"), std::round(clip.seconds * 100.0) / 100.0);
+            o.insert(QStringLiteral("file"), path(file));
+            result = o;
         }
         else if (tool == QLatin1String("get_parameters"))
         {
