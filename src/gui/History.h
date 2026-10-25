@@ -29,6 +29,7 @@ public:
     void absorb();
 
     bool isModified() const { return fModified || !fStack.isClean(); }
+    int revision() const { return fRevision; } // goes up with every change, undo and redo
     void setSaved();
 
     // while one is alive, record() collects instead of recording: the whole of an AI job is one step
@@ -57,4 +58,5 @@ private:
     int fGroups = 0;
     bool fModified = false;
     bool fApplying = false;
+    int fRevision = 0;
 };

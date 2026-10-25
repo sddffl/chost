@@ -3,6 +3,7 @@
 #include "ArrangeDialog.h"
 #include "ExportDialog.h"
 #include "InstrumentDialog.h"
+#include "Autosave.h"
 #include "History.h"
 #include "Instruments.h"
 #include "MasterDialog.h"
@@ -38,6 +39,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QInputDialog>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
@@ -143,6 +145,7 @@ MainWindow::MainWindow(QWidget* parent)
     fHistory = new History(fSession, this);
     connect(fHistory, &History::restored, this, &MainWindow::afterUndo);
     connect(fHistory, &History::modifiedChanged, this, &MainWindow::updateTitle);
+    fAutosave = new Autosave(fSession, *fHistory, [this] { return fSessionPath; }, this);
 
     std::vector<std::string> folders;
     for (const QString& folder : QSettings().value(kPluginFoldersKey).toStringList())
@@ -248,6 +251,7 @@ void MainWindow::buildMenus()
     file->addAction(QStringLiteral("打开工程…"), QKeySequence::Open, this, &MainWindow::openSessionDialog);
     file->addAction(QStringLiteral("保存工程"), QKeySequence::Save, this, &MainWindow::saveSession);
     file->addAction(QStringLiteral("工程另存为…"), QKeySequence::SaveAs, this, &MainWindow::saveSessionAs);
+    file->addAction(QStringLiteral("以前的版本…"), this, &MainWindow::openVersion);
     file->addSeparator();
     file->addAction(QStringLiteral("导入音频 / MIDI 文件…"), QKeySequence(QStringLiteral("Ctrl+I")), this, &MainWindow::importAudio);
     file->addAction(QStringLiteral("导出混音（WAV）…"), QKeySequence(QStringLiteral("Ctrl+E")), this, [this] { exportMix(); });
@@ -1025,7 +1029,7 @@ int MainWindow::addMidiTrack(const QString& path, const QString& name, const QSt
 bool MainWindow::loadAudioFile(const QString& path)
 {
     if (isSessionFile(path))
-        return openSession(path);
+        return maybeSave() && openSession(path);
     // an empty selected track takes the file, otherwise it gets a track of its own
     const std::vector<chost::Track>& tracks = fSession.tracks();
     if (fSelected >= 0 && fSelected < static_cast<int>(tracks.size()) && tracks[fSelected].file.empty() && fits(fSelected, path))
@@ -1330,7 +1334,8 @@ void MainWindow::dropFiles(const QStringList& paths, int track)
 {
     if (paths.size() == 1 && isSessionFile(paths.front()))
     {
-        openSession(paths.front());
+        if (maybeSave())
+            openSession(paths.front());
         return;
     }
     if (track >= 0 && paths.size() == 1 && fits(track, paths.front()))
@@ -1791,6 +1796,8 @@ void MainWindow::showPlugins()
 
 void MainWindow::newSession()
 {
+    if (!maybeSave())
+        return;
     closeEditors();
     fHost.pause();
     fHost.removeAllPlugins();
@@ -1832,6 +1839,8 @@ bool MainWindow::openSession(const QString& path)
 
 void MainWindow::openSessionDialog()
 {
+    if (!maybeSave())
+        return;
     const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("打开工程"), {}, QStringLiteral("chost 工程 (*.chost)"));
     if (!path.isEmpty())
         openSession(path);
@@ -1844,9 +1853,11 @@ void MainWindow::saveSession()
         saveSessionAs();
         return;
     }
+    Autosave::backUp(fSessionPath); // the version saved over stays in <project>_备份
     if (fSession.save(fSessionPath.toStdString()))
     {
         fHistory->setSaved();
+        fAutosave->saved();
         statusBar()->showMessage(QStringLiteral("已保存：%1").arg(fSessionPath), 5000);
     }
     else
@@ -1855,6 +1866,11 @@ void MainWindow::saveSession()
 
 void MainWindow::saveSessionAs()
 {
+    if (QGuiApplication::platformName() == QLatin1String("offscreen") || qApp->property("chost-noninteractive").toBool())
+    {
+        showError(QStringLiteral("工程还没有文件名，不能保存。"));
+        return;
+    }
     QString path = QFileDialog::getSaveFileName(this, QStringLiteral("保存工程"), QStringLiteral("project.chost"),
                                                 QStringLiteral("chost 工程 (*.chost)"));
     if (path.isEmpty())
@@ -1864,6 +1880,98 @@ void MainWindow::saveSessionAs()
     fSessionPath = path;
     updateTitle();
     saveSession();
+}
+
+bool MainWindow::openAsUnsaved(const QString& file, const QString& projectPath)
+{
+    if (!openSession(file))
+        return false;
+    fSessionPath = projectPath;
+    fHistory->reset(true);
+    updateTitle();
+    return true;
+}
+
+void MainWindow::recoverAtStart(bool autoRecover)
+{
+    const std::optional<Autosave::Found> found = fAutosave->claim();
+    if (!found)
+    {
+        fAutosave->settle(Autosave::Outcome::Left);
+        return;
+    }
+    const bool interactive = QGuiApplication::platformName() != QLatin1String("offscreen") && !qApp->property("chost-noninteractive").toBool();
+    if (!autoRecover && !interactive)
+    {
+        fAutosave->settle(Autosave::Outcome::Left);
+        return;
+    }
+    const QString name = found->original.isEmpty() ? QStringLiteral("未命名工程") : QFileInfo(found->original).fileName();
+    bool recover = autoRecover;
+    if (!autoRecover)
+    {
+        QMessageBox box(QMessageBox::Question, QStringLiteral("chost"),
+                        QStringLiteral("上次 chost 没有正常关闭。\n\n自动备份里有工程「%1」还没保存的改动（%2 自动保存），要恢复吗？")
+                            .arg(name, found->time.toString(QStringLiteral("M月d日 HH:mm"))),
+                        QMessageBox::NoButton, this);
+        QPushButton* yes = box.addButton(QStringLiteral("恢复"), QMessageBox::AcceptRole);
+        box.addButton(QStringLiteral("不要了"), QMessageBox::RejectRole);
+        box.setDefaultButton(yes);
+        box.exec();
+        recover = box.clickedButton() == yes;
+    }
+    if (recover && openAsUnsaved(found->session, found->original))
+    {
+        fAutosave->settle(Autosave::Outcome::Recovered);
+        statusBar()->showMessage(QStringLiteral("已恢复「%1」，记得保存。").arg(name), 10000);
+        std::printf("RECOVERED %d tracks of %s\n", static_cast<int>(fSession.tracks().size()), qPrintable(name));
+        std::fflush(stdout);
+    }
+    else
+        fAutosave->settle(recover ? Autosave::Outcome::Left : Autosave::Outcome::Discarded);
+}
+
+void MainWindow::openVersion()
+{
+    const std::vector<Autosave::Found> versions = Autosave::backups(fSessionPath);
+    if (versions.empty())
+    {
+        QMessageBox::information(this, QStringLiteral("以前的版本"),
+                                 fSessionPath.isEmpty()
+                                     ? QStringLiteral("这个工程还没保存过，没有以前的版本。")
+                                     : QStringLiteral("还没有以前的版本。\n\n以后每次保存工程，被覆盖掉的那一版都会留在旁边的「%1」文件夹里（最近 10 版）。")
+                                           .arg(QFileInfo(Autosave::backupFolder(fSessionPath)).fileName()));
+        return;
+    }
+    QStringList labels;
+    for (const Autosave::Found& version : versions)
+        labels << version.time.toString(QStringLiteral("yyyy年M月d日 HH:mm:ss"));
+    bool ok = false;
+    const QString chosen = QInputDialog::getItem(this, QStringLiteral("以前的版本"),
+                                                 QStringLiteral("每次保存前的那一版。打开后，保存才会替换现在的工程："), labels, 0, false, &ok);
+    if (!ok || !maybeSave())
+        return;
+    const Autosave::Found& version = versions[static_cast<size_t>(labels.indexOf(chosen))];
+    const QString project = fSessionPath;
+    if (openAsUnsaved(version.session, project))
+        statusBar()->showMessage(QStringLiteral("已打开 %1 的版本；保存后会替换现在的工程。").arg(chosen), 10000);
+}
+
+bool MainWindow::maybeSave()
+{
+    const bool interactive = QGuiApplication::platformName() != QLatin1String("offscreen") && !qApp->property("chost-noninteractive").toBool();
+    if (!interactive || !fHistory->isModified() || fSession.tracks().empty())
+        return true;
+    const auto answer = QMessageBox::question(this, QStringLiteral("chost"), QStringLiteral("工程有改动还没保存，要保存吗？"),
+                                              QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Cancel)
+        return false;
+    if (answer == QMessageBox::Save)
+    {
+        saveSession();
+        return !fHistory->isModified(); // not saved after all: the file dialog was cancelled, or it failed
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2347,25 +2455,10 @@ void MainWindow::dropEvent(QDropEvent* event)
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    const bool interactive = QGuiApplication::platformName() != QLatin1String("offscreen") && !qApp->property("chost-noninteractive").toBool();
-    if (interactive && fHistory->isModified() && !fSession.tracks().empty())
+    if (!maybeSave())
     {
-        const auto answer = QMessageBox::question(this, QStringLiteral("chost"), QStringLiteral("工程有改动还没保存，要保存吗？"),
-                                                  QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
-        if (answer == QMessageBox::Cancel)
-        {
-            event->ignore();
-            return;
-        }
-        if (answer == QMessageBox::Save)
-        {
-            saveSession();
-            if (fHistory->isModified()) // not saved after all (cancelled the file dialog, or it failed)
-            {
-                event->ignore();
-                return;
-            }
-        }
+        event->ignore();
+        return;
     }
     if (fStemDialog)
         fStemDialog->close();

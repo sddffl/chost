@@ -16,6 +16,7 @@ class ArrangeDialog;
 class ArrangeView;
 class ChannelStrip;
 class ExportDialog;
+class Autosave;
 class History;
 class MasterDialog;
 class ScriptJob;
@@ -54,6 +55,10 @@ public:
     int addAudioTrack(const QString& path, const QString& name = {}); // a .mid makes an instrument track; -1 on error
     int addMidiTrack(const QString& path, const QString& name = {}, const QString& role = {});
     bool openSession(const QString& path);
+    // a project an earlier chost could not save before it went down: asks whether to bring it back
+    // (autoRecover: without asking, for tests)
+    void recoverAtStart(bool autoRecover);
+    void saveSessionNow() { saveSession(); }
     void selectTrack(int track);
     void separateStems(bool autoStart = false); // AI stem separation of the selected track
     void transcribe(bool allTracks, bool autoStart = false); // AI audio to MIDI
@@ -141,6 +146,10 @@ private:
     void openSessionDialog();
     void saveSession();
     void saveSessionAs();
+    void openVersion();      // one of the versions kept from before the project was saved over
+    bool maybeSave();        // unsaved changes: save, discard or (false) leave things as they are
+    // a project file opened in place of fSessionPath: saving puts it there, until then it is unsaved
+    bool openAsUnsaved(const QString& file, const QString& projectPath);
     void togglePlay();
     void stop();
     void seek(double seconds);
@@ -176,6 +185,7 @@ private:
     QPointer<ArrangeDialog> fArrangeDialog;
     QPointer<TuneDialog> fTuneDialog;
     History* fHistory = nullptr;
+    Autosave* fAutosave = nullptr;
     ScriptJob* fAnalysis = nullptr;
     bool fAnalysisTried = false; // the automatic analysis of the first audio file, once per project
     bool fAnalysisQuiet = false;

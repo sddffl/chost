@@ -63,6 +63,16 @@ jobs:
           # undo and redo in the GUI: tracks, faders, inserts and a removed insert all come back, and still play
           QT_QPA_PLATFORM=offscreen ./build/chost --file a.wav --file b.wav --test-undo $gain | tee undo.log
           grep -q 'UNDO TEST PASSED' undo.log
+          # a chost that goes down leaves its unsaved project on the side, and the next one brings it back
+          export XDG_DATA_HOME=$PWD/xdg
+          CHOST_AUTOSAVE_SECONDS=1 QT_QPA_PLATFORM=offscreen timeout -s KILL 15 ./build/chost --file a.wav --file b.wav || true
+          test -f xdg/chost/chost/autosave/slot-0/project.chost
+          QT_QPA_PLATFORM=offscreen ./build/chost --recover --screenshot recovered.png | tee recover.log
+          grep -q 'RECOVERED 2 tracks' recover.log
+          test ! -e xdg/chost/chost/autosave/slot-0 # a normal end clears it
+          # saving over a project keeps the version it replaces
+          QT_QPA_PLATFORM=offscreen ./build/chost --open s.chost --save --screenshot saved.png
+          ls s_备份/*/s.chost s_备份/*/s.carxp
 
       - name: Stem separation test
         run: |

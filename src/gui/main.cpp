@@ -25,7 +25,8 @@ int main(int argc, char* argv[])
     parser.addVersionOption();
     QCommandLineOption pluginOpt(QStringLiteral("load"), QStringLiteral("Load a plugin at startup (lv2:URI, vst3:PATH, ...)."), QStringLiteral("spec"));
     QCommandLineOption fileOpt(QStringLiteral("file"), QStringLiteral("Load an audio file as a new track at startup (repeatable)."), QStringLiteral("path"));
-    QCommandLineOption sessionOpt(QStringLiteral("session"), QStringLiteral("Open a .chost session at startup."), QStringLiteral("path"));
+    // not "session": Qt takes -session / --session for itself (desktop session management) before the parser sees it
+    QCommandLineOption sessionOpt(QStringList{QStringLiteral("open"), QStringLiteral("project")}, QStringLiteral("Open a .chost project at startup."), QStringLiteral("path"));
     QCommandLineOption shotOpt(QStringLiteral("screenshot"), QStringLiteral("Save a screenshot of the window after startup and quit."), QStringLiteral("png"));
     QCommandLineOption separateOpt(QStringLiteral("separate"), QStringLiteral("Open the AI stem separation for the selected track and start it."));
     QCommandLineOption delayOpt(QStringLiteral("screenshot-delay"), QStringLiteral("Milliseconds before the screenshot (default 1500)."), QStringLiteral("ms"), QStringLiteral("1500"));
@@ -41,14 +42,17 @@ int main(int argc, char* argv[])
     QCommandLineOption tuneOpt(QStringLiteral("tune"), QStringLiteral("Open AI pitch correction for the selected track and start it."));
     QCommandLineOption arrangeOpt(QStringLiteral("arrange"), QStringLiteral("Open AI auto-arrangement for the selected track and start it."));
     QCommandLineOption chordsOpt(QStringLiteral("arrange-chords"), QStringLiteral("Open AI auto-arrangement with these chords and start it."), QStringLiteral("chords"));
+    QCommandLineOption recoverOpt(QStringLiteral("recover"), QStringLiteral("Bring back a project a crashed chost left in the autosave, without asking."));
+    QCommandLineOption saveOpt(QStringLiteral("save"), QStringLiteral("Save the project (over the --open file) once everything is loaded."));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
         app.setProperty("chost-noninteractive", true);
 
     MainWindow window;
+    window.recoverAtStart(parser.isSet(recoverOpt));
     if (parser.isSet(sessionOpt))
         window.openSession(parser.value(sessionOpt));
     for (const QString& file : parser.values(fileOpt))
@@ -62,6 +66,8 @@ int main(int argc, char* argv[])
     if (parser.isSet(selectOpt))
         window.selectTrack(parser.value(selectOpt).toInt());
     window.show();
+    if (parser.isSet(saveOpt))
+        window.saveSessionNow();
     if (parser.isSet(notesOpt) && parser.isSet(selectOpt))
         window.editNotes(parser.value(selectOpt).toInt());
     if (parser.isSet(playOpt))

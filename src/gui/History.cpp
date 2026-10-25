@@ -58,6 +58,7 @@ void History::reset(bool modified)
 {
     fStack.clear();
     fModified = modified;
+    ++fRevision;
     fCurrent = fSession.state();
     fSession.dropUnused({&fCurrent});
     emit modifiedChanged();
@@ -80,6 +81,7 @@ void History::record(const QString& text, const QString& mergeKey)
     chost::SessionState before = fCurrent;
     fCurrent = now;
     fStack.push(new Step(*this, text, mergeKey, std::move(before), std::move(now)));
+    ++fRevision;
     dropUnused();
 }
 
@@ -88,6 +90,7 @@ void History::absorb()
     if (fApplying || fGroups > 0)
         return;
     fCurrent = fSession.state();
+    ++fRevision;
     // where the history stands: after the step just done, before the one that would be redone
     const int index = fStack.index();
     if (index > 0)
@@ -103,6 +106,7 @@ void History::apply(const chost::SessionState& state)
     fSession.restore(state);
     fCurrent = fSession.state();
     fApplying = false;
+    ++fRevision;
     emit restored();
 }
 
