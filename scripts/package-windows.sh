@@ -11,7 +11,7 @@ out="${3:?}"
 
 rm -rf "$out"
 mkdir -p "$out"
-cp "$build/chost.exe" "$build/chost-cli.exe" "$out/"
+cp "$build/chost.exe" "$build/chost-cli.exe" "$build/chost-render.exe" "$out/"
 cp "$carla"/lib/carla/* "$out/"
 
 deployqt="$(command -v windeployqt6 || command -v windeployqt-qt6 || command -v windeployqt)"

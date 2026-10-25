@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.6.0 LANGUAGES CXX)
+project(chost VERSION 0.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,34 +7,59 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(CHOST_BUILD_GUI "Build the Qt GUI" ON)
 
 # libcarla: from pkg-config on Linux, or from a Carla install/build dir given with CARLA_ROOT
+# carla: the standalone host for chost and chost-cli; carla_render: carla's engine as a plugin, for chost-render
 set(CARLA_ROOT "" CACHE PATH "Directory holding Carla headers (include/carla) and libraries (lib/carla)")
+add_library(carla_headers INTERFACE)
 add_library(carla INTERFACE)
+add_library(carla_render INTERFACE)
 if(CARLA_ROOT)
-    target_include_directories(carla INTERFACE
+    target_include_directories(carla_headers INTERFACE
         "${CARLA_ROOT}/include/carla" "${CARLA_ROOT}/include/carla/includes" "${CARLA_ROOT}/include/carla/utils")
     # MinGW links straight against the DLLs shipped in Carla's Windows release
-    foreach(name standalone2 utils)
+    foreach(name standalone2 utils host-plugin)
         string(TOUPPER "CARLA_${name}_LIB" var)
+        string(REPLACE "-" "_" var "${var}")
         find_file(${var} NAMES libcarla_${name}.dll libcarla_${name}.so libcarla_${name}.dylib
                   PATHS "${CARLA_ROOT}/lib/carla" "${CARLA_ROOT}/lib" REQUIRED NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     endforeach()
-    target_link_libraries(carla INTERFACE "${CARLA_STANDALONE2_LIB}" "${CARLA_UTILS_LIB}")
+    target_link_libraries(carla INTERFACE carla_headers "${CARLA_STANDALONE2_LIB}" "${CARLA_UTILS_LIB}")
+    # the host-plugin library holds the engine as a plugin and the host API for it, one copy of carla
+    target_link_libraries(carla_render INTERFACE carla_headers "${CARLA_HOST_PLUGIN_LIB}")
 else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(CARLA REQUIRED IMPORTED_TARGET carla-standalone carla-utils)
+    pkg_check_modules(CARLA_PLUGIN REQUIRED IMPORTED_TARGET carla-host-plugin)
     target_link_libraries(carla INTERFACE PkgConfig::CARLA)
+    target_link_libraries(carla_render INTERFACE PkgConfig::CARLA_PLUGIN)
 endif()
 
 find_package(Threads REQUIRED)
 
-add_library(chost_core STATIC src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp)
+# the core is compiled once and linked against either flavour of carla
+add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp)
+target_include_directories(chost_core_objects PUBLIC src)
+target_include_directories(chost_core_objects PRIVATE third_party/dr_libs)
+target_compile_definitions(chost_core_objects PUBLIC REAL_BUILD)
+if(CARLA_ROOT)
+    target_link_libraries(chost_core_objects PUBLIC carla_headers)
+else()
+    target_include_directories(chost_core_objects PUBLIC ${CARLA_INCLUDE_DIRS})
+endif()
+if(NOT MSVC)
+    target_compile_options(chost_core_objects PRIVATE -Wall -Wextra)
+endif()
+
+add_library(chost_core STATIC $<TARGET_OBJECTS:chost_core_objects>)
 target_include_directories(chost_core PUBLIC src)
-target_include_directories(chost_core PRIVATE third_party/dr_libs)
 target_compile_definitions(chost_core PUBLIC REAL_BUILD)
 target_link_libraries(chost_core PUBLIC carla Threads::Threads)
-if(NOT MSVC)
-    target_compile_options(chost_core PRIVATE -Wall -Wextra)
-endif()
+
+# offline mixdown: renders a session faster than real time, in its own process
+add_executable(chost-render src/render/main.cpp src/core/OfflineEngine.cpp $<TARGET_OBJECTS:chost_core_objects>)
+target_include_directories(chost-render PRIVATE src third_party/dr_libs)
+target_compile_definitions(chost-render PRIVATE REAL_BUILD)
+target_link_libraries(chost-render PRIVATE carla_render Threads::Threads)
+install(TARGETS chost-render RUNTIME DESTINATION bin)
 
 add_executable(chost-cli src/cli/main.cpp)
 target_link_libraries(chost-cli PRIVATE chost_core)
@@ -55,7 +80,11 @@ if(CHOST_BUILD_GUI)
         src/gui/InstrumentDialog.cpp src/gui/InstrumentDialog.h
         src/gui/PianoRoll.cpp src/gui/PianoRoll.h
         src/gui/Theme.cpp src/gui/Theme.h
-        src/gui/Widgets.cpp src/gui/Widgets.h)
+        src/gui/Widgets.cpp src/gui/Widgets.h
+        src/gui/RenderJob.cpp src/gui/RenderJob.h
+        src/gui/ScriptJob.cpp src/gui/ScriptJob.h
+        src/gui/ExportDialog.cpp src/gui/ExportDialog.h
+        src/gui/MasterDialog.cpp src/gui/MasterDialog.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}" CHOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(chost PRIVATE chost_core Qt6::Widgets)
     install(TARGETS chost RUNTIME DESTINATION bin)

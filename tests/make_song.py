@@ -1,6 +1,6 @@
 """Synthesises a 16 second demo song and its parts, for screenshots and the stem separation self test.
 
-    python3 tests/make_song.py <folder>
+    python3 tests/make_song.py <folder> [bpm]
 
 Writes mysong.wav (the mix) and one file per part, named like the stems of tools/chost_separate.py
 (vocals, drums, bass, guitar, piano, other, kick, snare, toms, hh, ride, crash, lead, backing).
@@ -10,7 +10,7 @@ import sys
 import wave
 
 import numpy as np
-sr=44100; bpm=120; beat=60/bpm; bars=8; n=int(sr*beat*4*bars)
+sr=44100; bpm=float(sys.argv[2]) if len(sys.argv) > 2 else 120.0; beat=60/bpm; bars=8; n=int(sr*beat*4*bars)
 t=np.arange(n)/sr
 out=sys.argv[1]
 os.makedirs(out, exist_ok=True)

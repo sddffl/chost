@@ -22,6 +22,7 @@ mkdir -p "$out/include/carla/includes" "$out/include/carla/utils" "$out/lib/carl
 unzip -q -j -o "$work/carla.zip" \
     "Carla-${version}-win64/Carla/libcarla_standalone2.dll" \
     "Carla-${version}-win64/Carla/libcarla_utils.dll" \
+    "Carla-${version}-win64/Carla/libcarla_host-plugin.dll" \
     "Carla-${version}-win64/Carla/carla-bridge-*.exe" \
     "Carla-${version}-win64/Carla/carla-discovery-*.exe" \
     -d "$out/lib/carla"

@@ -21,6 +21,8 @@ Session::Session(HostEngine& host)
 bool Session::init()
 {
     fTracks.clear();
+    fTempo = 120.0;
+    fKey.clear();
     fReady = false;
     fError.clear();
     if (!fHost.isRunning())
@@ -346,11 +348,19 @@ void Session::reroute()
 //   chost-session 1
 //   carla <file name of the .carxp, next to this file>
 //   master <id> <volume>
+//   tempo <bpm>
+//   rate <Hz>                    the engine's, the rate the players' files were prepared at
+//   key <tonic> <major|minor>    once known
 //   track <source> <fader> <volume> <muted> <solo> <insert count> <inserts...>
 //   name <track name>
 //   file <audio or MIDI file path>
 //   instrument <id>              only on instrument tracks, -1 without an instrument
 //   role <stem id>               optional
+
+void Session::setTempo(double bpm)
+{
+    fTempo = bpm >= 20.0 && bpm <= 400.0 ? bpm : 120.0;
+}
 
 bool Session::save(const std::string& path)
 {
@@ -373,6 +383,10 @@ bool Session::save(const std::string& path)
     out << "chost-session 1\n";
     out << "carla " << carlaPath.filename().u8string() << "\n";
     out << "master " << fMaster << " " << fMasterVolume << "\n";
+    out << "tempo " << fTempo << "\n";
+    out << "rate " << static_cast<long>(fHost.sampleRate()) << "\n";
+    if (!fKey.empty())
+        out << "key " << fKey << "\n";
     for (const Track& t : fTracks)
     {
         out << "track " << t.source << " " << t.fader << " " << t.volume << " " << t.muted << " " << t.solo << " "
@@ -404,6 +418,8 @@ bool Session::load(const std::string& path)
     uint master = 0;
     float masterVolume = 1.0f;
     std::string carlaFile;
+    double tempo = 120.0;
+    std::string songKey;
     while (std::getline(in, line))
     {
         const auto space = line.find(' ');
@@ -415,6 +431,10 @@ bool Session::load(const std::string& path)
             carlaFile = rest;
         else if (key == "master")
             fields >> master >> masterVolume;
+        else if (key == "tempo")
+            fields >> tempo;
+        else if (key == "key")
+            songKey = rest;
         else if (key == "track")
         {
             Track t;
@@ -453,6 +473,8 @@ bool Session::load(const std::string& path)
     fTracks = tracks;
     fMaster = master;
     fMasterVolume = masterVolume;
+    setTempo(tempo);
+    fKey = songKey;
     fReady = true;
     reroute();
     return true;

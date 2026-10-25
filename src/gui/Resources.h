@@ -11,6 +11,9 @@ namespace resources {
 QString toolScript(const QString& name);   // tools/<name>
 QString soundFile(const QString& name);    // sounds/<name>, resources/sounds/<name> in the source tree
 
+// chost-render, the offline mixdown tool next to chost; empty when missing.
+QString renderTool();
+
 // The Python that has the AI components, as set up in the stem separation window; empty until then.
 QString aiPython();
 void setAiPython(const QString& python);

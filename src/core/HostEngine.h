@@ -87,6 +87,10 @@ public:
     void setEventCallback(HostEventFunc func) { fEventFunc = std::move(func); }
 
     bool start(const std::string& driver, Mode mode = Mode::Rack, const std::string& device = {});
+    // Offline (chost-render only, OfflineEngine.cpp): carla's engine runs inside chost as a patchbay plugin and
+    // renderBlock() drives it one block at a time, as fast as the computer can, with the transport playing.
+    bool startOffline(double sampleRate, uint32_t bufferSize);
+    void renderBlock(float* left, float* right, uint32_t frames);
     Mode mode() const { return fMode; }
     void stop();
     bool isRunning() const;
@@ -171,6 +175,9 @@ private:
 
     CarlaHostHandle fHandle = nullptr;
     Mode fMode = Mode::Rack;
+    std::function<void()> fOfflineStop; // tears down the offline engine
+    std::function<void()> fOfflineIdle; // the offline engine's idle work (file reading, graph changes)
+    void* fOffline = nullptr;           // OfflineEngine.cpp's state
     mutable std::mutex fPatchbayMutex;
     std::map<uint, Group> fGroups;
     std::vector<uint> fConnections;

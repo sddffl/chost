@@ -1,6 +1,6 @@
 # chost：基于 Carla 的独立音频插件宿主
 
-`chost` 是一个直接链接 libcarla 的独立插件宿主，有图形界面版（`chost`）和命令行版（`chost-cli`），支持 Windows 和 Linux。
+`chost` 是一个直接链接 libcarla 的独立插件宿主，有图形界面版（`chost`）、命令行版（`chost-cli`）和离线混音工具（`chost-render`），支持 Windows 和 Linux。
 
 ## 界面
 
@@ -12,6 +12,7 @@
 - 点时间线定位，空格键播放/暂停，Ctrl+滚轮缩放，滚轮上下滚动轨道，Shift+滚轮左右滚动
 - 也可以拖 MIDI 文件（.mid），会变成一条乐器轨，轨道上直接显示音符
 - 右键轨道：重命名、替换音频、AI 自动分轨、AI 转 MIDI、换乐器、添加插入效果、删除
+- 走带栏显示速度（BPM）和调性：导入第一首歌时 AI 会自动识别，不对的话直接改数字，或点 **识别** 重新听选中的音轨
 - 截图里是“自动分轨”之后的样子：原曲和被细分的“人声”“鼓”自动静音，主唱/和声、底鼓/军鼓等放在各自分组下面
 
 ## AI 自动分轨
@@ -66,6 +67,25 @@ MIDI 乐器轨默认用自带的 General MIDI 音色（TimGM6mb）播放，会�
 - 点音符或左边的琴键会用这条轨的乐器发声；改动马上生效，播放时就能听到
 - 改过的 MIDI 存成 `<原名>_edit.mid`，不会覆盖原文件；鼓轨左边显示鼓件名称
 
+## 导出混音
+
+**文件 → 导出混音（WAV）…**（Ctrl+E）把整个工程按现在听到的样子（音量、静音、独奏、所有插件）混成一个 WAV 文件，可选 24 位、16 位或 32 位浮点。导出不用等歌曲播完，比实时播放快得多；勾选“同时把每条轨道单独导出”还会在旁边的 `_分轨` 文件夹里给每条轨道各导出一个文件。
+
+导出由单独的 `chost-render` 程序完成，就算某个插件在导出时崩溃，chost 本身也不会跟着退出。
+
+## AI 母带
+
+**AI → AI 母带…**（或走带栏的 **AI 母带** 按钮）把整首混音做成可以发布的母带，像母带工程师一样分四步：
+
+1. 音色平衡：用线性相位 EQ 把整体频谱往平衡的方向轻轻推（最多几 dB），选了参考歌曲就往参考歌曲的音色靠
+2. 120 Hz 以下的低频收成单声道，低音在手机和大音箱上都稳
+3. 轻微的整体压缩（glue），让声音更“粘”在一起
+4. 推到目标响度（按 ITU-R BS.1770 / EBU R128 测量，各音乐平台都用这个标准）并用 4 倍过采样的真峰值限制器把峰值压在 -1 dB 以下
+
+风格可选 自然 / 温暖 / 明亮 / 有力；响度可选 流媒体 -14 LUFS、短视频 -10 LUFS、最响 -8 LUFS，或和参考歌曲一样响。做完会显示前后的响度、峰值和 EQ 曲线；点 **放到新轨道上试听对比**，再用 **A/B** 按钮在母带和原混音之间切换。
+
+识别速度调性和 AI 母带用的是 AI 分轨装好的那套 AI 组件，第一次要先在“AI 分轨”窗口里点 **安装 AI 组件**。
+
 ## 你自己的插件
 
 插件浏览器下面的 **插件文件夹…** 可以添加你装插件的文件夹（比如 `D:\VST`），VST2、VST3、LV2 都会扫描进来。双击插件就加到选中轨道的插入效果里，单击插槽打开插件自己的界面。
@@ -81,7 +101,8 @@ chost 会在后台逐个识别 VST 插件（名称、厂商、是乐器还是效
 - 参数面板：每个参数一个滑块，输出类参数（电平、增益衰减等）实时刷新
 - 打开插件自带的界面窗口
 - 加载音频文件（WAV/FLAC/MP3/OGG 等）当信号源，输出电平表
-- 保存和打开 `.chost` 工程（旁边会生成同名的 `.carxp`，里面是插件和它们的设置）
+- 保存和打开 `.chost` 工程（旁边会生成同名的 `.carxp`，里面是插件和它们的设置；速度和调性也存在工程里）
+- 导出混音和分轨文件（离线渲染，比实时快）
 - 音频驱动：Windows 上为 DirectSound 和 ASIO（Carla 2.5 的 Windows 版没有 WASAPI），Linux 上为 PulseAudio/JACK/ALSA，另有用于无声卡测试的 Dummy（Dummy 不支持多轨混音，没有声音）
 
 ## Windows 下载
@@ -138,6 +159,12 @@ chost-cli mix --open song.chost
 chost-cli mix --driver PulseAudio --midi bass.mid@sf2:resources/sounds/TimGM6mb.sf2   # MIDI 乐器轨
 ```
 
+离线混音（把 `.chost` 工程混成 WAV，`--solo` 只混某几条轨道，`--mute` 去掉某几条）：
+
+```sh
+chost-render --session song.chost --output mix.wav --bits 24
+```
+
 图形界面版启动时也可以带参数：`chost --file a.wav --file b.mid --load <插件> --session <工程.chost>`。
 
 ## 已知问题
@@ -152,7 +179,9 @@ chost-cli mix --driver PulseAudio --midi bass.mid@sf2:resources/sounds/TimGM6mb.
 src/core/             宿主核心：封装 libcarla、多轨工程（Session）、插件扫描、音频文件转换
 src/gui/              Qt 图形界面
 src/cli/              命令行版
-tools/                AI 辅助脚本（chost_separate.py：自动分轨，chost_transcribe.py：转 MIDI）
+src/render/           chost-render：离线混音
+tools/                AI 辅助脚本（chost_separate.py：自动分轨，chost_transcribe.py：转 MIDI，
+                      chost_analyze.py：速度和调性，chost_master.py：母带）
 tools/models/         Basic Pitch 音高识别模型（Apache-2.0）
 resources/sounds/     自带的 General MIDI 音色 TimGM6mb（GPL-2）
 tests/                测试用的音频生成和转 MIDI 准确度检查脚本

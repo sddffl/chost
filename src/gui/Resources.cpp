@@ -26,6 +26,15 @@ QString toolScript(const QString& name)
     return firstExisting(candidates);
 }
 
+QString renderTool()
+{
+#ifdef _WIN32
+    return firstExisting({QCoreApplication::applicationDirPath() + QStringLiteral("/chost-render.exe")});
+#else
+    return firstExisting({QCoreApplication::applicationDirPath() + QStringLiteral("/chost-render")});
+#endif
+}
+
 QString soundFile(const QString& name)
 {
     QStringList candidates{QCoreApplication::applicationDirPath() + QStringLiteral("/sounds/") + name};

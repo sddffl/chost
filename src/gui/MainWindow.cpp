@@ -1,11 +1,15 @@
 #include "MainWindow.h"
 
+#include "ExportDialog.h"
 #include "InstrumentDialog.h"
 #include "Instruments.h"
+#include "MasterDialog.h"
 #include "PianoRoll.h"
 #include "PluginDiscovery.h"
 #include "PluginWindows.h"
+#include "RenderJob.h"
 #include "Resources.h"
+#include "ScriptJob.h"
 #include "StemDialog.h"
 #include "Theme.h"
 #include "TranscribeDialog.h"
@@ -17,6 +21,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QDragEnterEvent>
 #include <QFile>
 #include <QFileDialog>
@@ -34,6 +39,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QShortcut>
+#include <QStandardPaths>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTimer>
@@ -48,7 +54,6 @@
 
 using chost::HostEvent;
 
-static constexpr double kTempo = 120.0;
 static const char* const kPluginFoldersKey = "plugins/folders";
 
 static QLabel* sectionTitle(const QString& text)
@@ -93,6 +98,33 @@ static QString guessRole(const QString& name)
     return {};
 }
 
+// Tracks that hold a master made by AI mastering, kept out of the next mix to master.
+static const char* const kMasterRole = "master";
+
+// "A minor" -> "A 小调"
+static QString keyText(const std::string& key)
+{
+    const QString k = QString::fromStdString(key);
+    if (k.isEmpty())
+        return QStringLiteral("调性 ?");
+    const QString tonic = k.section(QLatin1Char(' '), 0, 0);
+    return tonic + (k.endsWith(QLatin1String("minor")) ? QStringLiteral(" 小调") : QStringLiteral(" 大调"));
+}
+
+// the relative key shares every note: "C major" <-> "A minor"
+static QString relativeKeyText(const std::string& key)
+{
+    static const QStringList names{QStringLiteral("C"), QStringLiteral("C#"), QStringLiteral("D"), QStringLiteral("Eb"),
+                                   QStringLiteral("E"), QStringLiteral("F"), QStringLiteral("F#"), QStringLiteral("G"),
+                                   QStringLiteral("Ab"), QStringLiteral("A"), QStringLiteral("Bb"), QStringLiteral("B")};
+    const QString k = QString::fromStdString(key);
+    const int tonic = names.indexOf(k.section(QLatin1Char(' '), 0, 0));
+    if (tonic < 0)
+        return {};
+    const bool minor = k.endsWith(QLatin1String("minor"));
+    return keyText((names[(tonic + (minor ? 3 : 9)) % 12] + (minor ? QStringLiteral(" major") : QStringLiteral(" minor"))).toStdString());
+}
+
 static const QString kImportFilter = QStringLiteral(
     "音频和 MIDI (*.wav *.flac *.ogg *.mp3 *.aiff *.aif *.mid *.midi);;音频文件 (*.wav *.flac *.ogg *.mp3 *.aiff *.aif);;"
     "MIDI 文件 (*.mid *.midi);;所有文件 (*)");
@@ -114,7 +146,7 @@ MainWindow::MainWindow(QWidget* parent)
     auto* top = new QSplitter(Qt::Horizontal);
     top->addWidget(buildInspector());
     fArrange = new ArrangeView;
-    fArrange->setTempo(kTempo);
+    fArrange->setTempo(fSession.tempo());
     top->addWidget(fArrange);
     top->addWidget(buildBrowser());
     top->setStretchFactor(1, 1);
@@ -148,6 +180,24 @@ MainWindow::MainWindow(QWidget* parent)
     connect(fTimer, &QTimer::timeout, this, &MainWindow::tick);
     fTimer->start(30);
 
+    fAnalysis = new ScriptJob(this);
+    connect(fAnalysis, &ScriptJob::result, this, [this](const QString& key, const QString& value) {
+        if (key == QLatin1String("TEMPO"))
+            setTempo(value.section(QLatin1Char('\t'), 0, 0).toDouble());
+        else if (key == QLatin1String("KEY"))
+            fSession.setKey(value.section(QLatin1Char('\t'), 0, 0).toStdString());
+        refreshSongInfo();
+    });
+    connect(fAnalysis, &ScriptJob::finished, this, [this](bool ok, const QString& message) {
+        if (ok)
+            statusBar()->showMessage(QStringLiteral("识别结果：%1 BPM，%2（也可能是 %3）。不对的话可以在上方直接改速度。")
+                                         .arg(fSession.tempo(), 0, 'f', 1)
+                                         .arg(keyText(fSession.key()), relativeKeyText(fSession.key())),
+                                     12000);
+        else if (!fAnalysisQuiet)
+            showError(QStringLiteral("没能识别速度和调性：%1").arg(message));
+    });
+
     fDiscovery = new PluginDiscovery(this);
     connect(fDiscovery, &PluginDiscovery::progress, this, [this](int done, int total, const QString& name) {
         if (done < total)
@@ -160,6 +210,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     startEngine(QString::fromStdString(chost::defaultAudioDriver()));
     rescanPlugins();
+    refreshSongInfo();
     updateTitle();
 }
 
@@ -169,6 +220,8 @@ MainWindow::~MainWindow()
     delete fStemDialog;
     delete fTranscribeDialog;
     delete fPianoRoll;
+    delete fExportDialog;
+    delete fMasterDialog;
     closeEditors();
     fHost.setEventCallback(nullptr);
     fHost.stop();
@@ -186,6 +239,7 @@ void MainWindow::buildMenus()
     file->addAction(QStringLiteral("工程另存为…"), QKeySequence::SaveAs, this, &MainWindow::saveSessionAs);
     file->addSeparator();
     file->addAction(QStringLiteral("导入音频 / MIDI 文件…"), QKeySequence(QStringLiteral("Ctrl+I")), this, &MainWindow::importAudio);
+    file->addAction(QStringLiteral("导出混音（WAV）…"), QKeySequence(QStringLiteral("Ctrl+E")), this, [this] { exportMix(); });
     file->addSeparator();
     file->addAction(QStringLiteral("退出"), QKeySequence::Quit, this, &QWidget::close);
 
@@ -216,6 +270,9 @@ void MainWindow::buildMenus()
     ai->addAction(QStringLiteral("转 MIDI（选中轨道）…"), QKeySequence(QStringLiteral("Ctrl+Shift+M")), this, [this] { transcribe(false); });
     ai->addAction(QStringLiteral("转 MIDI（多条轨道）…"), this, [this] { transcribe(true); });
     ai->addAction(QStringLiteral("MIDI 轨全部换成真实音源"), this, &MainWindow::applyInstruments);
+    ai->addSeparator();
+    ai->addAction(QStringLiteral("识别速度和调性"), this, [this] { analyzeSong(); });
+    ai->addAction(QStringLiteral("AI 母带…"), QKeySequence(QStringLiteral("Ctrl+Shift+E")), this, [this] { masterMix(); });
 }
 
 void MainWindow::buildTransport()
@@ -246,9 +303,24 @@ void MainWindow::buildTransport()
     fBarsLcd->setObjectName(QStringLiteral("lcdSmall"));
     fBarsLcd->setToolTip(QStringLiteral("小节.拍.十六分音符"));
     bar->addWidget(fBarsLcd);
-    auto* tempo = new QLabel(QStringLiteral("%1 BPM · 4/4").arg(kTempo, 0, 'f', 1));
-    tempo->setObjectName(QStringLiteral("lcdSmall"));
-    bar->addWidget(tempo);
+    fTempoBox = new QDoubleSpinBox;
+    fTempoBox->setObjectName(QStringLiteral("lcdSmall"));
+    fTempoBox->setRange(20.0, 400.0);
+    fTempoBox->setDecimals(1);
+    fTempoBox->setSuffix(QStringLiteral(" BPM"));
+    fTempoBox->setKeyboardTracking(false);
+    fTempoBox->setToolTip(QStringLiteral("歌曲速度（每分钟拍数）。导入音频时会自动识别，也可以自己改"));
+    fTempoBox->setValue(fSession.tempo());
+    bar->addWidget(fTempoBox);
+    connect(fTempoBox, &QDoubleSpinBox::valueChanged, this, &MainWindow::setTempo);
+    fKeyLabel = new QLabel;
+    fKeyLabel->setObjectName(QStringLiteral("lcdSmall"));
+    bar->addWidget(fKeyLabel);
+    auto* analyze = new QToolButton;
+    analyze->setText(QStringLiteral("识别"));
+    analyze->setToolTip(QStringLiteral("AI 识别选中音轨（或第一条音轨）的速度和调性"));
+    bar->addWidget(analyze);
+    connect(analyze, &QToolButton::clicked, this, [this] { analyzeSong(); });
 
     bar->addSeparator();
     auto* stems = new QToolButton;
@@ -261,6 +333,11 @@ void MainWindow::buildTransport()
     midi->setToolTip(QStringLiteral("把音轨（最好是分好的单个乐器）转成 MIDI 乐器轨"));
     bar->addWidget(midi);
     connect(midi, &QToolButton::clicked, this, [this] { transcribe(true); });
+    auto* mastering = new QToolButton;
+    mastering->setText(QStringLiteral("AI 母带"));
+    mastering->setToolTip(QStringLiteral("把整首混音做成可以发布的母带：音色平衡、压缩、响度标准"));
+    bar->addWidget(mastering);
+    connect(mastering, &QToolButton::clicked, this, [this] { masterMix(); });
 
     auto* spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -562,7 +639,7 @@ void MainWindow::tick()
                           .arg(ms / 60000 % 60, 2, 10, QLatin1Char('0'))
                           .arg(ms / 1000 % 60, 2, 10, QLatin1Char('0'))
                           .arg(ms % 1000, 3, 10, QLatin1Char('0')));
-    const double beats = seconds * kTempo / 60.0;
+    const double beats = seconds * fSession.tempo() / 60.0;
     const int sixteenths = static_cast<int>(beats * 4.0);
     fBarsLcd->setText(QStringLiteral("%1. %2. %3").arg(sixteenths / 16 + 1, 3).arg(sixteenths / 4 % 4 + 1).arg(sixteenths % 4 + 1));
 
@@ -842,6 +919,9 @@ int MainWindow::addAudioTrack(const QString& path, const QString& name)
     }
     fSelected = track;
     refreshTracks();
+    // the first song in a project: find its tempo and key in the background
+    if (!fAnalysisTried && fSession.key().empty() && !resources::aiPython().isEmpty())
+        analyzeSong(true);
     return track;
 }
 
@@ -1392,7 +1472,7 @@ void MainWindow::transcribe(bool allTracks, bool autoStart)
         return;
     }
     delete fTranscribeDialog;
-    fTranscribeDialog = new TranscribeDialog(sources, kTempo, this);
+    fTranscribeDialog = new TranscribeDialog(sources, fSession.tempo(), this);
 
     // the drum parts of one run end up on one track, so a single drum instrument plays the whole kit
     struct Part { QString source, midi; };
@@ -1640,7 +1720,9 @@ void MainWindow::newSession()
     fColours.clear();
     fSelected = -1;
     fSessionPath.clear();
+    fAnalysisTried = false;
     refreshTracks();
+    refreshSongInfo();
     updateTitle();
     seek(0.0);
 }
@@ -1662,7 +1744,9 @@ bool MainWindow::openSession(const QString& path)
     }
     fColours.clear();
     fSelected = -1;
+    fAnalysisTried = !fSession.key().empty();
     refreshTracks();
+    refreshSongInfo();
     updateTitle();
     seek(0.0);
     return !fSessionPath.isEmpty();
@@ -1699,6 +1783,198 @@ void MainWindow::saveSessionAs()
     fSessionPath = path;
     updateTitle();
     saveSession();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// tempo and key, export, mastering
+
+void MainWindow::setTempo(double bpm)
+{
+    if (bpm <= 0.0)
+        return;
+    fSession.setTempo(bpm);
+    fArrange->setTempo(fSession.tempo());
+    refreshSongInfo();
+}
+
+void MainWindow::refreshSongInfo()
+{
+    {
+        const QSignalBlocker blocker(fTempoBox);
+        fTempoBox->setValue(fSession.tempo());
+    }
+    fArrange->setTempo(fSession.tempo());
+    fKeyLabel->setText(keyText(fSession.key()) + QStringLiteral(" · 4/4"));
+    fKeyLabel->setToolTip(fSession.key().empty()
+                              ? QStringLiteral("调性还不知道：点“识别”让 AI 听一下")
+                              : QStringLiteral("调性：%1（关系调 %2，用的音完全一样）").arg(keyText(fSession.key()), relativeKeyText(fSession.key())));
+}
+
+void MainWindow::analyzeSong(bool quiet)
+{
+    if (fAnalysis->isRunning())
+        return;
+    // the selected audio track, or the first one: usually the whole song
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    int track = -1;
+    if (fSelected >= 0 && fSelected < static_cast<int>(tracks.size()) && tracks[fSelected].kind == chost::TrackKind::Audio
+        && !tracks[fSelected].file.empty())
+        track = fSelected;
+    for (size_t i = 0; track < 0 && i < tracks.size(); ++i)
+        if (tracks[i].kind == chost::TrackKind::Audio && !tracks[i].file.empty() && tracks[i].role != kMasterRole)
+            track = static_cast<int>(i);
+    if (track < 0)
+    {
+        if (!quiet)
+            showError(QStringLiteral("先导入一首歌（音频文件），再识别速度和调性。"));
+        return;
+    }
+    fAnalysisTried = true;
+    fAnalysisQuiet = quiet;
+    statusBar()->showMessage(QStringLiteral("正在识别速度和调性：%1…").arg(QString::fromStdString(tracks[track].name)));
+    fAnalysis->start(QStringLiteral("chost_analyze.py"), {QStringLiteral("--input"), QString::fromStdString(tracks[track].file)});
+}
+
+QString MainWindow::projectName() const
+{
+    if (!fSessionPath.isEmpty())
+        return QFileInfo(fSessionPath).completeBaseName();
+    for (const chost::Track& t : fSession.tracks())
+        if (t.kind == chost::TrackKind::Audio && !t.file.empty() && t.role != kMasterRole)
+            return QFileInfo(QString::fromStdString(t.file)).completeBaseName();
+    return QStringLiteral("mix");
+}
+
+QString MainWindow::outputFolder() const
+{
+    if (!fSessionPath.isEmpty())
+        return QFileInfo(fSessionPath).absolutePath();
+    const QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    return QDir(music.isEmpty() ? QDir::homePath() : music).filePath(QStringLiteral("chost"));
+}
+
+RenderSnapshot MainWindow::renderSnapshot(const QString& name)
+{
+    RenderSnapshot snapshot;
+    const QString folder = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/render");
+    if (!QDir().mkpath(folder))
+    {
+        snapshot.error = QStringLiteral("没法写入 %1").arg(folder);
+        return snapshot;
+    }
+    // one file per window: an export and a mastering may run at the same time
+    const QString path = folder + QLatin1Char('/') + name + QStringLiteral(".chost");
+    if (!fSession.isReady() || !fSession.save(path.toStdString()))
+    {
+        snapshot.error = QString::fromStdString(fSession.lastError());
+        return snapshot;
+    }
+    snapshot.session = path;
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    for (size_t i = 0; i < tracks.size(); ++i)
+        if (tracks[i].role == kMasterRole)
+            snapshot.masters << static_cast<int>(i);
+    return snapshot;
+}
+
+void MainWindow::exportMix(bool autoStart)
+{
+    if (fSession.tracks().empty())
+    {
+        showError(QStringLiteral("工程里还没有轨道，没有可以导出的。"));
+        return;
+    }
+    if (!fExportDialog)
+    {
+        std::vector<ExportDialog::Track> tracks;
+        const std::vector<chost::Track>& all = fSession.tracks();
+        for (size_t i = 0; i < all.size(); ++i)
+            if (!all[i].muted && all[i].role != kMasterRole)
+                tracks.push_back({static_cast<int>(i), QString::fromStdString(all[i].name)});
+        const QString path = QDir(outputFolder()).filePath(projectName() + QStringLiteral(".wav"));
+        fExportDialog = new ExportDialog(path, tracks, [this] { return renderSnapshot(QStringLiteral("export")); }, this);
+        fExportDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(fExportDialog, &ExportDialog::exported, this, [this](bool ok, const QString& path) {
+            if (ok)
+                statusBar()->showMessage(QStringLiteral("已导出：%1").arg(QDir::toNativeSeparators(path)), 8000);
+        });
+    }
+    fExportDialog->show();
+    fExportDialog->raise();
+    fExportDialog->activateWindow();
+    fExportDialog->setAutoStart(autoStart);
+}
+
+void MainWindow::masterMix(bool autoStart)
+{
+    bool any = false;
+    for (const chost::Track& t : fSession.tracks())
+        any = any || (t.role != kMasterRole && !t.file.empty());
+    if (!any)
+    {
+        showError(QStringLiteral("工程里还没有可以做母带的音频或 MIDI 轨道。"));
+        return;
+    }
+    if (!fMasterDialog)
+    {
+        const QString path = QDir(outputFolder()).filePath(projectName() + QStringLiteral("_母带.wav"));
+        fMasterDialog = new MasterDialog(path, [this] { return renderSnapshot(QStringLiteral("master")); }, this);
+        fMasterDialog->setAttribute(Qt::WA_DeleteOnClose);
+        // the master track of an earlier run goes: the mix to master is without it, and its file is
+        // about to be written again
+        auto removeMasters = [this] {
+            bool removed = false;
+            for (int i = static_cast<int>(fSession.tracks().size()) - 1; i >= 0; --i)
+                if (fSession.tracks()[i].role == kMasterRole)
+                {
+                    if (!removed)
+                        closeEditors();
+                    fClips.remove(QString::fromStdString(fSession.tracks()[i].file));
+                    fSession.removeTrack(i);
+                    if (i < static_cast<int>(fColours.size()))
+                        fColours.erase(fColours.begin() + i);
+                    removed = true;
+                }
+            if (removed)
+            {
+                fSelected = -1;
+                refreshTracks();
+                refreshMixState();
+            }
+        };
+        connect(fMasterDialog, &MasterDialog::aboutToStart, this, removeMasters);
+        connect(fMasterDialog, &MasterDialog::compareRequested, this, [this, removeMasters](const QString& path) {
+            fAnalysisTried = true; // a master is no song to analyse
+            removeMasters();
+            const int track = addAudioTrack(path, QStringLiteral("母带"));
+            if (track >= 0)
+                fSession.setRole(track, kMasterRole);
+            refreshTracks();
+        });
+        connect(fMasterDialog, &MasterDialog::listen, this, &MainWindow::listenToMaster);
+        connect(fMasterDialog, &MasterDialog::playToggled, this, &MainWindow::togglePlay);
+        connect(fMasterDialog, &MasterDialog::mastered, this, [this](bool ok, const QString& path) {
+            if (ok)
+                statusBar()->showMessage(QStringLiteral("母带完成：%1").arg(QDir::toNativeSeparators(path)), 8000);
+        });
+    }
+    fMasterDialog->show();
+    fMasterDialog->raise();
+    fMasterDialog->activateWindow();
+    fMasterDialog->setAutoStart(autoStart);
+}
+
+// A/B: the master alone (soloed), or the mix as it was (master muted, the solo off)
+void MainWindow::listenToMaster(bool master)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    for (size_t i = 0; i < tracks.size(); ++i)
+        if (tracks[i].role == kMasterRole)
+        {
+            fSession.setSolo(static_cast<int>(i), master);
+            fSession.setMuted(static_cast<int>(i), !master);
+        }
+    refreshMixState();
 }
 
 void MainWindow::updateTitle()

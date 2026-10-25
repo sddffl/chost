@@ -56,6 +56,10 @@ jobs:
           mix --track a.wav --track b.wav --track a.wav --insert 0:$gain --insert 2:$gain --remove-track 1 | grep -q 'master peak 0.97'
           mix --track a.wav --track b.wav --insert 1:$gain --mute 0 --volume 1=0.5 --save s.chost | grep -q 'master peak 0.24'
           mix --open s.chost | grep -q 'master peak 0.24'
+          # the same session mixed down offline by chost-render, faster than real time
+          ./build/chost-render --session s.chost --output render.wav --seconds 3 | tee render.log
+          grep -P '^DONE render\.wav\t3\.00\t-12\.\d' render.log
+          ./build/chost-render --session s.chost --output none.wav --seconds 3 --mute 1 | grep -P '^DONE .*\t-120\.0'
 
       - name: Stem separation test
         run: |
@@ -88,6 +92,23 @@ jobs:
               --screenshot pianoroll.png --screenshot-delay 3000
           test -f pianoroll-1.png
 
+      - name: Tempo, key and mastering test
+        run: |
+          py=$PWD/ai-env/bin/python
+          python3 tests/make_song.py fast 137
+          $py tools/chost_analyze.py --input fast/mysong.wav | tee analyze.log
+          grep -P '^TEMPO 137\.0\t' analyze.log
+          grep -E '^KEY (C major|A minor)' analyze.log
+          $py tools/chost_master.py --input song/mysong.wav --output master.wav --style warm | tee master.log
+          # -14 LUFS and the true peak at most -1 dB
+          awk -F'[ \t]' '/^AFTER/ { ok = $2 > -14.3 && $2 < -13.7 && $3 <= -1.0 } END { exit !ok }' master.log
+          # export and mastering from the GUI, both rendering through chost-render
+          CHOST_AI_PYTHON=$py HOME=$PWD/home QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file song/mysong.wav --file song/bass.wav --export-mix --master \
+                  --screenshot master.png --screenshot-delay 40000
+          test -f home/Music/chost/mysong.wav
+          test -f home/Music/chost/mysong_母带.wav
+
       - name: Plugin discovery test
         run: |
           # carla's discovery tool tells instruments from effects; carla ships VST2 plugins of both kinds
@@ -103,6 +124,7 @@ jobs:
             stems*.png
             midi*.png
             pianoroll*.png
+            master*.png
 
   windows:
     runs-on: windows-latest
@@ -155,6 +177,12 @@ jobs:
           # MIDI tracks with the bundled sound font load on Windows too
           ./chost-cli.exe mix --driver Dummy --midi ../../tests/data/notes.mid@sf2:sounds/TimGM6mb.sf2 --seconds 1 | tee ../../midi.log
           grep -q 'program' ../../midi.log
+          # offline mixdown: a session saved on the Dummy driver, rendered by chost-render
+          ./chost-cli.exe mix --driver Dummy --track ../../tone.wav --track ../../tone.wav --seconds 1 --save ../../w.chost
+          ./chost-render.exe --session ../../w.chost --output ../../w.wav | tee ../../render.log
+          grep -q '^DONE' ../../render.log
+          test -f tools/chost_analyze.py
+          test -f tools/chost_master.py
 
       - uses: actions/upload-artifact@v4
         with:

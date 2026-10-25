@@ -65,6 +65,13 @@ public:
     void setSolo(int track, bool solo);
     void setMasterVolume(float volume);
 
+    // The song's tempo (the grid, bars and beats, the tempo of new MIDI) and key, e.g. "A minor";
+    // found by the analysis or typed in. The key is empty until known.
+    double tempo() const { return fTempo; }
+    void setTempo(double bpm);
+    const std::string& key() const { return fKey; }
+    void setKey(const std::string& key) { fKey = key; }
+
     // A .chost file is a small text file next to a Carla .carxp holding the plugins and their state.
     bool save(const std::string& path);
     bool load(const std::string& path);
@@ -83,6 +90,8 @@ private:
     std::vector<Track> fTracks;
     uint fMaster = 0;
     float fMasterVolume = 1.0f;
+    double fTempo = 120.0;
+    std::string fKey;
     bool fReady = false;
     std::string fError;
 };

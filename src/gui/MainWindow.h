@@ -14,11 +14,16 @@
 
 class ArrangeView;
 class ChannelStrip;
+class ExportDialog;
+class MasterDialog;
+class ScriptJob;
+struct RenderSnapshot;
 class InsertRack;
 class PianoRollDialog;
 class PluginDiscovery;
 class PluginEditor;
 class QComboBox;
+class QDoubleSpinBox;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
@@ -54,6 +59,9 @@ public:
     void play();
     void applyInstruments();   // every MIDI track gets the instrument set for its kind of part
     void instrumentSettings();
+    void exportMix(bool autoStart = false);   // File > Export mixdown
+    void masterMix(bool autoStart = false);   // AI > AI mastering
+    void analyzeSong(bool quiet = false);     // tempo and key of the selected (or first) audio track
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -133,6 +141,13 @@ private:
     void showError(const QString& what);
     void updateTitle();
 
+    RenderSnapshot renderSnapshot(const QString& name); // the project saved for chost-render, as <name>.chost
+    QString outputFolder() const;    // where exports go by default
+    QString projectName() const;
+    void setTempo(double bpm);
+    void refreshSongInfo();          // tempo and key in the transport bar
+    void listenToMaster(bool master);
+
     chost::HostEngine fHost;
     chost::Session fSession{fHost};
     std::vector<chost::PluginEntry> fPluginFiles; // as scanned: VST files by name
@@ -147,11 +162,18 @@ private:
     QPointer<StemDialog> fStemDialog;
     QPointer<TranscribeDialog> fTranscribeDialog;
     QPointer<PianoRollDialog> fPianoRoll;
+    QPointer<ExportDialog> fExportDialog;
+    QPointer<MasterDialog> fMasterDialog;
+    ScriptJob* fAnalysis = nullptr;
+    bool fAnalysisTried = false; // the automatic analysis of the first audio file, once per project
+    bool fAnalysisQuiet = false;
 
     // transport
     QToolButton* fPlayButton = nullptr;
     QLabel* fTimeLcd = nullptr;
     QLabel* fBarsLcd = nullptr;
+    QDoubleSpinBox* fTempoBox = nullptr;
+    QLabel* fKeyLabel = nullptr;
     QComboBox* fDriverBox = nullptr;
     QLabel* fDspLabel = nullptr;
 

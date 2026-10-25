@@ -425,6 +425,13 @@ bool HostEngine::start(const std::string& driver, Mode mode, const std::string& 
 
 void HostEngine::stop()
 {
+    if (fOfflineStop)
+    {
+        auto offlineStop = std::move(fOfflineStop);
+        fOfflineStop = nullptr;
+        offlineStop();
+        return;
+    }
     if (fHandle == nullptr || !carla_is_engine_running(fHandle))
         return;
     carla_set_engine_about_to_close(fHandle);
@@ -437,6 +444,11 @@ bool HostEngine::isRunning() const { return fHandle != nullptr && carla_is_engin
 
 void HostEngine::idle()
 {
+    if (fOfflineIdle)
+    {
+        fOfflineIdle();
+        return;
+    }
     if (isRunning())
         carla_engine_idle(fHandle);
 }

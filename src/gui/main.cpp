@@ -29,8 +29,11 @@ int main(int argc, char* argv[])
     QCommandLineOption applyOpt(QStringLiteral("apply-instruments"), QStringLiteral("Put the instruments from the settings on every MIDI track."));
     QCommandLineOption instrumentsOpt(QStringLiteral("instrument-settings"), QStringLiteral("Open the instrument settings."));
     QCommandLineOption notesOpt(QStringLiteral("edit-notes"), QStringLiteral("Open the MIDI editor of the selected track."));
+    QCommandLineOption exportOpt(QStringLiteral("export-mix"), QStringLiteral("Open File > Export mixdown and start it."));
+    QCommandLineOption masterOpt(QStringLiteral("master"), QStringLiteral("Open AI mastering and start it."));
+    QCommandLineOption analyzeOpt(QStringLiteral("analyze"), QStringLiteral("Find the tempo and key of the selected (or first) audio track."));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -60,6 +63,12 @@ int main(int argc, char* argv[])
         QTimer::singleShot(500, &window, &MainWindow::instrumentSettings);
     if (parser.isSet(transcribeOpt))
         window.transcribe(true, true);
+    if (parser.isSet(analyzeOpt))
+        window.analyzeSong();
+    if (parser.isSet(exportOpt))
+        window.exportMix(true);
+    if (parser.isSet(masterOpt))
+        window.masterMix(true);
 
     if (parser.isSet(shotOpt))
     {
