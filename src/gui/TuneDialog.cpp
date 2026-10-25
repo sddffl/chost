@@ -263,9 +263,11 @@ TuneDialog::TuneDialog(const std::vector<Source>& sources, int selected, const Q
     layout->addLayout(form);
 
     fStatus = new QLabel;
+    fStatus->setObjectName(QStringLiteral("status")); // these and the busy property: what the remote control reports
     fStatus->setWordWrap(true);
     layout->addWidget(fStatus);
     fProgress = new QProgressBar;
+    fProgress->setObjectName(QStringLiteral("progress"));
     fProgress->setRange(0, 100);
     layout->addWidget(fProgress);
     fResult = new QLabel;
@@ -522,6 +524,7 @@ void TuneDialog::finish(bool ok, const QString& message)
 
 void TuneDialog::setBusy(bool busy)
 {
+    setProperty("busy", busy);
     fStart->setEnabled(!busy && !fSources.empty());
     fStart->setText(fDone ? QStringLiteral("重新修音") : QStringLiteral("开始修音"));
     fCancel->setEnabled(busy);

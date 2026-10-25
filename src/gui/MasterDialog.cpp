@@ -139,9 +139,11 @@ MasterDialog::MasterDialog(const QString& defaultOutput, SnapshotFunction snapsh
     layout->addLayout(form);
 
     fStatus = new QLabel;
+    fStatus->setObjectName(QStringLiteral("status")); // these and the busy property: what the remote control reports
     fStatus->setWordWrap(true);
     layout->addWidget(fStatus);
     fProgress = new QProgressBar;
+    fProgress->setObjectName(QStringLiteral("progress"));
     fProgress->setRange(0, 100);
     layout->addWidget(fProgress);
     fResult = new QLabel;
@@ -364,6 +366,7 @@ void MasterDialog::finish(bool ok, const QString& message)
 
 void MasterDialog::setBusy(bool busy)
 {
+    setProperty("busy", busy);
     const bool done = !busy && QFileInfo::exists(fOutput) && fProgress->value() == 100;
     fStart->setEnabled(!busy);
     fCancel->setEnabled(busy);

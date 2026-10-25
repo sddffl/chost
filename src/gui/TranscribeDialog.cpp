@@ -58,12 +58,15 @@ TranscribeDialog::TranscribeDialog(const std::vector<Source>& sources, double te
     layout->addWidget(fList, 1);
 
     fStatus = new QLabel;
+    fStatus->setObjectName(QStringLiteral("status")); // these and the busy property: what the remote control reports
     fStatus->setWordWrap(true);
     layout->addWidget(fStatus);
     fProgress = new QProgressBar;
+    fProgress->setObjectName(QStringLiteral("progress"));
     fProgress->setRange(0, 100);
     layout->addWidget(fProgress);
     fLog = new QPlainTextEdit;
+    fLog->setObjectName(QStringLiteral("log"));
     fLog->setReadOnly(true);
     fLog->setMaximumBlockCount(2000);
     fLog->setStyleSheet(QStringLiteral("font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 11px;"));
@@ -242,6 +245,7 @@ void TranscribeDialog::onFinished(int exitCode, QProcess::ExitStatus status)
 
 void TranscribeDialog::setBusy(bool busy)
 {
+    setProperty("busy", busy);
     const bool usable = !resources::aiPython().isEmpty() && !resources::toolScript(QStringLiteral("chost_transcribe.py")).isEmpty();
     fStart->setEnabled(!busy && usable);
     fCancel->setEnabled(busy);

@@ -114,6 +114,15 @@ MIDI 乐器轨默认用自带的 General MIDI 音色（TimGM6mb）播放，会�
 
 chost 会在后台逐个识别 VST 插件（名称、厂商、是乐器还是效果），每个插件在单独的进程里检查，坏掉的插件不会让 chost 崩溃。第一次识别插件多的话要几分钟，结果会记住，以后启动就很快。Waves 这种一个文件里装很多插件的（WaveShell，VST2 版）会拆成一个个插件；老的 32 位 VST2 插件也能用。
 
+## 让 Claude 操控 chost（MCP）
+
+chost 自带一个 MCP 服务器 `chost-mcp.exe`。连上以后，在 Claude 桌面版里直接说“把鼓调小 3 dB”“给人声加个压缩，阈值 -18”“把这首歌分轨，再转成 MIDI”“导出混音”，Claude 就会在 chost 里动手做，你在窗口里能看到每一步，不满意按 Ctrl+Z 撤销。
+
+- 连接：**AI > 连接 Claude…**，点“一键连接 Claude 桌面版”，然后完全退出 Claude 桌面版再打开。用 Claude Code 的话，对话框里有一行命令可以复制
+- chost 没开着时，Claude 第一次用工具会自动把 chost 打开
+- Claude 能做的事：看工程（轨道、推子、插件、速度调性）；加删轨道、改名、推子、静音独奏、换音频；查找本机插件、加删和旁路插入效果、读写插件参数、打开插件窗口；换乐器；播放、停止、定位、看电平；撤销、重做、看操作历史；AI 识别速度调性、分轨、转 MIDI、修音、编曲、母带、导出混音（这些在后台运行，Claude 会等它们做完）；保存、打开、新建工程（有没保存的改动时，Claude 不会擅自丢掉）
+- 只有本机、你自己的账户能连 chost，别的电脑和别的用户连不上
+
 ## 撤销、自动备份
 
 - **编辑 > 撤销**（Ctrl+Z）和 **重做**（Ctrl+Y）：加删轨道、换音频、推子、静音/独奏、插入效果、换乐器、速度和调性，以及 AI 分轨、编曲、母带、修音，都能一步步撤回（最近 100 步）。删掉的轨道和插件撤销回来时设置都还在
@@ -210,6 +219,8 @@ src/core/             宿主核心：封装 libcarla、多轨工程（Session）
 src/gui/              Qt 图形界面
 src/cli/              命令行版
 src/render/           chost-render：离线混音
+src/control/          远程控制的工具定义（chost 和 chost-mcp 共用）
+src/mcp/              chost-mcp：给 Claude 等 AI 助手用的 MCP 服务器
 tools/                AI 辅助脚本（chost_separate.py：自动分轨，chost_transcribe.py：转 MIDI，
                       chost_analyze.py：速度和调性，chost_master.py：母带，chost_arrange.py：编曲，
                       chost_tune.py：修音）

@@ -1,3 +1,4 @@
+#include "ClaudeConnect.h"
 #include "MainWindow.h"
 #include "Theme.h"
 
@@ -6,6 +7,8 @@
 #include <QDialog>
 #include <QIcon>
 #include <QTimer>
+
+#include <cstdio>
 
 int main(int argc, char* argv[])
 {
@@ -44,12 +47,20 @@ int main(int argc, char* argv[])
     QCommandLineOption chordsOpt(QStringLiteral("arrange-chords"), QStringLiteral("Open AI auto-arrangement with these chords and start it."), QStringLiteral("chords"));
     QCommandLineOption recoverOpt(QStringLiteral("recover"), QStringLiteral("Bring back a project a crashed chost left in the autosave, without asking."));
     QCommandLineOption saveOpt(QStringLiteral("save"), QStringLiteral("Save the project (over the --open file) once everything is loaded."));
+    QCommandLineOption claudeOpt(QStringLiteral("claude-config"), QStringLiteral("Add chost-mcp to this Claude Desktop settings file and quit (tests)."), QStringLiteral("json"));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
         app.setProperty("chost-noninteractive", true);
+    if (parser.isSet(claudeOpt))
+    {
+        QString error;
+        const bool ok = claude::addToConfig(parser.value(claudeOpt), claude::mcpProgram(), error);
+        std::printf("%s\n", ok ? "CLAUDE CONFIG WRITTEN" : qPrintable(error));
+        return ok ? 0 : 1;
+    }
 
     MainWindow window;
     window.recoverAtStart(parser.isSet(recoverOpt));

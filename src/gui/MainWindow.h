@@ -17,6 +17,7 @@ class ArrangeView;
 class ChannelStrip;
 class ExportDialog;
 class Autosave;
+class Control;
 class History;
 class MasterDialog;
 class ScriptJob;
@@ -45,6 +46,7 @@ class TuneDialog;
 // inserts and a fader, all summed into the "Stereo Out" master.
 class MainWindow : public QMainWindow {
     Q_OBJECT
+    friend class Control; // the remote control does what the user does in the window
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
@@ -143,6 +145,7 @@ private:
     void rescanPlugins();
     void showPlugins();
     void newSession();
+    void resetSession();     // newSession without asking about unsaved changes
     void openSessionDialog();
     void saveSession();
     void saveSessionAs();
@@ -186,6 +189,8 @@ private:
     QPointer<TuneDialog> fTuneDialog;
     History* fHistory = nullptr;
     Autosave* fAutosave = nullptr;
+    Control* fControl = nullptr;
+    QStringList* fErrorSink = nullptr; // while the remote control works: errors go here, not into message boxes
     ScriptJob* fAnalysis = nullptr;
     bool fAnalysisTried = false; // the automatic analysis of the first audio file, once per project
     bool fAnalysisQuiet = false;

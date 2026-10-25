@@ -73,6 +73,13 @@ jobs:
           # saving over a project keeps the version it replaces
           QT_QPA_PLATFORM=offscreen ./build/chost --open s.chost --save --screenshot saved.png
           ls s_备份/*/s.chost s_备份/*/s.carxp
+          # an AI assistant working chost through chost-mcp, which starts chost (offscreen here) itself
+          QT_QPA_PLATFORM=offscreen timeout 300 python3 tests/mcp_client.py ./build/chost-mcp $PWD/a.wav $PWD/b.wav $gain | tee mcp.log
+          grep -q 'MCP TEST PASSED' mcp.log
+          pkill -x chost || true
+          echo '{"mcpServers": {"other": {"command": "x"}}}' > claude.json
+          QT_QPA_PLATFORM=offscreen ./build/chost --claude-config claude.json | grep -q 'CLAUDE CONFIG WRITTEN'
+          python3 -c "import json; s = json.load(open('claude.json'))['mcpServers']; assert 'other' in s and s['chost']['command'].endswith('chost-mcp')"
 
       - name: Stem separation test
         run: |
@@ -222,6 +229,10 @@ jobs:
           test -f tools/chost_master.py
           test -f tools/chost_arrange.py
           test -f tools/chost_tune.py
+          # chost-mcp answers an assistant without chost running (it starts chost on the first tool call)
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+              '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | ./chost-mcp.exe | tee ../../mcp.log
+          grep -q '"name":"get_project"' ../../mcp.log
 
       - uses: actions/upload-artifact@v4
         with:

@@ -4,6 +4,8 @@
 #include "ExportDialog.h"
 #include "InstrumentDialog.h"
 #include "Autosave.h"
+#include "ClaudeConnect.h"
+#include "Control.h"
 #include "History.h"
 #include "Instruments.h"
 #include "MasterDialog.h"
@@ -225,6 +227,10 @@ MainWindow::MainWindow(QWidget* parent)
     rescanPlugins();
     refreshSongInfo();
     updateTitle();
+
+    // an AI assistant working the project through chost-mcp
+    fControl = new Control(*this);
+    fControl->listen();
 }
 
 MainWindow::~MainWindow()
@@ -313,6 +319,8 @@ void MainWindow::buildMenus()
     ai->addSeparator();
     ai->addAction(QStringLiteral("识别速度和调性"), this, [this] { analyzeSong(); });
     ai->addAction(QStringLiteral("AI 母带…"), QKeySequence(QStringLiteral("Ctrl+Shift+E")), this, [this] { masterMix(); });
+    ai->addSeparator();
+    ai->addAction(QStringLiteral("连接 Claude（让 Claude 操控 chost）…"), this, [this] { claude::showDialog(this); });
 }
 
 void MainWindow::buildTransport()
@@ -1796,8 +1804,12 @@ void MainWindow::showPlugins()
 
 void MainWindow::newSession()
 {
-    if (!maybeSave())
-        return;
+    if (maybeSave())
+        resetSession();
+}
+
+void MainWindow::resetSession()
+{
     closeEditors();
     fHost.pause();
     fHost.removeAllPlugins();
@@ -2469,6 +2481,11 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 void MainWindow::showError(const QString& what)
 {
+    if (fErrorSink)
+    {
+        fErrorSink->append(what);
+        return;
+    }
     // offscreen and --screenshot runs (CI) must never block on a dialog
     if (QGuiApplication::platformName() == QLatin1String("offscreen") || qApp->property("chost-noninteractive").toBool())
     {

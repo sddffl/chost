@@ -112,9 +112,11 @@ ArrangeDialog::ArrangeDialog(const std::vector<Source>& sources, int selected, d
     layout->addLayout(form);
 
     fStatus = new QLabel;
+    fStatus->setObjectName(QStringLiteral("status")); // these and the busy property: what the remote control reports
     fStatus->setWordWrap(true);
     layout->addWidget(fStatus);
     fProgress = new QProgressBar;
+    fProgress->setObjectName(QStringLiteral("progress"));
     fProgress->setRange(0, 100);
     layout->addWidget(fProgress);
     fChordView = new QLabel;
@@ -277,6 +279,7 @@ void ArrangeDialog::start()
 
 void ArrangeDialog::setBusy(bool busy)
 {
+    setProperty("busy", busy);
     fStart->setEnabled(!busy);
     fCancel->setEnabled(busy);
 }

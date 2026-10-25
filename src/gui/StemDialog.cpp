@@ -49,6 +49,7 @@ StemDialog::StemDialog(const QString& trackName, const QString& audioFile, QWidg
 
     auto* statusRow = new QHBoxLayout;
     fStatus = new QLabel;
+    fStatus->setObjectName(QStringLiteral("status")); // these and the busy property: what the remote control reports
     fStatus->setWordWrap(true);
     statusRow->addWidget(fStatus, 1);
     fInstall = new QPushButton(QStringLiteral("安装 AI 组件"));
@@ -81,10 +82,12 @@ StemDialog::StemDialog(const QString& trackName, const QString& audioFile, QWidg
 
     // ---- progress
     fProgress = new QProgressBar;
+    fProgress->setObjectName(QStringLiteral("progress"));
     fProgress->setRange(0, 100);
     fProgress->setValue(0);
     layout->addWidget(fProgress);
     fLog = new QPlainTextEdit;
+    fLog->setObjectName(QStringLiteral("log"));
     fLog->setReadOnly(true);
     fLog->setMaximumBlockCount(2000);
     fLog->setStyleSheet(QStringLiteral("font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 11px;"));
@@ -406,6 +409,7 @@ void StemDialog::onFinished(int exitCode, QProcess::ExitStatus status)
 
 void StemDialog::setBusy(bool busy)
 {
+    setProperty("busy", busy);
     fStart->setEnabled(!busy && fReady);
     fInstall->setEnabled(!busy);
     fCancel->setEnabled(busy);

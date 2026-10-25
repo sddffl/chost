@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(chost VERSION 0.10.0 LANGUAGES CXX)
+project(chost VERSION 0.11.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,7 +66,7 @@ target_link_libraries(chost-cli PRIVATE chost_core)
 install(TARGETS chost-cli RUNTIME DESTINATION bin)
 
 if(CHOST_BUILD_GUI)
-    find_package(Qt6 REQUIRED COMPONENTS Widgets)
+    find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
     set(CMAKE_AUTOMOC ON)
     set(CMAKE_AUTORCC ON)
     # the app icon: drawn in resources/icons/chost.svg (chost-small.svg for 16 and 24 px)
@@ -95,8 +95,19 @@ if(CHOST_BUILD_GUI)
         src/gui/ArrangeDialog.cpp src/gui/ArrangeDialog.h
         src/gui/TuneDialog.cpp src/gui/TuneDialog.h
         src/gui/History.cpp src/gui/History.h
-        src/gui/Autosave.cpp src/gui/Autosave.h)
+        src/gui/Autosave.cpp src/gui/Autosave.h
+        src/gui/Control.cpp src/gui/Control.h
+        src/gui/ClaudeConnect.cpp src/gui/ClaudeConnect.h
+        src/control/Tools.cpp src/control/Tools.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}" CHOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(chost PRIVATE chost_core Qt6::Widgets)
+    target_link_libraries(chost PRIVATE chost_core Qt6::Widgets Qt6::Network)
     install(TARGETS chost RUNTIME DESTINATION bin)
+
+    # chost's MCP server for AI assistants (Claude Desktop, Claude Code, ...): a console program they start,
+    # passing their tool calls on to the chost that runs (and starting one when none does)
+    add_executable(chost-mcp src/mcp/main.cpp src/control/Tools.cpp src/control/Tools.h)
+    target_include_directories(chost-mcp PRIVATE src)
+    target_compile_definitions(chost-mcp PRIVATE CHOST_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(chost-mcp PRIVATE Qt6::Core Qt6::Network)
+    install(TARGETS chost-mcp RUNTIME DESTINATION bin)
 endif()

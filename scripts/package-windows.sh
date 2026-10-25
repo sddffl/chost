@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Collects chost.exe, chost-cli.exe, Qt, the MinGW runtime and Carla into one folder.
+# Collects chost.exe, chost-cli.exe, chost-render.exe, chost-mcp.exe, Qt, the MinGW runtime and Carla into one folder.
 # Run from an MSYS2 MINGW64 shell after building.
 #
 #   scripts/package-windows.sh <build-dir> <carla-root> <output-dir>
@@ -11,7 +11,7 @@ out="${3:?}"
 
 rm -rf "$out"
 mkdir -p "$out"
-cp "$build/chost.exe" "$build/chost-cli.exe" "$build/chost-render.exe" "$out/"
+cp "$build/chost.exe" "$build/chost-cli.exe" "$build/chost-render.exe" "$build/chost-mcp.exe" "$out/"
 cp "$carla"/lib/carla/* "$out/"
 
 deployqt="$(command -v windeployqt6 || command -v windeployqt-qt6 || command -v windeployqt)"
