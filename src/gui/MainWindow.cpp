@@ -3,6 +3,7 @@
 #include "ArrangeDialog.h"
 #include "ExportDialog.h"
 #include "InstrumentDialog.h"
+#include "History.h"
 #include "Instruments.h"
 #include "MasterDialog.h"
 #include "PianoRoll.h"
@@ -44,10 +45,13 @@
 #include <QStandardPaths>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QUndoStack>
+#include <QUndoView>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -136,6 +140,9 @@ MainWindow::MainWindow(QWidget* parent)
 {
     resize(1440, 920);
     setAcceptDrops(true);
+    fHistory = new History(fSession, this);
+    connect(fHistory, &History::restored, this, &MainWindow::afterUndo);
+    connect(fHistory, &History::modifiedChanged, this, &MainWindow::updateTitle);
 
     std::vector<std::string> folders;
     for (const QString& folder : QSettings().value(kPluginFoldersKey).toStringList())
@@ -189,6 +196,7 @@ MainWindow::MainWindow(QWidget* parent)
         else if (key == QLatin1String("KEY"))
             fSession.setKey(value.section(QLatin1Char('\t'), 0, 0).toStdString());
         refreshSongInfo();
+        fHistory->record(QStringLiteral("识别速度和调性"), QStringLiteral("analysis"));
     });
     connect(fAnalysis, &ScriptJob::finished, this, [this](bool ok, const QString& message) {
         if (ok)
@@ -245,6 +253,29 @@ void MainWindow::buildMenus()
     file->addAction(QStringLiteral("导出混音（WAV）…"), QKeySequence(QStringLiteral("Ctrl+E")), this, [this] { exportMix(); });
     file->addSeparator();
     file->addAction(QStringLiteral("退出"), QKeySequence::Quit, this, &QWidget::close);
+
+    QMenu* edit = menuBar()->addMenu(QStringLiteral("编辑"));
+    QAction* undo = fHistory->stack()->createUndoAction(this, QStringLiteral("撤销"));
+    undo->setShortcuts(QKeySequence::Undo);
+    edit->addAction(undo);
+    QAction* redo = fHistory->stack()->createRedoAction(this, QStringLiteral("重做"));
+    redo->setShortcuts({QKeySequence(QStringLiteral("Ctrl+Y")), QKeySequence(QStringLiteral("Ctrl+Shift+Z"))});
+    edit->addAction(redo);
+    edit->addSeparator();
+    edit->addAction(QStringLiteral("操作历史…"), this, [this] {
+        // every step so far: clicking one goes back (or forward) to it
+        QDialog dialog(this);
+        dialog.setWindowTitle(QStringLiteral("操作历史"));
+        dialog.resize(360, 460);
+        auto* layout = new QVBoxLayout(&dialog);
+        auto* view = new QUndoView(fHistory->stack());
+        view->setEmptyLabel(QStringLiteral("打开工程时"));
+        layout->addWidget(view);
+        auto* hint = new QLabel(QStringLiteral("点一步就回到那一步之后的样子，再点下面的也能重新回来。"));
+        hint->setWordWrap(true);
+        layout->addWidget(hint);
+        dialog.exec();
+    });
 
     QMenu* track = menuBar()->addMenu(QStringLiteral("轨道"));
     track->addAction(QStringLiteral("添加音轨"), QKeySequence(QStringLiteral("Ctrl+T")), this, &MainWindow::addEmptyTrack);
@@ -533,7 +564,10 @@ QWidget* MainWindow::buildMixConsole()
     fOutputStrip = new ChannelStrip(QStringLiteral("Stereo Out"), true);
     masterLayout->addWidget(fOutputStrip);
     row->addWidget(master);
-    connect(fOutputStrip, &ChannelStrip::volumeChanged, this, [this](float v) { fSession.setMasterVolume(v); });
+    connect(fOutputStrip, &ChannelStrip::volumeChanged, this, [this](float v) {
+        fSession.setMasterVolume(v);
+        fHistory->record(QStringLiteral("主音量"), QStringLiteral("master-volume"));
+    });
 
     layout->addLayout(row);
     return pane;
@@ -588,7 +622,6 @@ void MainWindow::startEngine(const QString& driver)
     const QSignalBlocker blocker(fDriverBox);
     fDriverBox->setCurrentText(QString::fromStdString(fHost.driverName()));
 
-    fColours.clear();
     if (carry.isEmpty() || !fSession.load(carry.toStdString()))
         fSession.init();
     if (!carry.isEmpty())
@@ -596,6 +629,8 @@ void MainWindow::startEngine(const QString& driver)
         QFile::remove(carry);
         QFile::remove(QDir::temp().filePath(QStringLiteral("chost-driver-switch.carxp")));
     }
+    // the plugins were all loaded anew: the history can't refer to them any more
+    fHistory->reset(fHistory->isModified());
     refreshTracks();
 
     if (!warning.isEmpty())
@@ -721,15 +756,18 @@ const MainWindow::Clip& MainWindow::clip(const QString& path)
 
 QColor MainWindow::trackColour(int track) const
 {
-    return track >= 0 && track < static_cast<int>(fColours.size()) ? fColours[track] : theme::trackColor;
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    return track >= 0 && track < static_cast<int>(tracks.size()) && tracks[track].colour ? QColor(QRgb(tracks[track].colour))
+                                                                                          : theme::trackColor;
 }
 
 void MainWindow::refreshTracks()
 {
     const std::vector<chost::Track>& tracks = fSession.tracks();
-    while (fColours.size() < tracks.size())
-        fColours.push_back(theme::trackColour(fNextColour++));
-    fColours.resize(tracks.size());
+    // a new track takes the next colour; the colours stay with the tracks (and in the project file)
+    for (size_t i = 0; i < tracks.size(); ++i)
+        if (!tracks[i].colour)
+            fSession.setColour(static_cast<int>(i), theme::trackColour(fNextColour++).rgb() & 0xffffff);
 
     std::vector<ArrangeView::Lane> lanes;
     for (size_t i = 0; i < tracks.size(); ++i)
@@ -739,7 +777,7 @@ void MainWindow::refreshTracks()
         lane.name = QString::fromStdString(t.name);
         lane.muted = t.muted;
         lane.solo = t.solo;
-        lane.colour = fColours[i];
+        lane.colour = trackColour(static_cast<int>(i));
         lane.midi = t.kind == chost::TrackKind::Instrument;
         lane.kindText = lane.midi ? instrumentText(static_cast<int>(i)) : QStringLiteral("音频");
         if (!t.file.empty())
@@ -775,7 +813,7 @@ void MainWindow::refreshTracks()
     {
         const int index = static_cast<int>(i);
         auto* strip = new ChannelStrip(QString::fromStdString(tracks[i].name), false);
-        strip->setColour(fColours[i]);
+        strip->setColour(trackColour(static_cast<int>(i)));
         fStripRow->insertWidget(index, strip);
         // a strip's insert rack works on its own track: select it first, then act on the selection
         InsertRack* rack = strip->inserts();
@@ -941,6 +979,7 @@ int MainWindow::addAudioTrack(const QString& path, const QString& name)
     }
     fSelected = track;
     refreshTracks();
+    fHistory->record(QStringLiteral("添加轨道：%1").arg(trackName));
     // the first song in a project: find its tempo and key in the background
     if (!fAnalysisTried && fSession.key().empty() && !resources::aiPython().isEmpty())
         analyzeSong(true);
@@ -979,6 +1018,7 @@ int MainWindow::addMidiTrack(const QString& path, const QString& name, const QSt
         statusBar()->showMessage(QStringLiteral("没有加载到乐器，请在检查器里选择一个乐器"), 8000);
     fSelected = track;
     refreshTracks();
+    fHistory->record(QStringLiteral("添加乐器轨：%1").arg(trackName));
     return track;
 }
 
@@ -997,6 +1037,7 @@ bool MainWindow::loadAudioFile(const QString& path)
             return false;
         }
         refreshTracks();
+        fHistory->record(QStringLiteral("导入音频"));
         return true;
     }
     return addAudioTrack(path) >= 0;
@@ -1012,6 +1053,7 @@ void MainWindow::addEmptyTrack()
     }
     fSelected = track;
     refreshTracks();
+    fHistory->record(QStringLiteral("添加音轨"));
 }
 
 void MainWindow::addInstrumentTrack()
@@ -1026,6 +1068,7 @@ void MainWindow::addInstrumentTrack()
     loadInstrument(track, instruments::choiceFor({}));
     fSelected = track;
     refreshTracks();
+    fHistory->record(QStringLiteral("添加乐器轨"));
 }
 
 bool MainWindow::loadInstrument(int track, const instruments::Choice& choice)
@@ -1044,6 +1087,7 @@ bool MainWindow::loadInstrument(int track, const instruments::Choice& choice)
 
 void MainWindow::applyInstruments()
 {
+    History::Group step(*fHistory, QStringLiteral("换上设置的乐器"));
     closeEditors();
     int changed = 0;
     const int count = static_cast<int>(fSession.tracks().size());
@@ -1144,6 +1188,7 @@ void MainWindow::chooseInstrument()
     const int keep = fSelected;
     refreshTracks();
     selectTrack(keep);
+    fHistory->record(QStringLiteral("换乐器"));
 
     statusBar()->showMessage(QStringLiteral("选好音色后，点检查器里的“记住这个音色”，以后同一种乐器就自动用它"), 8000);
 }
@@ -1220,6 +1265,7 @@ void MainWindow::replaceAudio()
     if (!fSession.setTrackFile(fSelected, path.toStdString()))
         showError(QStringLiteral("无法打开音频文件：%1\n\n%2").arg(path, QString::fromStdString(fSession.lastError())));
     refreshTracks();
+    fHistory->record(instrument ? QStringLiteral("替换 MIDI") : QStringLiteral("替换音频"));
 }
 
 void MainWindow::removeSelectedTrack()
@@ -1228,10 +1274,11 @@ void MainWindow::removeSelectedTrack()
         return;
     closeEditors();
     const int track = fSelected;
+    const QString name = QString::fromStdString(fSession.tracks()[track].name);
     fSession.removeTrack(track);
-    fColours.erase(fColours.begin() + track);
     fSelected = std::min(track, static_cast<int>(fSession.tracks().size()) - 1);
     refreshTracks();
+    fHistory->record(QStringLiteral("删除轨道：%1").arg(name));
 }
 
 void MainWindow::renameSelectedTrack(const QString& name)
@@ -1242,6 +1289,7 @@ void MainWindow::renameSelectedTrack(const QString& name)
     const int keep = fSelected;
     refreshTracks();
     selectTrack(keep);
+    fHistory->record(QStringLiteral("重命名轨道"));
 }
 
 void MainWindow::trackMenu(int track, const QPoint& globalPos)
@@ -1292,6 +1340,7 @@ void MainWindow::dropFiles(const QStringList& paths, int track)
         if (!fSession.setTrackFile(track, paths.front().toStdString()))
             showError(QStringLiteral("无法打开音频文件：%1\n\n%2").arg(paths.front(), QString::fromStdString(fSession.lastError())));
         refreshTracks();
+        fHistory->record(QStringLiteral("替换音频"));
         return;
     }
     for (const QString& path : paths)
@@ -1323,6 +1372,7 @@ bool MainWindow::addPluginSpec(const QString& spec)
         return false;
     }
     refreshInserts();
+    fHistory->record(QStringLiteral("添加插件：%1").arg(QString::fromStdString(fHost.slot(fHost.pluginCount() - 1).name)));
     return true;
 }
 
@@ -1356,6 +1406,7 @@ void MainWindow::setInsertActive(int index, bool active)
         fSession.reroute();
     }
     refreshInserts();
+    fHistory->record(active ? QStringLiteral("启用插件") : QStringLiteral("旁路插件"));
 }
 
 void MainWindow::removeInsert(int index)
@@ -1364,6 +1415,7 @@ void MainWindow::removeInsert(int index)
     closeEditors();
     fSession.removeInsert(fSelected, index);
     refreshInserts();
+    fHistory->record(QStringLiteral("删除插件"));
 }
 
 void MainWindow::moveInsert(int index, int delta)
@@ -1371,23 +1423,27 @@ void MainWindow::moveInsert(int index, int delta)
     closeEditors();
     fSession.moveInsert(fSelected, index, delta);
     refreshInserts();
+    fHistory->record(QStringLiteral("移动插件"));
 }
 
 void MainWindow::setMuted(int track, bool muted)
 {
     fSession.setMuted(track, muted);
     refreshMixState();
+    fHistory->record(muted ? QStringLiteral("静音") : QStringLiteral("取消静音"));
 }
 
 void MainWindow::setSolo(int track, bool solo)
 {
     fSession.setSolo(track, solo);
     refreshMixState();
+    fHistory->record(solo ? QStringLiteral("独奏") : QStringLiteral("取消独奏"));
 }
 
 void MainWindow::setVolume(int track, float volume)
 {
     fSession.setVolume(track, volume);
+    fHistory->record(QStringLiteral("音量"), QStringLiteral("volume %1").arg(track));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1438,6 +1494,7 @@ void MainWindow::separateStems(bool autoStart)
         stems->insert(id, path);
 
         const int keep = fSelected;
+        History::Group step(*fHistory, QStringLiteral("AI 分轨：%1").arg(label));
         const int track = addAudioTrack(path, label);
         if (track < 0)
             return;
@@ -1447,8 +1504,7 @@ void MainWindow::separateStems(bool autoStart)
         {
             const int to = std::min(track, parent + 1 + (*parts)[group]++);
             fSession.moveTrack(track, to);
-            fColours.erase(fColours.begin() + track);
-            fColours.insert(fColours.begin() + to, fColours[parent]);
+            fSession.setColour(to, fSession.tracks()[parent].colour);
             --fNextColour; // the part didn't use up a colour of its own
             refreshTracks();
         }
@@ -1549,6 +1605,7 @@ void MainWindow::transcribe(bool allTracks, bool autoStart)
 
 void MainWindow::placeMidiTrack(const QStringList& sources, const QString& midiPath, const QString& name, const QString& role)
 {
+    History::Group step(*fHistory, QStringLiteral("转 MIDI：%1").arg(name));
     auto trackOf = [this](const QString& path) {
         const std::vector<chost::Track>& all = fSession.tracks();
         for (size_t i = 0; i < all.size(); ++i)
@@ -1561,7 +1618,6 @@ void MainWindow::placeMidiTrack(const QStringList& sources, const QString& midiP
     {
         closeEditors();
         fSession.removeTrack(old);
-        fColours.erase(fColours.begin() + old);
     }
     fClips.remove(midiPath);
     const int keep = fSelected;
@@ -1581,10 +1637,9 @@ void MainWindow::placeMidiTrack(const QStringList& sources, const QString& midiP
     if (below >= 0)
     {
         const int to = std::min(track, below + 1);
-        const QColor colour = fColours[below];
+        const uint32_t colour = fSession.tracks()[below].colour;
         fSession.moveTrack(track, to);
-        fColours.erase(fColours.begin() + track);
-        fColours.insert(fColours.begin() + to, colour);
+        fSession.setColour(to, colour);
         --fNextColour;
         refreshTracks();
     }
@@ -1631,6 +1686,7 @@ void MainWindow::editNotes(int track)
         const int keep = fSelected;
         refreshTracks();
         selectTrack(keep);
+        fHistory->record(QStringLiteral("编辑音符"));
     });
     connect(fPianoRoll, &PianoRollDialog::audition, this, [this](const QString& midiPath, int pitch, int channel) {
         const int t = trackOfFile(midiPath);
@@ -1739,7 +1795,7 @@ void MainWindow::newSession()
     fHost.pause();
     fHost.removeAllPlugins();
     fSession.init();
-    fColours.clear();
+    fHistory->reset();
     fSelected = -1;
     fSessionPath.clear();
     fAnalysisTried = false;
@@ -1764,7 +1820,7 @@ bool MainWindow::openSession(const QString& path)
     {
         fSessionPath = path;
     }
-    fColours.clear();
+    fHistory->reset();
     fSelected = -1;
     fAnalysisTried = !fSession.key().empty();
     refreshTracks();
@@ -1789,7 +1845,10 @@ void MainWindow::saveSession()
         return;
     }
     if (fSession.save(fSessionPath.toStdString()))
+    {
+        fHistory->setSaved();
         statusBar()->showMessage(QStringLiteral("已保存：%1").arg(fSessionPath), 5000);
+    }
     else
         showError(QStringLiteral("保存失败：%1").arg(QString::fromStdString(fSession.lastError())));
 }
@@ -1817,6 +1876,7 @@ void MainWindow::setTempo(double bpm)
     fSession.setTempo(bpm);
     fArrange->setTempo(fSession.tempo());
     refreshSongInfo();
+    fHistory->record(QStringLiteral("速度"), QStringLiteral("tempo"));
 }
 
 void MainWindow::refreshSongInfo()
@@ -1953,8 +2013,6 @@ void MainWindow::masterMix(bool autoStart)
                         closeEditors();
                     fClips.remove(QString::fromStdString(fSession.tracks()[i].file));
                     fSession.removeTrack(i);
-                    if (i < static_cast<int>(fColours.size()))
-                        fColours.erase(fColours.begin() + i);
                     removed = true;
                 }
             if (removed)
@@ -1962,10 +2020,12 @@ void MainWindow::masterMix(bool autoStart)
                 fSelected = -1;
                 refreshTracks();
                 refreshMixState();
+                fHistory->record(QStringLiteral("删除旧的母带轨道"));
             }
         };
         connect(fMasterDialog, &MasterDialog::aboutToStart, this, removeMasters);
         connect(fMasterDialog, &MasterDialog::compareRequested, this, [this, removeMasters](const QString& path) {
+            History::Group step(*fHistory, QStringLiteral("AI 母带"));
             fAnalysisTried = true; // a master is no song to analyse
             removeMasters();
             const int track = addAudioTrack(path, QStringLiteral("母带"));
@@ -2009,6 +2069,7 @@ void MainWindow::arrange(bool autoStart, const QString& chords)
         fArrangeDialog = new ArrangeDialog(sources, selected, fSession.tempo(), folder, this);
         fArrangeDialog->setAttribute(Qt::WA_DeleteOnClose);
         connect(fArrangeDialog, &ArrangeDialog::arranged, this, [this, folder](const std::vector<ArrangeDialog::Part>& parts, bool replace) {
+            History::Group step(*fHistory, QStringLiteral("AI 编曲"));
             closeEditors();
             if (replace)
             {
@@ -2018,8 +2079,6 @@ void MainWindow::arrange(bool autoStart, const QString& chords)
                     if (QDir::cleanPath(QDir::fromNativeSeparators(QString::fromStdString(fSession.tracks()[i].file))).startsWith(prefix))
                     {
                         fSession.removeTrack(i);
-                        if (i < static_cast<int>(fColours.size()))
-                            fColours.erase(fColours.begin() + i);
                     }
             }
             int first = -1;
@@ -2080,9 +2139,13 @@ void MainWindow::tune(bool autoStart)
                 source.write(original.toUtf8());
             fClips.remove(tunedFile); // a new waveform
             playTake(original, true);
+            fHistory->record(QStringLiteral("AI 修音"));
             statusBar()->showMessage(QStringLiteral("修音完成：轨道已换成修好的声音，A/B 按钮可以切回原声"), 8000);
         });
-        connect(fTuneDialog, &TuneDialog::listen, this, &MainWindow::playTake);
+        connect(fTuneDialog, &TuneDialog::listen, this, [this](const QString& original, bool tuned) {
+            playTake(original, tuned);
+            fHistory->absorb(); // listening is no change to undo
+        });
         connect(fTuneDialog, &TuneDialog::playToggled, this, &MainWindow::togglePlay);
     }
     fTuneDialog->show();
@@ -2132,11 +2195,114 @@ void MainWindow::listenToMaster(bool master)
             fSession.setMuted(static_cast<int>(i), !master);
         }
     refreshMixState();
+    fHistory->absorb(); // listening is no change to undo
+}
+
+// Changes two tracks every way undo knows, undoes and redoes it all and checks the session is exactly
+// where it was each time, that nothing removed and gone for good is still loaded, and that it still plays.
+int MainWindow::testUndo(const QString& insertSpec)
+{
+    int failures = 0;
+    auto check = [&](bool ok, const char* what) {
+        std::printf("%s %s\n", ok ? "ok  " : "FAIL", what);
+        failures += !ok;
+    };
+    // the plugins the session itself uses: everything else would be left over
+    auto live = [this] {
+        size_t n = 1;
+        for (const chost::Track& t : fSession.tracks())
+            n += 1 + (t.source >= 0) + (t.instrument >= 0) + t.inserts.size();
+        return n;
+    };
+    QUndoStack* stack = fHistory->stack();
+    if (fSession.tracks().size() < 2)
+    {
+        std::printf("FAIL needs two tracks (--file a.wav --file b.wav)\n");
+        return 1;
+    }
+    std::vector<chost::SessionState> states{fSession.state()};
+    const int base = stack->index(); // the tracks loaded so far are steps too
+    selectTrack(0);
+    check(addPluginSpec(insertSpec), "insert added");
+    states.push_back(fSession.state());
+    setVolume(1, 0.5f);
+    setVolume(1, 0.25f); // a drag: one step
+    states.push_back(fSession.state());
+    setMuted(0, true);
+    states.push_back(fSession.state());
+    setInsertActive(0, false);
+    states.push_back(fSession.state());
+    selectTrack(0);
+    removeSelectedTrack();
+    states.push_back(fSession.state());
+    renameSelectedTrack(QStringLiteral("renamed"));
+    states.push_back(fSession.state());
+    check(stack->count() - base == static_cast<int>(states.size()) - 1, "one step per change");
+
+    for (int i = static_cast<int>(states.size()) - 2; i >= 0; --i)
+    {
+        stack->undo();
+        if (!(fSession.state() == states[static_cast<size_t>(i)]))
+            check(false, qPrintable(QStringLiteral("undo back to state %1").arg(i)));
+    }
+    check(fSession.state() == states.front(), "everything undone");
+    check(fHost.pluginCount() == live() + 1, "the removed insert is kept aside for redo");
+    for (size_t i = 1; i < states.size(); ++i)
+    {
+        stack->redo();
+        if (!(fSession.state() == states[i]))
+            check(false, qPrintable(QStringLiteral("redo to state %1").arg(i)));
+    }
+    check(fSession.state() == states.back(), "everything redone");
+    while (stack->index() > base)
+        stack->undo();
+    addEmptyTrack(); // a new change: what could have been redone is gone
+    check(fHost.pluginCount() == live(), "nothing left over after a new change");
+    check(stack->count() == base + 1 && !stack->canRedo(), "the redo steps are dropped");
+    stack->undo();
+    check(fSession.state() == states.front(), "back at the start");
+
+    if (fHost.driverName() != "Dummy")
+    {
+        // the wiring came back too: both tones are heard
+        fHost.relocate(0);
+        fHost.play();
+        float peak = 0.0f;
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < 1500)
+        {
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+            const auto [l, r] = fHost.outputPeaks(fSession.master());
+            peak = std::max({peak, l, r});
+        }
+        fHost.pause();
+        std::printf("master peak %.3f\n", peak);
+        check(peak > 0.9f, "both tracks play after undo");
+    }
+    std::printf(failures ? "UNDO TEST FAILED\n" : "UNDO TEST PASSED\n");
+    std::fflush(stdout);
+    return failures ? 1 : 0;
+}
+
+void MainWindow::afterUndo()
+{
+    // plugin numbers may have changed: windows of plugins would show the wrong one
+    closeEditors();
+    const int count = static_cast<int>(fSession.tracks().size());
+    if (fSelected >= count)
+        fSelected = count - 1;
+    fArrange->setTempo(fSession.tempo());
+    refreshTracks();
+    refreshMixState();
+    refreshSongInfo();
 }
 
 void MainWindow::updateTitle()
 {
-    setWindowTitle(fSessionPath.isEmpty() ? QStringLiteral("chost") : QStringLiteral("chost — %1").arg(QFileInfo(fSessionPath).fileName()));
+    const QString modified = fHistory->isModified() ? QStringLiteral(" *") : QString();
+    setWindowTitle(fSessionPath.isEmpty() ? QStringLiteral("chost%1").arg(modified)
+                                          : QStringLiteral("chost — %1%2").arg(QFileInfo(fSessionPath).fileName(), modified));
 }
 
 void MainWindow::play()
@@ -2181,6 +2347,26 @@ void MainWindow::dropEvent(QDropEvent* event)
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    const bool interactive = QGuiApplication::platformName() != QLatin1String("offscreen") && !qApp->property("chost-noninteractive").toBool();
+    if (interactive && fHistory->isModified() && !fSession.tracks().empty())
+    {
+        const auto answer = QMessageBox::question(this, QStringLiteral("chost"), QStringLiteral("工程有改动还没保存，要保存吗？"),
+                                                  QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+        if (answer == QMessageBox::Cancel)
+        {
+            event->ignore();
+            return;
+        }
+        if (answer == QMessageBox::Save)
+        {
+            saveSession();
+            if (fHistory->isModified()) // not saved after all (cancelled the file dialog, or it failed)
+            {
+                event->ignore();
+                return;
+            }
+        }
+    }
     if (fStemDialog)
         fStemDialog->close();
     if (fTranscribeDialog)

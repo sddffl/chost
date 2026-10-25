@@ -93,7 +93,8 @@ if(CHOST_BUILD_GUI)
         src/gui/ExportDialog.cpp src/gui/ExportDialog.h
         src/gui/MasterDialog.cpp src/gui/MasterDialog.h
         src/gui/ArrangeDialog.cpp src/gui/ArrangeDialog.h
-        src/gui/TuneDialog.cpp src/gui/TuneDialog.h)
+        src/gui/TuneDialog.cpp src/gui/TuneDialog.h
+        src/gui/History.cpp src/gui/History.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}" CHOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(chost PRIVATE chost_core Qt6::Widgets)
     install(TARGETS chost RUNTIME DESTINATION bin)

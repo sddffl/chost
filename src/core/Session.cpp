@@ -21,6 +21,9 @@ Session::Session(HostEngine& host)
 bool Session::init()
 {
     fTracks.clear();
+    fUids.clear();
+    fParkedTracks.clear();
+    fParkedPlugins.clear();
     fTempo = 120.0;
     fKey.clear();
     fReady = false;
@@ -46,27 +49,59 @@ bool Session::addFader(const std::string& name, uint& id)
         return false;
     }
     id = fHost.pluginCount() - 1;
+    registerAdded();
     return true;
+}
+
+void Session::registerAdded(bool atFront)
+{
+    // anything added behind the session's back gets a uid too, so the list stays parallel to carla's
+    while (fUids.size() + 1 < fHost.pluginCount())
+        fUids.push_back(fNextUid++);
+    if (atFront)
+        fUids.insert(fUids.begin(), fNextUid++);
+    else
+        fUids.push_back(fNextUid++);
+}
+
+Uid Session::uidOf(int id) const
+{
+    return id >= 0 && id < static_cast<int>(fUids.size()) ? fUids[static_cast<size_t>(id)] : 0;
+}
+
+int Session::idOf(Uid uid) const
+{
+    if (uid == 0)
+        return -1;
+    const auto it = std::find(fUids.begin(), fUids.end(), uid);
+    return it == fUids.end() ? -1 : static_cast<int>(it - fUids.begin());
 }
 
 // carla renumbers every plugin after a removed one, the model follows
 void Session::removePlugin(uint id)
 {
     fHost.removePlugin(id);
+    if (id < fUids.size())
+        fUids.erase(fUids.begin() + id);
     auto shift = [id](uint& other) {
         if (other > id)
             --other;
     };
-    shift(fMaster);
-    for (Track& t : fTracks)
-    {
+    auto shiftTrack = [&](Track& t) {
         for (int* optional : {&t.source, &t.instrument})
             if (*optional > static_cast<int>(id))
                 --*optional;
         shift(t.fader);
         for (uint& insert : t.inserts)
             shift(insert);
-    }
+    };
+    shift(fMaster);
+    for (Track& t : fTracks)
+        shiftTrack(t);
+    for (Track& t : fParkedTracks)
+        shiftTrack(t);
+    for (uint& parked : fParkedPlugins)
+        shift(parked);
 }
 
 int Session::addTrack(const std::string& name, TrackKind kind)
@@ -76,6 +111,7 @@ int Session::addTrack(const std::string& name, TrackKind kind)
     Track t;
     t.kind = kind;
     t.name = name;
+    t.uid = fNextUid++;
     if (!addFader(name, t.fader))
         return -1;
     fTracks.push_back(t);
@@ -87,17 +123,25 @@ bool Session::setTrackFile(int track, const std::string& path)
 {
     if (!valid(track))
         return false;
+    const bool ok = setPlayer(track, path);
+    reroute();
+    return ok;
+}
+
+bool Session::setPlayer(int track, const std::string& path)
+{
     if (fTracks[track].source >= 0)
     {
         removePlugin(static_cast<uint>(fTracks[track].source));
         fTracks[track].source = -1;
         fTracks[track].file.clear();
     }
+    if (path.empty())
+        return true;
     const bool midi = fTracks[track].kind == TrackKind::Instrument;
     if (!(midi ? fHost.loadMidiFile(path) : fHost.loadAudioFile(path)))
     {
         fError = fHost.lastError();
-        reroute();
         return false;
     }
     uint id = fHost.pluginCount() - 1;
@@ -105,18 +149,25 @@ bool Session::setTrackFile(int track, const std::string& path)
     {
         // the rack moved the player to the front, everything else moved down one
         id = 0;
-        auto shift = [](uint& other) { ++other; };
-        shift(fMaster);
-        for (Track& t : fTracks)
-        {
+        auto shift = [](Track& t) {
             for (int* optional : {&t.source, &t.instrument})
                 if (*optional >= 0)
                     ++*optional;
-            shift(t.fader);
+            ++t.fader;
             for (uint& insert : t.inserts)
-                shift(insert);
-        }
+                ++insert;
+        };
+        ++fMaster;
+        for (Track& t : fTracks)
+            shift(t);
+        for (Track& t : fParkedTracks)
+            shift(t);
+        for (uint& parked : fParkedPlugins)
+            ++parked;
+        registerAdded(true);
     }
+    else
+        registerAdded();
     // the player follows the timeline once instead of looping
     if (const int loop = fHost.findParameter(id, "Loop Mode"); loop >= 0)
         fHost.setParameter(id, static_cast<uint32_t>(loop), 0.0f);
@@ -124,7 +175,6 @@ bool Session::setTrackFile(int track, const std::string& path)
     fTracks[track].source = static_cast<int>(id);
     fTracks[track].file = path;
     matchProgram(track);
-    reroute();
     return true;
 }
 
@@ -165,7 +215,10 @@ bool Session::setInstrument(int track, const std::string& spec)
         return false;
     if (fTracks[track].instrument >= 0)
     {
-        removePlugin(static_cast<uint>(fTracks[track].instrument));
+        if (fKeepRemoved)
+            park(static_cast<uint>(fTracks[track].instrument));
+        else
+            removePlugin(static_cast<uint>(fTracks[track].instrument));
         fTracks[track].instrument = -1;
     }
     if (!fHost.addPlugin(spec))
@@ -174,6 +227,7 @@ bool Session::setInstrument(int track, const std::string& spec)
         reroute();
         return false;
     }
+    registerAdded();
     fTracks[track].instrument = static_cast<int>(fHost.pluginCount() - 1);
     fTracks[track].instrumentSpec = spec;
     matchProgram(track);
@@ -187,10 +241,22 @@ void Session::setRole(int track, const std::string& role)
         fTracks[track].role = role;
 }
 
+void Session::setColour(int track, uint32_t colour)
+{
+    if (valid(track))
+        fTracks[track].colour = colour;
+}
+
 bool Session::removeTrack(int track)
 {
     if (!valid(track))
         return false;
+    if (fKeepRemoved)
+    {
+        parkTrack(track);
+        reroute();
+        return true;
+    }
     // remove from the highest id down so the remaining ids stay valid while we go
     std::vector<uint> ids = fTracks[track].inserts;
     ids.push_back(fTracks[track].fader);
@@ -230,6 +296,7 @@ bool Session::addInsert(int track, const std::string& spec)
         fError = fHost.lastError();
         return false;
     }
+    registerAdded();
     fTracks[track].inserts.push_back(fHost.pluginCount() - 1);
     reroute();
     return true;
@@ -241,7 +308,10 @@ bool Session::removeInsert(int track, int index)
         return false;
     const uint id = fTracks[track].inserts[index];
     fTracks[track].inserts.erase(fTracks[track].inserts.begin() + index);
-    removePlugin(id);
+    if (fKeepRemoved)
+        park(id);
+    else
+        removePlugin(id);
     reroute();
     return true;
 }
@@ -400,6 +470,8 @@ bool Session::save(const std::string& path)
             out << "role " << t.role << "\n";
         if (!t.instrumentSpec.empty())
             out << "instrument-spec " << t.instrumentSpec << "\n";
+        if (t.colour)
+            out << "colour " << t.colour << "\n";
     }
     return static_cast<bool>(out);
 }
@@ -458,6 +530,8 @@ bool Session::load(const std::string& path)
             tracks.back().role = rest;
         else if (key == "instrument-spec" && !tracks.empty())
             tracks.back().instrumentSpec = rest;
+        else if (key == "colour" && !tracks.empty())
+            fields >> tracks.back().colour;
     }
 
     const fs::path carlaPath = fs::u8path(path).parent_path() / fs::u8path(carlaFile);
@@ -475,9 +549,226 @@ bool Session::load(const std::string& path)
     fMasterVolume = masterVolume;
     setTempo(tempo);
     fKey = songKey;
+    fParkedTracks.clear();
+    fParkedPlugins.clear();
+    fUids.clear();
+    while (fUids.size() < fHost.pluginCount())
+        fUids.push_back(fNextUid++);
+    for (Track& t : fTracks)
+        t.uid = fNextUid++;
+    // plugins no track uses: set aside for undo when the session was saved, nothing to keep now
+    std::vector<bool> used(fHost.pluginCount(), false);
+    auto use = [&](int id) {
+        if (id >= 0 && id < static_cast<int>(used.size()))
+            used[static_cast<size_t>(id)] = true;
+    };
+    use(static_cast<int>(fMaster));
+    for (const Track& t : fTracks)
+    {
+        use(t.source);
+        use(t.instrument);
+        use(static_cast<int>(t.fader));
+        for (uint insert : t.inserts)
+            use(static_cast<int>(insert));
+    }
+    for (int id = static_cast<int>(used.size()) - 1; id >= 0; --id)
+        if (!used[static_cast<size_t>(id)])
+            removePlugin(static_cast<uint>(id));
     fReady = true;
     reroute();
     return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// undo
+
+bool SessionState::TrackState::operator==(const TrackState& o) const
+{
+    return uid == o.uid && kind == o.kind && name == o.name && role == o.role && file == o.file && instrumentSpec == o.instrumentSpec
+           && instrument == o.instrument && inserts == o.inserts && insertsActive == o.insertsActive && volume == o.volume
+           && muted == o.muted && solo == o.solo && colour == o.colour;
+}
+
+bool SessionState::operator==(const SessionState& o) const
+{
+    return tracks == o.tracks && masterVolume == o.masterVolume && tempo == o.tempo && key == o.key;
+}
+
+SessionState Session::state() const
+{
+    SessionState s;
+    s.masterVolume = fMasterVolume;
+    s.tempo = fTempo;
+    s.key = fKey;
+    for (const Track& t : fTracks)
+    {
+        SessionState::TrackState ts;
+        ts.uid = t.uid;
+        ts.kind = t.kind;
+        ts.name = t.name;
+        ts.role = t.role;
+        ts.file = t.file;
+        ts.instrumentSpec = t.instrumentSpec;
+        ts.instrument = uidOf(t.instrument);
+        for (uint insert : t.inserts)
+        {
+            ts.inserts.push_back(uidOf(static_cast<int>(insert)));
+            ts.insertsActive.push_back(fHost.slot(insert).active);
+        }
+        ts.volume = t.volume;
+        ts.muted = t.muted;
+        ts.solo = t.solo;
+        ts.colour = t.colour;
+        s.tracks.push_back(ts);
+    }
+    return s;
+}
+
+void Session::park(uint id)
+{
+    fHost.setActive(id, false); // silent and no load on the processor while set aside
+    fParkedPlugins.push_back(id);
+}
+
+int Session::unpark(Uid uid)
+{
+    const int id = idOf(uid);
+    const auto it = std::find(fParkedPlugins.begin(), fParkedPlugins.end(), static_cast<uint>(id));
+    if (id < 0 || it == fParkedPlugins.end())
+        return -1;
+    fParkedPlugins.erase(it);
+    fHost.setActive(static_cast<uint>(id), true);
+    return id;
+}
+
+void Session::parkTrack(int track)
+{
+    Track t = fTracks[track];
+    fTracks.erase(fTracks.begin() + track);
+    for (int id : {t.source, t.instrument, static_cast<int>(t.fader)})
+        if (id >= 0)
+            fHost.setActive(static_cast<uint>(id), false);
+    for (uint insert : t.inserts)
+        fHost.setActive(insert, false);
+    fParkedTracks.push_back(t);
+}
+
+void Session::restore(const SessionState& s)
+{
+    auto wanted = [&](Uid uid) {
+        return std::any_of(s.tracks.begin(), s.tracks.end(), [uid](const SessionState::TrackState& ts) { return ts.uid == uid; });
+    };
+    for (int i = static_cast<int>(fTracks.size()) - 1; i >= 0; --i)
+        if (!wanted(fTracks[static_cast<size_t>(i)].uid))
+            parkTrack(i);
+
+    // the tracks in the state's order, the ones set aside brought back
+    std::vector<Track> ordered;
+    for (const SessionState::TrackState& ts : s.tracks)
+    {
+        auto live = std::find_if(fTracks.begin(), fTracks.end(), [&](const Track& t) { return t.uid == ts.uid; });
+        if (live != fTracks.end())
+        {
+            ordered.push_back(*live);
+            continue;
+        }
+        auto parked = std::find_if(fParkedTracks.begin(), fParkedTracks.end(), [&](const Track& t) { return t.uid == ts.uid; });
+        if (parked == fParkedTracks.end())
+            continue; // gone for good: nothing to bring back
+        for (int id : {parked->source, parked->instrument, static_cast<int>(parked->fader)})
+            if (id >= 0)
+                fHost.setActive(static_cast<uint>(id), true);
+        ordered.push_back(*parked);
+        fParkedTracks.erase(parked);
+    }
+    fTracks = ordered;
+
+    for (Track& t : fTracks)
+    {
+        const auto ts = std::find_if(s.tracks.begin(), s.tracks.end(), [&](const SessionState::TrackState& x) { return x.uid == t.uid; });
+        t.name = ts->name;
+        t.role = ts->role;
+        t.volume = ts->volume;
+        t.muted = ts->muted;
+        t.solo = ts->solo;
+        t.colour = ts->colour;
+        const int index = static_cast<int>(&t - fTracks.data());
+        if (t.file != ts->file)
+            setPlayer(index, ts->file); // an audio or MIDI file player has no state of its own: just load the file
+
+        if (uidOf(t.instrument) != ts->instrument)
+        {
+            if (t.instrument >= 0)
+                park(static_cast<uint>(t.instrument));
+            t.instrument = ts->instrument ? unpark(ts->instrument) : -1;
+        }
+        t.instrumentSpec = ts->instrumentSpec;
+
+        std::vector<uint> inserts;
+        for (size_t i = 0; i < ts->inserts.size(); ++i)
+        {
+            int id = idOf(ts->inserts[i]);
+            if (std::find(fParkedPlugins.begin(), fParkedPlugins.end(), static_cast<uint>(id)) != fParkedPlugins.end())
+                id = unpark(ts->inserts[i]);
+            if (id < 0)
+                continue;
+            fHost.setActive(static_cast<uint>(id), ts->insertsActive[i]);
+            inserts.push_back(static_cast<uint>(id));
+        }
+        for (uint insert : t.inserts)
+            if (std::find(inserts.begin(), inserts.end(), insert) == inserts.end())
+                park(insert);
+        t.inserts = inserts;
+    }
+    fMasterVolume = s.masterVolume;
+    setTempo(s.tempo);
+    fKey = s.key;
+    reroute();
+}
+
+void Session::dropUnused(const std::vector<const SessionState*>& keep)
+{
+    std::vector<Uid> used;
+    for (const SessionState* s : keep)
+        for (const SessionState::TrackState& ts : s->tracks)
+        {
+            used.push_back(ts.uid);
+            used.push_back(ts.instrument);
+            used.insert(used.end(), ts.inserts.begin(), ts.inserts.end());
+        }
+    auto isUsed = [&](Uid uid) { return std::find(used.begin(), used.end(), uid) != used.end(); };
+
+    std::vector<uint> doomed;
+    for (size_t i = 0; i < fParkedTracks.size();)
+    {
+        const Track& t = fParkedTracks[i];
+        if (isUsed(t.uid))
+        {
+            ++i;
+            continue;
+        }
+        doomed.push_back(t.fader);
+        for (int optional : {t.source, t.instrument})
+            if (optional >= 0)
+                doomed.push_back(static_cast<uint>(optional));
+        doomed.insert(doomed.end(), t.inserts.begin(), t.inserts.end());
+        fParkedTracks.erase(fParkedTracks.begin() + static_cast<long>(i));
+    }
+    for (size_t i = 0; i < fParkedPlugins.size();)
+        if (isUsed(uidOf(static_cast<int>(fParkedPlugins[i]))))
+            ++i;
+        else
+        {
+            doomed.push_back(fParkedPlugins[i]);
+            fParkedPlugins.erase(fParkedPlugins.begin() + static_cast<long>(i));
+        }
+    if (doomed.empty())
+        return;
+    // from the highest id down, so the ones still to go keep their numbers
+    std::sort(doomed.rbegin(), doomed.rend());
+    for (uint id : doomed)
+        removePlugin(id);
+    reroute();
 }
 
 } // namespace chost

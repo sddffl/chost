@@ -60,6 +60,9 @@ jobs:
           ./build/chost-render --session s.chost --output render.wav --seconds 3 | tee render.log
           grep -P '^DONE render\.wav\t3\.00\t-12\.\d' render.log
           ./build/chost-render --session s.chost --output none.wav --seconds 3 --mute 1 | grep -P '^DONE .*\t-120\.0'
+          # undo and redo in the GUI: tracks, faders, inserts and a removed insert all come back, and still play
+          QT_QPA_PLATFORM=offscreen ./build/chost --file a.wav --file b.wav --test-undo $gain | tee undo.log
+          grep -q 'UNDO TEST PASSED' undo.log
 
       - name: Stem separation test
         run: |

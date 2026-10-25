@@ -9,12 +9,17 @@
 
 #include "HostEngine.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace chost {
 
 enum class TrackKind { Audio, Instrument };
+
+// Carla numbers its plugins 0, 1, 2... and renumbers them whenever one goes; a Uid names a track or a
+// plugin for as long as the session lives, which is what undo needs to find them again.
+using Uid = uint64_t;
 
 struct Track {
     TrackKind kind = TrackKind::Audio;
@@ -29,6 +34,30 @@ struct Track {
     float volume = 1.0f;       // 0 .. 1.27
     bool muted = false;
     bool solo = false;
+    uint32_t colour = 0;       // 0xRRGGBB as shown in the GUI, 0 until it has one
+    Uid uid = 0;
+};
+
+// Everything a user can change about a session, plugins by Uid: what undo goes back to.
+struct SessionState {
+    struct TrackState {
+        Uid uid = 0;
+        TrackKind kind = TrackKind::Audio;
+        std::string name, role, file, instrumentSpec;
+        Uid instrument = 0;              // 0: none
+        std::vector<Uid> inserts;
+        std::vector<bool> insertsActive; // bypassed or not, parallel to inserts
+        float volume = 1.0f;
+        bool muted = false, solo = false;
+        uint32_t colour = 0;
+        bool operator==(const TrackState& o) const;
+    };
+    std::vector<TrackState> tracks;
+    float masterVolume = 1.0f;
+    double tempo = 120.0;
+    std::string key;
+    bool operator==(const SessionState& o) const;
+    bool operator!=(const SessionState& o) const { return !(*this == o); }
 };
 
 class Session {
@@ -52,6 +81,7 @@ public:
     bool reloadMidiFile(int track, const std::string& path);    // an edited MIDI file, without replacing the player
     bool setInstrument(int track, const std::string& spec);     // loads or replaces an instrument track's instrument
     void setRole(int track, const std::string& role);
+    void setColour(int track, uint32_t colour);
     bool removeTrack(int track);
     void renameTrack(int track, const std::string& name);
     bool moveTrack(int from, int to); // display order only, the wiring doesn't depend on it
@@ -72,6 +102,14 @@ public:
     const std::string& key() const { return fKey; }
     void setKey(const std::string& key) { fKey = key; }
 
+    // Undo. With keepRemoved, a removed track, insert or replaced instrument isn't deleted but set aside,
+    // silent and switched off, so restore() can bring it back exactly as it was (the library loaded in
+    // Kontakt, every knob); dropUnused() deletes what no state kept for undo refers to any more.
+    void setKeepRemoved(bool keep) { fKeepRemoved = keep; }
+    SessionState state() const;
+    void restore(const SessionState& state);
+    void dropUnused(const std::vector<const SessionState*>& keep);
+
     // A .chost file is a small text file next to a Carla .carxp holding the plugins and their state.
     bool save(const std::string& path);
     bool load(const std::string& path);
@@ -85,9 +123,21 @@ private:
     void removePlugin(uint id);
     void applyGains();
     void matchProgram(int track);
+    Uid uidOf(int id) const;           // 0 for -1
+    int idOf(Uid uid) const;           // -1 when gone
+    void registerAdded(bool atFront = false); // a uid for the plugin carla just added
+    void park(uint id);                // an insert or instrument set aside
+    int unpark(Uid uid);               // its carla id again, -1 when it's gone
+    void parkTrack(int track);
+    bool setPlayer(int track, const std::string& path); // setTrackFile without the rewiring
 
     HostEngine& fHost;
     std::vector<Track> fTracks;
+    std::vector<Uid> fUids;              // per carla plugin id
+    Uid fNextUid = 1;
+    bool fKeepRemoved = false;
+    std::vector<Track> fParkedTracks;    // removed tracks, their plugins still loaded
+    std::vector<uint> fParkedPlugins;    // removed inserts and replaced instruments
     uint fMaster = 0;
     float fMasterVolume = 1.0f;
     double fTempo = 120.0;
