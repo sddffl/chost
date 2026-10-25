@@ -66,6 +66,9 @@ public:
     void separateStems(bool autoStart = false); // AI stem separation of the selected track
     void transcribe(bool allTracks, bool autoStart = false); // AI audio to MIDI
     void editNotes(int track);                               // the piano roll of a MIDI track
+    PianoRollDialog* pianoRoll() const { return fPianoRoll; } // the one open, if any
+    // a MIDI track's file was rewritten (to newPath, maybe the same): its track plays and shows it, undoably
+    void midiFileEdited(const QString& oldPath, const QString& newPath, const QString& what);
     bool isDrumTrack(int track);
     void play();
     void applyInstruments();   // every MIDI track gets the instrument set for its kind of part

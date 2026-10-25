@@ -146,6 +146,14 @@ static const char* const kTools = R"json([
   }, "required": ["chords"]}
 },
 {
+  "name": "fit_notes_to_scale",
+  "description": "Moves the notes of a MIDI track that are outside a scale to the nearest note of it, as the piano roll's 修正到调内 does: for wrong notes audio to MIDI left, or a part written in the wrong key. The track's file is kept; the result goes to a copy the track then plays. Undoable.",
+  "inputSchema": {"type": "object", "properties": {
+    "track": {"type": "integer", "minimum": 0},
+    "scale": {"type": "string", "description": "e.g. \"A minor\", \"A harmonic minor\", \"D dorian\", \"C major pentatonic\", \"E blues\"; default the song's key (major or natural minor)."}
+  }, "required": ["track"]}
+},
+{
   "name": "get_parameters",
   "description": "The parameters of a plugin: an insert of a track, or its instrument. Each has its index, name, unit, range, default and current value; outputs (meters) are marked.",
   "inputSchema": {"type": "object", "properties": {

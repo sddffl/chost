@@ -84,6 +84,16 @@ jobs:
           grep -q 'PROGRESSION Am F | C G G7' prog.log
           QT_QPA_PLATFORM=offscreen ./build/chost --chord-progression "Am F | C G" --screenshot chordpad.png --screenshot-delay 3000
           test -f chordpad-1.png
+          # scales: the key of a part from its notes, and stray notes pulled into a scale
+          ./build/chost-cli scale --scale "E harmonic minor" | grep -P '^SCALE E harmonic minor\tE F# G A B C D#$'
+          # (A minor and C major have the same notes; either is right for Am F C G)
+          ./build/chost-cli scale --guess prog.mid | grep -P '^GUESS (A minor|C major)\t0\.[6-9]'
+          ./build/chost-cli scale --scale "D major" --fit prog.mid --output fitted.mid | grep -q 'FIT [1-9]'
+          ./build/chost-cli scale --scale "D major" --fit fitted.mid | grep -q 'FIT 0 of'
+          QT_QPA_PLATFORM=offscreen ./build/chost --file prog.mid --select 0 --edit-notes --note-scale "D major" --fit-scale \
+              --screenshot scale.png --screenshot-delay 2500 | tee scale.log
+          grep -q 'FITTED [1-9]' scale.log
+          ./build/chost-cli scale --scale "D major" --fit prog_edit.mid | grep -q 'FIT 0 of'
           echo '{"mcpServers": {"other": {"command": "x"}}}' > claude.json
           QT_QPA_PLATFORM=offscreen ./build/chost --claude-config claude.json | grep -q 'CLAUDE CONFIG WRITTEN'
           python3 -c "import json; s = json.load(open('claude.json'))['mcpServers']; assert 'other' in s and s['chost']['command'].endswith('chost-mcp')"
@@ -176,6 +186,7 @@ jobs:
             stems*.png
             midi*.png
             pianoroll*.png
+            scale*.png
             master*.png
             arrange*.png
             tune*.png

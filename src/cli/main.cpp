@@ -16,6 +16,7 @@
 
 #include "core/Chords.h"
 #include "core/HostEngine.h"
+#include "core/Scales.h"
 #include "core/Session.h"
 
 #include <algorithm>
@@ -445,6 +446,72 @@ static int cmdMix(int argc, char* argv[])
 
 // the chord pad's harmony, without the GUI: the pads of a key and what fits after a chord, or a
 // progression written as a MIDI part
+// chost-cli scale: a scale's notes, the key of a MIDI file, notes pulled into a scale
+static int cmdScale(int argc, char* argv[])
+{
+    std::string scaleText, guess, fit, output;
+    for (int i = 0; i < argc; ++i)
+    {
+        const std::string a = argv[i];
+        auto value = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+        if (a == "--scale")
+            scaleText = value();
+        else if (a == "--guess")
+            guess = value();
+        else if (a == "--fit")
+            fit = value();
+        else if (a == "--output")
+            output = value();
+    }
+    std::string error;
+    chost::Scale scale = chost::parseScale(scaleText);
+    for (const auto& [file, guessing] : {std::pair{guess, true}, std::pair{fit, false}})
+    {
+        if (file.empty())
+            continue;
+        chost::MidiClip clip;
+        if (!chost::readMidiFile(file, clip, error))
+        {
+            std::fprintf(stderr, "%s: %s\n", file.c_str(), error.c_str());
+            return 1;
+        }
+        if (guessing)
+        {
+            float confidence = 0.0f;
+            const chost::Key key = chost::guessKey(clip.notes, &confidence);
+            std::printf("GUESS %s\t%.2f\n", key.valid ? chost::keyName(key).c_str() : "-", confidence);
+            if (!scale.valid())
+                scale = chost::scaleOfKey(key);
+        }
+        else
+        {
+            if (!scale.valid())
+            {
+                std::fprintf(stderr, "--fit needs --scale (or --guess)\n");
+                return 1;
+            }
+            const int moved = chost::fitToScale(clip.notes, scale);
+            std::printf("FIT %d of %zu notes moved into %s\n", moved, clip.notes.size(), chost::scaleName(scale).c_str());
+            if (!output.empty() && !chost::writeMidiFile(output, clip, error))
+            {
+                std::fprintf(stderr, "%s\n", error.c_str());
+                return 1;
+            }
+        }
+    }
+    if (!scale.valid())
+    {
+        std::fprintf(stderr, "unknown scale: %s\n", scaleText.c_str());
+        return 1;
+    }
+    const chost::Key spelling = chost::parseKey(chost::scaleName(scale));
+    std::string notes;
+    for (int step : scale.steps)
+        notes += (notes.empty() ? "" : " ") + chost::noteName(scale.tonic + step, spelling);
+    std::printf("SCALE %s\t%s\n", chost::scaleName(scale).c_str(), notes.c_str());
+    return 0;
+}
+
 static int cmdChords(int argc, char* argv[])
 {
     std::string keyText = "C major", after, progression, output, patternText = "block";
@@ -536,6 +603,8 @@ int main(int argc, char* argv[])
         return cmdMix(argc - 2, argv + 2);
     if (cmd == "chords")
         return cmdChords(argc - 2, argv + 2);
+    if (cmd == "scale")
+        return cmdScale(argc - 2, argv + 2);
 
     std::fprintf(stderr,
                  "usage:\n"
@@ -547,6 +616,7 @@ int main(int argc, char* argv[])
                  "                [--volume T=V] [--remove-track T] [--remove-insert T:I]\n"
                  "                [--seconds S] [--save F.chost] [--open F.chost]\n"
                  "  chost-cli chords [--key \"A minor\"] [--sevenths] [--after CHORD]\n"
-                 "  chost-cli chords [--key K] --progression \"C G | Am F\" [--output F.mid] [--pattern block|arpeggio|rhythm] [--tempo BPM]\n");
+                 "  chost-cli chords [--key K] --progression \"C G | Am F\" [--output F.mid] [--pattern block|arpeggio|rhythm] [--tempo BPM]\n"
+                 "  chost-cli scale [--scale \"A minor\"] [--guess F.mid] [--fit F.mid [--output OUT.mid]]\n");
     return 2;
 }

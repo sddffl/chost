@@ -6,11 +6,15 @@
 //   right click / Delete    remove notes
 //   Ctrl+click, Ctrl+drag   select several notes
 //   arrows                  move the selection (Shift+up/down: an octave)
+//
+// With a scale set, its rows are lit, the tonic marked and notes outside it outlined; with snapping on,
+// added and dragged notes land on scale notes and up/down move by scale steps.
 //   Ctrl+Z / Ctrl+Shift+Z   undo / redo
 
 #pragma once
 
 #include "core/MidiFile.h"
+#include "core/Scales.h"
 
 #include <QColor>
 #include <QDialog>
@@ -18,8 +22,10 @@
 
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
+class QPushButton;
 class QScrollBar;
 class QTimer;
 
@@ -35,6 +41,11 @@ public:
     void setGrid(double beats);      // snap and new note length, in beats
     void setPlayhead(double seconds);
     void quantize();                 // the selection, or every note without one
+    void setScale(const chost::Scale& scale); // invalid: none
+    const chost::Scale& scale() const { return fScale; }
+    void setScaleSnap(bool on) { fScaleSnap = on; }
+    int fitToScale();                // the selection's (or every) note outside the scale into it; how many moved
+    int outsideScale() const;        // notes outside the scale
     void undo();
     void redo();
     void scrollToNotes();
@@ -73,6 +84,8 @@ private:
     void removeSelected();
     void shiftSelected(double seconds, int pitch);
     QString rowName(int pitch) const;
+    bool snapping() const { return fScaleSnap && fScale.valid() && !fClip.drums; }
+    bool outside(const chost::MidiNote& n) const { return fScale.valid() && !fClip.drums && !fScale.contains(n.pitch); }
 
     chost::MidiClip fClip;
     std::vector<bool> fSelected; // parallel to fClip.notes
@@ -82,6 +95,8 @@ private:
     double fPixelsPerSecond = 160.0;
     int fRowHeight = 12;
     double fPlayhead = 0.0;
+    chost::Scale fScale;
+    bool fScaleSnap = false;
     QScrollBar* fHScroll = nullptr;
     QScrollBar* fVScroll = nullptr;
 
@@ -99,10 +114,17 @@ class PianoRollDialog : public QDialog {
     Q_OBJECT
 
 public:
-    PianoRollDialog(const QString& trackName, const QString& midiPath, const QColor& colour, QWidget* parent = nullptr);
+    // songKey: the song's, e.g. "A minor", for the scale; empty: guessed from the notes
+    PianoRollDialog(const QString& trackName, const QString& midiPath, const QColor& colour, const QString& songKey = {},
+                    QWidget* parent = nullptr);
 
     QString midiPath() const { return fPath; }
     void setPlayhead(double seconds) { fRoll->setPlayhead(seconds); }
+    void setScale(const QString& text); // "A minor", "D dorian"; empty or "off": none (tests)
+    int fitToScale();                   // as the button does
+
+    // where edits of a MIDI file go: the file itself once it is chost's "<name>_edit.mid", else that copy
+    static QString editPath(const QString& midiPath);
 
 signals:
     // the file was written; the first edit of a file chost didn't make goes to a copy, oldPath != newPath
@@ -111,10 +133,17 @@ signals:
 
 private:
     void save();
+    void scaleChanged();
+    void refreshOutside();
 
     QString fPath;
     PianoRoll* fRoll = nullptr;
     QComboBox* fGrid = nullptr;
+    QComboBox* fTonic = nullptr;
+    QComboBox* fScaleType = nullptr;
+    QCheckBox* fSnap = nullptr;
+    QPushButton* fFit = nullptr;
+    QLabel* fOutside = nullptr;
     QLabel* fStatus = nullptr;
     QTimer* fSaveTimer = nullptr;
 };

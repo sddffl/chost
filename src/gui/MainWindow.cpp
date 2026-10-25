@@ -1677,6 +1677,20 @@ int MainWindow::trackOfFile(const QString& path) const
     return -1;
 }
 
+void MainWindow::midiFileEdited(const QString& oldPath, const QString& newPath, const QString& what)
+{
+    const int t = trackOfFile(oldPath);
+    if (t < 0)
+        return;
+    fSession.reloadMidiFile(t, newPath.toStdString());
+    fClips.remove(oldPath);
+    fClips.remove(newPath);
+    const int keep = fSelected;
+    refreshTracks();
+    selectTrack(keep);
+    fHistory->record(what);
+}
+
 void MainWindow::editNotes(int track)
 {
     const std::vector<chost::Track>& tracks = fSession.tracks();
@@ -1692,20 +1706,12 @@ void MainWindow::editNotes(int track)
         return;
     }
     delete fPianoRoll;
-    fPianoRoll = new PianoRollDialog(QString::fromStdString(tracks[track].name), path, trackColour(track), this);
+    fPianoRoll = new PianoRollDialog(QString::fromStdString(tracks[track].name), path, trackColour(track),
+                                     QString::fromStdString(fSession.key()), this);
     fPianoRoll->setAttribute(Qt::WA_DeleteOnClose);
 
     connect(fPianoRoll, &PianoRollDialog::saved, this, [this](const QString& oldPath, const QString& newPath) {
-        const int t = trackOfFile(oldPath);
-        if (t < 0)
-            return;
-        fSession.reloadMidiFile(t, newPath.toStdString());
-        fClips.remove(oldPath);
-        fClips.remove(newPath);
-        const int keep = fSelected;
-        refreshTracks();
-        selectTrack(keep);
-        fHistory->record(QStringLiteral("编辑音符"));
+        midiFileEdited(oldPath, newPath, QStringLiteral("编辑音符"));
     });
     connect(fPianoRoll, &PianoRollDialog::audition, this, [this](const QString& midiPath, int pitch, int channel) {
         const int t = trackOfFile(midiPath);

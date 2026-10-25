@@ -2,6 +2,7 @@
 
 #include "Theme.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QFileInfo>
@@ -11,6 +12,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -20,6 +22,7 @@
 
 static constexpr int kRulerHeight = 22;
 static constexpr int kEndHandle = 5; // pixels at a note's right end that resize it
+static const QColor kOutsideColour(0xff, 0x8c, 0x3a);
 
 static bool isBlackKey(int pitch)
 {
@@ -88,6 +91,32 @@ void PianoRoll::setGrid(double beats)
 {
     fGrid = beats;
     update();
+}
+
+void PianoRoll::setScale(const chost::Scale& scale)
+{
+    fScale = scale;
+    update();
+}
+
+int PianoRoll::outsideScale() const
+{
+    return fClip.drums ? 0 : chost::countOutside(fClip.notes, fScale);
+}
+
+int PianoRoll::fitToScale()
+{
+    if (!fScale.valid() || fClip.drums)
+        return 0;
+    const bool any = std::find(fSelected.begin(), fSelected.end(), true) != fSelected.end();
+    std::vector<chost::MidiNote> notes = fClip.notes;
+    const int moved = chost::fitToScale(notes, fScale, any ? &fSelected : nullptr);
+    if (moved == 0)
+        return 0;
+    checkpoint();
+    fClip.notes = notes;
+    changed();
+    return moved;
 }
 
 void PianoRoll::setPlayhead(double seconds)
@@ -219,6 +248,11 @@ void PianoRoll::paintEvent(QPaintEvent*)
         QColor row = isBlackKey(pitch) && !fClip.drums ? QColor(0x23, 0x26, 0x2a) : QColor(0x2b, 0x2f, 0x34);
         if (named)
             row = QColor(0x30, 0x35, 0x3b);
+        if (fScale.valid() && !fClip.drums)
+        {
+            // the scale's rows lit, the rest dark, the tonic's tinted
+            row = fScale.isTonic(pitch) ? QColor(0x2c, 0x3a, 0x4b) : fScale.contains(pitch) ? QColor(0x2e, 0x32, 0x38) : QColor(0x1e, 0x20, 0x23);
+        }
         p.fillRect(keys, y, right - keys, fRowHeight, row);
         p.setPen(pitch % 12 == 0 ? QColor(0x40, 0x45, 0x4c) : QColor(0x26, 0x29, 0x2d));
         p.drawLine(keys, y + fRowHeight - 1, right, y + fRowHeight - 1);
@@ -254,6 +288,19 @@ void PianoRoll::paintEvent(QPaintEvent*)
         p.setPen(fSelected[i] ? QPen(Qt::white, 1) : QPen(fColour.darker(170), 1));
         p.setBrush(c);
         p.drawRoundedRect(r.adjusted(0, 0, -1, -1), 2, 2);
+        if (outside(n))
+        {
+            // outside the scale: an orange frame, and a mark at its start when it is long enough
+            p.setPen(QPen(kOutsideColour, fSelected[i] ? 1 : 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(r.adjusted(1, 1, -2, -2), 2, 2);
+            if (r.width() > 14)
+            {
+                p.setBrush(kOutsideColour);
+                p.setPen(Qt::NoPen);
+                p.drawEllipse(QPoint(r.left() + 6, r.center().y()), 2, 2);
+            }
+        }
     }
 
     // rubber band
@@ -307,11 +354,16 @@ void PianoRoll::paintEvent(QPaintEvent*)
         p.fillRect(key, black ? QColor(0x1a, 0x1b, 0x1d) : QColor(0xd8, 0xda, 0xdc));
         p.setPen(QColor(0x80, 0x84, 0x88));
         p.drawLine(0, y + fRowHeight - 1, keys - 1, y + fRowHeight - 1);
+        if (fScale.valid() && !fClip.drums && fScale.contains(pitch))
+        {
+            const bool tonic = fScale.isTonic(pitch);
+            p.fillRect(keys - (tonic ? 8 : 6), y + 1, tonic ? 7 : 5, fRowHeight - 2, tonic ? QColor(0x2f, 0x7d, 0xd8) : QColor(0x7a, 0xae, 0xe0));
+        }
         const QString name = rowName(pitch);
         if (!name.isEmpty())
         {
-            p.setPen(QColor(0x30, 0x33, 0x36));
-            p.drawText(key.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignRight, name);
+            p.setPen(black ? QColor(0xc8, 0xcc, 0xd0) : QColor(0x30, 0x33, 0x36));
+            p.drawText(key.adjusted(4, 0, -8, 0), Qt::AlignVCenter | Qt::AlignRight, name);
         }
     }
     p.setClipping(false);
@@ -323,8 +375,14 @@ QString PianoRoll::rowName(int pitch) const
 {
     if (fClip.drums)
         return drumName(pitch);
-    // Cubase names middle C (60) C3
-    return pitch % 12 == 0 ? QStringLiteral("C%1").arg(pitch / 12 - 2) : QString();
+    // Cubase names middle C (60) C3; with a scale its tonic is named too
+    if (pitch % 12 == 0 || fScale.isTonic(pitch))
+    {
+        const chost::Key spelling = chost::parseKey(chost::scaleName(fScale));
+        const std::string name = fScale.isTonic(pitch) ? chost::noteName(pitch, spelling) : std::string("C");
+        return QStringLiteral("%1%2").arg(QString::fromStdString(name)).arg(pitch / 12 - 2);
+    }
+    return {};
 }
 
 void PianoRoll::checkpoint()
@@ -418,7 +476,9 @@ void PianoRoll::shiftSelected(double seconds, int pitch)
         const double len = n.end - n.start;
         n.start = std::max(0.0, n.start + seconds);
         n.end = n.start + len;
-        n.pitch = static_cast<uint8_t>(std::clamp(n.pitch + pitch, 0, 127));
+        // with snapping a step up or down is to the next scale note, octaves stay octaves
+        n.pitch = static_cast<uint8_t>(snapping() && std::abs(pitch) == 1 ? chost::stepInScale(n.pitch, fScale, pitch)
+                                                                         : std::clamp(n.pitch + pitch, 0, 127));
         if (pitch != 0)
             emit audition(n.pitch, n.channel);
     }
@@ -483,7 +543,7 @@ void PianoRoll::mousePressEvent(QMouseEvent* event)
         chost::MidiNote n;
         n.start = std::max(0.0, std::floor(xToSeconds(pos.x()) / gridSeconds()) * gridSeconds());
         n.end = n.start + gridSeconds();
-        n.pitch = static_cast<uint8_t>(pitchAt(pos.y()));
+        n.pitch = static_cast<uint8_t>(snapping() ? chost::snapToScale(pitchAt(pos.y()), fScale) : pitchAt(pos.y()));
         n.velocity = 100;
         n.channel = fClip.drums ? 9 : (fClip.notes.empty() ? 0 : fClip.notes.front().channel);
         fClip.notes.push_back(n);
@@ -519,7 +579,17 @@ void PianoRoll::mouseMoveEvent(QMouseEvent* event)
     const double dt = std::round((pos.x() - fPressPos.x()) / fPixelsPerSecond / g) * g;
     if (fDrag == Drag::Move)
     {
-        const int dp = pitchAt(pos.y()) - pitchAt(fPressPos.y());
+        int dp = pitchAt(pos.y()) - pitchAt(fPressPos.y());
+        // with snapping the notes move by scale steps: the grabbed one to the scale note nearest the mouse
+        int degrees = 0;
+        if (snapping())
+        {
+            const int from = fPressNotes[static_cast<size_t>(fPressNote)].pitch;
+            const int start = chost::snapToScale(from, fScale);
+            const int to = chost::snapToScale(std::clamp(from + dp, 0, 127), fScale, dp);
+            degrees = chost::scaleIndex(fScale, to) - chost::scaleIndex(fScale, start);
+            dp = degrees == 0 ? 0 : to - from;
+        }
         if (!fDragChanged && dt == 0.0 && dp == 0)
             return;
         if (!fDragChanged)
@@ -538,7 +608,12 @@ void PianoRoll::mouseMoveEvent(QMouseEvent* event)
             const double len = from.end - from.start;
             n.start = std::max(0.0, from.start + dt);
             n.end = n.start + len;
-            n.pitch = static_cast<uint8_t>(std::clamp(from.pitch + dp, 0, 127));
+            if (!snapping())
+                n.pitch = static_cast<uint8_t>(std::clamp(from.pitch + dp, 0, 127));
+            else if (degrees != 0)
+                n.pitch = static_cast<uint8_t>(chost::stepInScale(from.pitch, fScale, degrees));
+            else
+                n.pitch = from.pitch;
         }
         const chost::MidiNote& lead = fClip.notes[static_cast<size_t>(fPressNote)];
         if (lead.pitch != oldPitch)
@@ -678,7 +753,8 @@ void PianoRoll::wheelEvent(QWheelEvent* event)
 // ---------------------------------------------------------------------------------------------------------------------
 // PianoRollDialog
 
-PianoRollDialog::PianoRollDialog(const QString& trackName, const QString& midiPath, const QColor& colour, QWidget* parent)
+PianoRollDialog::PianoRollDialog(const QString& trackName, const QString& midiPath, const QColor& colour, const QString& songKey,
+                                 QWidget* parent)
     : QDialog(parent)
     , fPath(midiPath)
 {
@@ -706,13 +782,52 @@ PianoRollDialog::PianoRollDialog(const QString& trackName, const QString& midiPa
     auto* redo = new QPushButton(QStringLiteral("重做"));
     bar->addWidget(undo);
     bar->addWidget(redo);
-    auto* help = new QLabel(QStringLiteral("单击空白处加音符 · 拖动移动 · 拖右边缘改长短 · 右键或 Delete 删除 · Ctrl+拖动框选 · 方向键移动 · Ctrl+滚轮缩放"));
-    help->setStyleSheet(QStringLiteral("color: #8b9096;"));
-    bar->addWidget(help, 1);
+
+    // the scale: its notes lit in the roll, and what snapping keeps notes to
+    bar->addSpacing(16);
+    bar->addWidget(new QLabel(QStringLiteral("音阶")));
+    fTonic = new QComboBox;
+    for (const char* name : {"C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B"})
+        fTonic->addItem(QString::fromLatin1(name));
+    fTonic->setToolTip(QStringLiteral("主音（调的第一个音）"));
+    bar->addWidget(fTonic);
+    fScaleType = new QComboBox;
+    fScaleType->addItem(QStringLiteral("不显示"), QString());
+    const std::pair<const char*, QString> types[] = {
+        {"major", QStringLiteral("大调")},
+        {"minor", QStringLiteral("小调（自然）")},
+        {"harmonic minor", QStringLiteral("和声小调")},
+        {"melodic minor", QStringLiteral("旋律小调")},
+        {"dorian", QStringLiteral("多利亚")},
+        {"phrygian", QStringLiteral("弗里几亚")},
+        {"lydian", QStringLiteral("利底亚")},
+        {"mixolydian", QStringLiteral("混合利底亚")},
+        {"major pentatonic", QStringLiteral("五声 宫调式")},
+        {"minor pentatonic", QStringLiteral("五声 羽调式")},
+        {"blues", QStringLiteral("布鲁斯")},
+    };
+    for (const auto& [id, name] : types)
+        fScaleType->addItem(name, QString::fromLatin1(id));
+    fScaleType->setToolTip(QStringLiteral("调内的音在卷帘里亮起来，主音标蓝，调外的音符画橙色框"));
+    bar->addWidget(fScaleType);
+    fSnap = new QCheckBox(QStringLiteral("吸附"));
+    fSnap->setToolTip(QStringLiteral("加音符、拖动音符、上下方向键都只走调内的音（Shift+上下仍是一个八度）"));
+    fSnap->setChecked(QSettings().value(QStringLiteral("pianoRoll/scaleSnap"), true).toBool());
+    bar->addWidget(fSnap);
+    fFit = new QPushButton(QStringLiteral("修正到调内"));
+    fFit->setToolTip(QStringLiteral("把选中的（没选就是全部）调外的音移到最近的调内音，常用来修正转 MIDI 弹错的音"));
+    bar->addWidget(fFit);
+    fOutside = new QLabel;
+    fOutside->setStyleSheet(QStringLiteral("color: #ff8c3a;"));
+    bar->addWidget(fOutside);
+    bar->addStretch(1);
     fStatus = new QLabel;
     fStatus->setStyleSheet(QStringLiteral("color: #8b9096;"));
     bar->addWidget(fStatus);
     layout->addLayout(bar);
+    auto* help = new QLabel(QStringLiteral("单击空白处加音符 · 拖动移动 · 拖右边缘改长短 · 右键或 Delete 删除 · Ctrl+拖动框选 · 方向键移动 · Ctrl+滚轮缩放"));
+    help->setStyleSheet(QStringLiteral("color: #8b9096;"));
+    layout->addWidget(help);
 
     fRoll = new PianoRoll;
     fRoll->setColour(colour);
@@ -724,6 +839,29 @@ PianoRollDialog::PianoRollDialog(const QString& trackName, const QString& midiPa
         fStatus->setText(QStringLiteral("读不了这个 MIDI 文件：%1").arg(QString::fromStdString(error)));
     fRoll->setClip(clip);
     fRoll->setGrid(fGrid->currentData().toDouble());
+
+    // the song's key, else the one the notes are in when they make it clear
+    chost::Key key = chost::parseKey(songKey.toStdString());
+    QString keyNote = QStringLiteral("歌曲的调");
+    if (!key.valid)
+    {
+        float confidence = 0.0f;
+        key = chost::guessKey(clip.notes, &confidence);
+        if (confidence < 0.6f)
+            key = {};
+        keyNote = QStringLiteral("按音符猜的调");
+    }
+    if (key.valid && !clip.drums)
+    {
+        setScale(QString::fromStdString(chost::keyName(key)));
+        fScaleType->setToolTip(fScaleType->toolTip() + QStringLiteral("\n现在是%1：%2").arg(keyNote, QString::fromStdString(chost::keyName(key))));
+    }
+    if (clip.drums)
+    {
+        fTonic->setEnabled(false);
+        fScaleType->setEnabled(false);
+    }
+    scaleChanged();
     QTimer::singleShot(0, fRoll, &PianoRoll::scrollToNotes);
 
     fSaveTimer = new QTimer(this);
@@ -733,7 +871,15 @@ PianoRollDialog::PianoRollDialog(const QString& trackName, const QString& midiPa
     connect(fRoll, &PianoRoll::edited, this, [this] {
         fStatus->setText(QStringLiteral("…"));
         fSaveTimer->start();
+        refreshOutside();
     });
+    connect(fTonic, &QComboBox::currentIndexChanged, this, &PianoRollDialog::scaleChanged);
+    connect(fScaleType, &QComboBox::currentIndexChanged, this, &PianoRollDialog::scaleChanged);
+    connect(fSnap, &QCheckBox::toggled, this, [this](bool on) {
+        QSettings().setValue(QStringLiteral("pianoRoll/scaleSnap"), on);
+        scaleChanged();
+    });
+    connect(fFit, &QPushButton::clicked, this, &PianoRollDialog::fitToScale);
     connect(fRoll, &PianoRoll::audition, this, [this](int pitch, int channel) { emit audition(fPath, pitch, channel); });
     connect(fGrid, &QComboBox::currentIndexChanged, this, [this] { fRoll->setGrid(fGrid->currentData().toDouble()); });
     connect(quantize, &QPushButton::clicked, fRoll, &PianoRoll::quantize);
@@ -742,22 +888,66 @@ PianoRollDialog::PianoRollDialog(const QString& trackName, const QString& midiPa
     fRoll->setFocus();
 }
 
-void PianoRollDialog::save()
+void PianoRollDialog::setScale(const QString& text)
+{
+    const chost::Scale scale = chost::parseScale(text.toStdString());
+    if (!scale.valid())
+    {
+        fScaleType->setCurrentIndex(0);
+        return;
+    }
+    const QSignalBlocker block(fTonic);
+    fTonic->setCurrentIndex(scale.tonic);
+    fScaleType->setCurrentIndex(std::max(0, fScaleType->findData(QString::fromStdString(scale.type))));
+    scaleChanged();
+}
+
+void PianoRollDialog::scaleChanged()
+{
+    const QString type = fScaleType->currentData().toString();
+    const chost::Scale scale = type.isEmpty() ? chost::Scale{} : chost::makeScale(fTonic->currentIndex(), type.toStdString());
+    fRoll->setScale(scale);
+    fRoll->setScaleSnap(fSnap->isChecked());
+    fTonic->setEnabled(fScaleType->isEnabled() && scale.valid());
+    fSnap->setEnabled(scale.valid());
+    refreshOutside();
+}
+
+void PianoRollDialog::refreshOutside()
+{
+    const int n = fRoll->outsideScale();
+    fFit->setEnabled(n > 0);
+    fOutside->setText(n > 0 ? QStringLiteral("%1 个音在调外").arg(n) : QString());
+}
+
+int PianoRollDialog::fitToScale()
+{
+    const int moved = fRoll->fitToScale();
+    if (moved > 0)
+        fStatus->setText(QStringLiteral("移了 %1 个音到调内").arg(moved));
+    return moved;
+}
+
+QString PianoRollDialog::editPath(const QString& midiPath)
 {
     // edits never overwrite a file chost didn't make: the first one goes to "<name>_edit.mid"
-    const QString old = fPath;
-    const QFileInfo info(fPath);
-    if (!info.completeBaseName().endsWith(QLatin1String("_edit")))
+    const QFileInfo info(midiPath);
+    if (info.completeBaseName().endsWith(QLatin1String("_edit")))
+        return midiPath;
+    const QString name = info.completeBaseName() + QStringLiteral("_edit.mid");
+    QString folder = info.absolutePath();
+    if (!QFileInfo(folder).isWritable())
     {
-        const QString name = info.completeBaseName() + QStringLiteral("_edit.mid");
-        QString folder = info.absolutePath();
-        if (!QFileInfo(folder).isWritable())
-        {
-            folder = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/midi");
-            QDir().mkpath(folder);
-        }
-        fPath = QDir(folder).filePath(name);
+        folder = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/midi");
+        QDir().mkpath(folder);
     }
+    return QDir(folder).filePath(name);
+}
+
+void PianoRollDialog::save()
+{
+    const QString old = fPath;
+    fPath = editPath(fPath);
     std::string error;
     if (!chost::writeMidiFile(fPath.toStdString(), fRoll->clip(), error))
     {

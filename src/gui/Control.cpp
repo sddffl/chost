@@ -5,6 +5,7 @@
 #include "History.h"
 #include "MainWindow.h"
 #include "MasterDialog.h"
+#include "PianoRoll.h"
 #include "PluginDiscovery.h"
 #include "PluginWindows.h"
 #include "ScriptJob.h"
@@ -14,6 +15,7 @@
 #include "Widgets.h"
 #include "control/Tools.h"
 #include "core/Chords.h"
+#include "core/Scales.h"
 
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -652,6 +654,60 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             o.insert(QStringLiteral("notes"), static_cast<int>(clip.notes.size()));
             o.insert(QStringLiteral("seconds"), std::round(clip.seconds * 100.0) / 100.0);
             o.insert(QStringLiteral("file"), path(file));
+            result = o;
+        }
+        else if (tool == QLatin1String("fit_notes_to_scale"))
+        {
+            const int track = trackArg();
+            if (tracks[track].kind != chost::TrackKind::Instrument || tracks[track].file.empty())
+                throw Fail{QStringLiteral("track %1 is not a MIDI track").arg(track)};
+            const QString file = QString::fromStdString(tracks[track].file);
+            chost::MidiClip clip;
+            std::string error;
+            if (!chost::readMidiFile(file.toStdString(), clip, error))
+                throw Fail{QString::fromStdString(error)};
+            if (clip.drums)
+                throw Fail{QStringLiteral("track %1 is drums, which have no scale").arg(track)};
+            chost::Scale scale;
+            QString from;
+            if (has("scale"))
+            {
+                scale = chost::parseScale(args.value(QStringLiteral("scale")).toString().toStdString());
+                if (!scale.valid())
+                    throw Fail{QStringLiteral("not a scale: %1").arg(args.value(QStringLiteral("scale")).toString())};
+                from = QStringLiteral("given");
+            }
+            else if (chost::parseKey(session.key()).valid)
+            {
+                scale = chost::scaleOfKey(chost::parseKey(session.key()));
+                from = QStringLiteral("the song's key");
+            }
+            else
+            {
+                float confidence = 0.0f;
+                scale = chost::scaleOfKey(chost::guessKey(clip.notes, &confidence));
+                if (!scale.valid() || confidence < 0.6f)
+                    throw Fail{QStringLiteral("the song's key is not known and the notes don't make it clear: give scale")};
+                from = QStringLiteral("guessed from the notes");
+            }
+            const int moved = chost::fitToScale(clip.notes, scale);
+            QString written = file;
+            if (moved > 0)
+            {
+                written = PianoRollDialog::editPath(file);
+                if (!chost::writeMidiFile(written.toStdString(), clip, error))
+                    throw Fail{QString::fromStdString(error)};
+                if (w.fPianoRoll && w.fPianoRoll->midiPath() == file)
+                    delete w.fPianoRoll; // it shows the notes as they were
+                w.midiFileEdited(file, written, QStringLiteral("修正到调内"));
+                check();
+            }
+            QJsonObject o = okTrack(track);
+            o.insert(QStringLiteral("scale"), QString::fromStdString(chost::scaleName(scale)));
+            o.insert(QStringLiteral("scale_from"), from);
+            o.insert(QStringLiteral("moved"), moved);
+            o.insert(QStringLiteral("notes"), static_cast<int>(clip.notes.size()));
+            o.insert(QStringLiteral("file"), path(written));
             result = o;
         }
         else if (tool == QLatin1String("get_parameters"))

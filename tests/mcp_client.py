@@ -127,6 +127,13 @@ part = call("add_chord_track", chords="Am F | C G", pattern="arpeggio")
 check(part["notes"] >= 16 and len(call("get_project")["tracks"]) == 3, "a chord track with %d notes" % part["notes"])
 call("add_chord_track", chords="Am H7", expect_error=True)
 
+# notes pulled into a scale: the A minor chords into D major move, then nothing is left outside
+fit = call("fit_notes_to_scale", track=part["track"], scale="D major")
+check(fit["moved"] >= 1 and fit["file"].endswith("_edit.mid"), "%d notes moved into %s" % (fit["moved"], fit["scale"]))
+check(call("fit_notes_to_scale", track=part["track"], scale="D major")["moved"] == 0, "none left outside")
+call("undo")
+call("fit_notes_to_scale", track=part["track"], scale="H major", expect_error=True)
+
 proc.stdin.close()
 proc.wait(timeout=10)
 print("MCP TEST PASSED")

@@ -1,6 +1,7 @@
 #include "ChordPad.h"
 #include "ClaudeConnect.h"
 #include "MainWindow.h"
+#include "PianoRoll.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -52,8 +53,10 @@ int main(int argc, char* argv[])
     QCommandLineOption chordPadOpt(QStringLiteral("chord-pad"), QStringLiteral("Open the chord pad."));
     QCommandLineOption progressionOpt(QStringLiteral("chord-progression"), QStringLiteral("Open the chord pad with these chords and write them as a MIDI track (tests)."), QStringLiteral("chords"));
     QCommandLineOption recogniseOpt(QStringLiteral("recognise-chords"), QStringLiteral("Open the chord pad and recognise the chords of the first audio track (tests)."));
+    QCommandLineOption noteScaleOpt(QStringLiteral("note-scale"), QStringLiteral("With --edit-notes: show this scale (\"A minor\", \"D dorian\", \"off\")."), QStringLiteral("scale"));
+    QCommandLineOption fitScaleOpt(QStringLiteral("fit-scale"), QStringLiteral("With --edit-notes: move the notes outside the scale into it (tests)."));
     QCommandLineOption playOpt(QStringLiteral("play"), QStringLiteral("Start playback at startup."));
-    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, delayOpt});
+    parser.addOptions({pluginOpt, fileOpt, sessionOpt, shotOpt, playOpt, separateOpt, transcribeOpt, selectOpt, applyOpt, instrumentsOpt, notesOpt, exportOpt, masterOpt, analyzeOpt, arrangeOpt, chordsOpt, tuneOpt, undoOpt, recoverOpt, saveOpt, claudeOpt, chordPadOpt, progressionOpt, recogniseOpt, noteScaleOpt, fitScaleOpt, delayOpt});
     parser.process(app);
 
     if (parser.isSet(shotOpt))
@@ -84,7 +87,17 @@ int main(int argc, char* argv[])
     if (parser.isSet(saveOpt))
         window.saveSessionNow();
     if (parser.isSet(notesOpt) && parser.isSet(selectOpt))
+    {
         window.editNotes(parser.value(selectOpt).toInt());
+        if (PianoRollDialog* roll = window.pianoRoll())
+        {
+            if (parser.isSet(noteScaleOpt))
+                roll->setScale(parser.value(noteScaleOpt));
+            if (parser.isSet(fitScaleOpt))
+                std::printf("FITTED %d notes into the scale\n", roll->fitToScale());
+            std::fflush(stdout);
+        }
+    }
     if (parser.isSet(playOpt))
         window.play();
     if (parser.isSet(separateOpt))
