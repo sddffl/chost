@@ -219,9 +219,15 @@ HostEngine::~HostEngine()
     stop();
 }
 
-bool HostEngine::start(const std::string& driver, const std::string& device)
+bool HostEngine::start(const std::string& driver, Mode mode, const std::string& device)
 {
     stop();
+    {
+        const std::lock_guard<std::mutex> lock(fPatchbayMutex);
+        fGroups.clear();
+        fConnections.clear();
+    }
+    fMode = mode;
 
     fHandle = carla_standalone_host_init();
     if (fHandle == nullptr)
@@ -229,8 +235,8 @@ bool HostEngine::start(const std::string& driver, const std::string& device)
 
     carla_set_engine_callback(fHandle, engineCallback, this);
 
-    // rack mode: plugins are processed in series, in rack order
-    carla_set_engine_option(fHandle, ENGINE_OPTION_PROCESS_MODE, ENGINE_PROCESS_MODE_CONTINUOUS_RACK, nullptr);
+    carla_set_engine_option(fHandle, ENGINE_OPTION_PROCESS_MODE,
+                            mode == Mode::Rack ? ENGINE_PROCESS_MODE_CONTINUOUS_RACK : ENGINE_PROCESS_MODE_PATCHBAY, nullptr);
     carla_set_engine_option(fHandle, ENGINE_OPTION_FORCE_STEREO, 1, nullptr);
 
     // carla's bridges and resources live next to the library, wherever it was installed
@@ -302,6 +308,13 @@ bool HostEngine::addPlugin(const std::string& specStr)
                             spec.label.empty() ? nullptr : spec.label.c_str(), 0, nullptr, PLUGIN_OPTIONS_NULL);
 }
 
+bool HostEngine::addInternalPlugin(const std::string& label, const std::string& name)
+{
+    fError.clear();
+    return carla_add_plugin(fHandle, BINARY_NATIVE, PLUGIN_INTERNAL, nullptr, name.c_str(), label.c_str(),
+                            0, nullptr, PLUGIN_OPTIONS_NULL);
+}
+
 bool HostEngine::loadAudioFile(const std::string& path)
 {
     fError.clear();
@@ -320,12 +333,14 @@ bool HostEngine::loadAudioFile(const std::string& path)
         return false;
 
     // carla appends it at the end of the rack, a source belongs at the start
-    for (uint id = pluginCount() - 1; id > 0; --id)
+    if (fMode == Mode::Rack)
+        for (uint id = pluginCount() - 1; id > 0; --id)
         carla_switch_plugins(fHandle, id - 1, id);
     return true;
 }
 
 bool HostEngine::removePlugin(uint id) { return carla_remove_plugin(fHandle, id); }
+bool HostEngine::removeAllPlugins() { return carla_remove_all_plugins(fHandle); }
 
 bool HostEngine::movePlugin(uint id, int delta)
 {
@@ -437,13 +452,141 @@ bool HostEngine::isPlaying() const
 uint64_t HostEngine::transportFrame() const { return isRunning() ? carla_get_current_transport_frame(fHandle) : 0; }
 void HostEngine::relocate(uint64_t frame) { carla_transport_relocate(fHandle, frame); }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// patchbay
+
+void HostEngine::trackPatchbay(EngineCallbackOpcode action, uint id, int value1, int value2, const char* valueStr)
+{
+    const std::lock_guard<std::mutex> lock(fPatchbayMutex);
+    switch (action)
+    {
+    case ENGINE_CALLBACK_PATCHBAY_CLIENT_ADDED:
+        fGroups[id] = Group{value2, valueStr != nullptr ? valueStr : "", {}, {}};
+        break;
+    case ENGINE_CALLBACK_PATCHBAY_CLIENT_REMOVED:
+        fGroups.erase(id);
+        break;
+    case ENGINE_CALLBACK_PATCHBAY_CLIENT_DATA_CHANGED:
+        fGroups[id].pluginId = value2;
+        break;
+    case ENGINE_CALLBACK_PATCHBAY_PORT_ADDED:
+        if ((value2 & PATCHBAY_PORT_TYPE_AUDIO) != 0)
+        {
+            Group& g = fGroups[id];
+            ((value2 & PATCHBAY_PORT_IS_INPUT) != 0 ? g.audioIns : g.audioOuts).push_back(static_cast<uint>(value1));
+        }
+        break;
+    case ENGINE_CALLBACK_PATCHBAY_PORT_REMOVED:
+        for (std::vector<uint>* ports : {&fGroups[id].audioIns, &fGroups[id].audioOuts})
+            ports->erase(std::remove(ports->begin(), ports->end(), static_cast<uint>(value1)), ports->end());
+        break;
+    case ENGINE_CALLBACK_PATCHBAY_CONNECTION_ADDED:
+        fConnections.push_back(id);
+        break;
+    case ENGINE_CALLBACK_PATCHBAY_CONNECTION_REMOVED:
+        fConnections.erase(std::remove(fConnections.begin(), fConnections.end(), id), fConnections.end());
+        break;
+    default:
+        break;
+    }
+}
+
+int HostEngine::groupOfPlugin(uint plugin) const
+{
+    const std::lock_guard<std::mutex> lock(fPatchbayMutex);
+    for (const auto& [id, group] : fGroups)
+        if (group.pluginId == static_cast<int>(plugin))
+            return static_cast<int>(id);
+    return -1;
+}
+
+int HostEngine::groupNamed(const std::string& name) const
+{
+    const std::lock_guard<std::mutex> lock(fPatchbayMutex);
+    for (const auto& [id, group] : fGroups)
+        if (group.pluginId < 0 && group.name == name)
+            return static_cast<int>(id);
+    return -1;
+}
+
+void HostEngine::refreshPatchbay()
+{
+    if (fMode != Mode::Patchbay || !isRunning())
+        return;
+    {
+        const std::lock_guard<std::mutex> lock(fPatchbayMutex);
+        fGroups.clear();
+        fConnections.clear();
+    }
+    // carla re-announces every client, port and connection from inside this call
+    carla_patchbay_refresh(fHandle, false);
+}
+
+void HostEngine::disconnectAll()
+{
+    if (fMode != Mode::Patchbay || !isRunning())
+        return;
+    std::vector<uint> connections;
+    {
+        const std::lock_guard<std::mutex> lock(fPatchbayMutex);
+        connections = fConnections;
+    }
+    for (uint c : connections)
+        carla_patchbay_disconnect(fHandle, false, c);
+}
+
+bool HostEngine::connectGroups(uint fromGroup, uint toGroup)
+{
+    std::vector<uint> outs, ins;
+    {
+        const std::lock_guard<std::mutex> lock(fPatchbayMutex);
+        const auto from = fGroups.find(fromGroup);
+        const auto to = fGroups.find(toGroup);
+        if (from == fGroups.end() || to == fGroups.end())
+            return false;
+        outs = from->second.audioOuts;
+        ins = to->second.audioIns;
+    }
+    if (outs.empty() || ins.empty())
+        return false;
+    std::sort(outs.begin(), outs.end());
+    std::sort(ins.begin(), ins.end());
+
+    // pair the first two channels; a mono side is spread to (or summed from) both
+    const size_t channels = std::min<size_t>(2, std::max(outs.size(), ins.size()));
+    bool ok = true;
+    for (size_t c = 0; c < channels; ++c)
+        ok = carla_patchbay_connect(fHandle, false, fromGroup, outs[std::min(c, outs.size() - 1)],
+                                    toGroup, ins[std::min(c, ins.size() - 1)]) && ok;
+    return ok;
+}
+
+bool HostEngine::connect(uint fromPlugin, uint toPlugin)
+{
+    const int from = groupOfPlugin(fromPlugin);
+    const int to = groupOfPlugin(toPlugin);
+    return from >= 0 && to >= 0 && connectGroups(static_cast<uint>(from), static_cast<uint>(to));
+}
+
+bool HostEngine::connectToOutput(uint plugin)
+{
+    const int from = groupOfPlugin(plugin);
+    const int to = groupNamed("Audio Output");
+    return from >= 0 && to >= 0 && connectGroups(static_cast<uint>(from), static_cast<uint>(to));
+}
+
 bool HostEngine::saveProject(const std::string& path) { fError.clear(); return carla_save_project(fHandle, path.c_str()); }
 bool HostEngine::loadProject(const std::string& path) { fError.clear(); return carla_load_project(fHandle, path.c_str()); }
 
 void HostEngine::engineCallback(void* ptr, EngineCallbackOpcode action, uint pluginId,
-                                int value1, int, int, float valuef, const char* valueStr)
+                                int value1, int value2, int, float valuef, const char* valueStr)
 {
     auto* self = static_cast<HostEngine*>(ptr);
+    if (action >= ENGINE_CALLBACK_PATCHBAY_CLIENT_ADDED && action <= ENGINE_CALLBACK_PATCHBAY_CONNECTION_REMOVED)
+    {
+        self->trackPatchbay(action, pluginId, value1, value2, valueStr);
+        return;
+    }
     if (!self->fEventFunc)
         return;
 

@@ -27,7 +27,7 @@ endif()
 
 find_package(Threads REQUIRED)
 
-add_library(chost_core STATIC src/core/HostEngine.cpp src/core/AudioConvert.cpp)
+add_library(chost_core STATIC src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/Session.cpp)
 target_include_directories(chost_core PUBLIC src)
 target_include_directories(chost_core PRIVATE third_party/dr_libs)
 target_compile_definitions(chost_core PUBLIC REAL_BUILD)

@@ -6,6 +6,8 @@
 #include "CarlaHost.h"
 
 #include <functional>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -60,6 +62,11 @@ std::string defaultAudioDriver();
 
 class HostEngine {
 public:
+    // Rack: plugins run in series in slot order (works with every driver, including Dummy).
+    // Patchbay: plugins are free nodes wired with connect(); needed for several tracks in parallel.
+    // Carla's Dummy driver only supports the rack.
+    enum class Mode { Rack, Patchbay };
+
     HostEngine();
     ~HostEngine();
 
@@ -68,7 +75,8 @@ public:
 
     void setEventCallback(HostEventFunc func) { fEventFunc = std::move(func); }
 
-    bool start(const std::string& driver, const std::string& device = {});
+    bool start(const std::string& driver, Mode mode = Mode::Rack, const std::string& device = {});
+    Mode mode() const { return fMode; }
     void stop();
     bool isRunning() const;
     void idle();
@@ -81,8 +89,10 @@ public:
 
     // rack
     bool addPlugin(const std::string& spec);
-    bool loadAudioFile(const std::string& path);
+    bool addInternalPlugin(const std::string& label, const std::string& name);
+    bool loadAudioFile(const std::string& path); // in rack mode it is moved to the first slot
     bool removePlugin(uint id);
+    bool removeAllPlugins();
     bool movePlugin(uint id, int delta);
     uint pluginCount() const;
     RackSlot slot(uint id) const;
@@ -98,6 +108,12 @@ public:
     void setParameter(uint id, uint32_t index, float value);
     int findParameter(uint id, const std::string& nameOrIndex) const;
 
+    // patchbay wiring, plugin outputs to plugin inputs (stereo, mono is spread or summed)
+    void refreshPatchbay(); // re-reads groups and ports; plugin ids shift when a plugin is removed
+    void disconnectAll();
+    bool connect(uint fromPlugin, uint toPlugin);
+    bool connectToOutput(uint plugin);
+
     // transport / project
     void play();
     void pause();
@@ -111,7 +127,21 @@ private:
     static void engineCallback(void* ptr, CarlaBackend::EngineCallbackOpcode action, uint pluginId,
                                int value1, int value2, int value3, float valuef, const char* valueStr);
 
+    struct Group {
+        int pluginId = -1;
+        std::string name;
+        std::vector<uint> audioIns, audioOuts;
+    };
+    void trackPatchbay(CarlaBackend::EngineCallbackOpcode action, uint id, int value1, int value2, const char* valueStr);
+    bool connectGroups(uint fromGroup, uint toGroup);
+    int groupOfPlugin(uint plugin) const;
+    int groupNamed(const std::string& name) const;
+
     CarlaHostHandle fHandle = nullptr;
+    Mode fMode = Mode::Rack;
+    mutable std::mutex fPatchbayMutex;
+    std::map<uint, Group> fGroups;
+    std::vector<uint> fConnections;
     std::string fDriver;
     std::string fError; // errors from chost itself, carla keeps its own
     HostEventFunc fEventFunc;

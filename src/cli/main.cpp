@@ -4,6 +4,8 @@
 //   chost-cli drivers
 //   chost-cli scan
 //   chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]
+//   chost-cli mix [--driver NAME] [--track AUDIO]... [--insert T:SPEC]... [--mute T] [--solo T] [--volume T=V]
+//                 [--seconds S] [--save F.chost] [--open F.chost]
 //
 // Plugin SPEC:
 //   lv2:<URI>            e.g. lv2:urn:zamaudio:ZamComp
@@ -13,6 +15,9 @@
 // Without --seconds, run drops into an interactive shell (type "help").
 
 #include "core/HostEngine.h"
+#include "core/Session.h"
+
+#include <algorithm>
 
 #include <atomic>
 #include <chrono>
@@ -236,6 +241,119 @@ static int cmdRun(int argc, char* argv[])
     return ok ? 0 : 1;
 }
 
+// Multitrack: every --track becomes a track summed into the master bus; prints the master's peak level.
+static int cmdMix(int argc, char* argv[])
+{
+    std::string driver = chost::defaultAudioDriver();
+    std::string savePath, openPath;
+    std::vector<std::string> files, inserts, volumes;
+    std::vector<int> mutes, solos;
+    double seconds = 3.0;
+
+    for (int i = 0; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        const bool hasValue = i + 1 < argc;
+        if (arg == "--driver" && hasValue)        driver = argv[++i];
+        else if (arg == "--track" && hasValue)    files.emplace_back(argv[++i]);
+        else if (arg == "--insert" && hasValue)   inserts.emplace_back(argv[++i]);
+        else if (arg == "--mute" && hasValue)     mutes.push_back(std::stoi(argv[++i]));
+        else if (arg == "--solo" && hasValue)     solos.push_back(std::stoi(argv[++i]));
+        else if (arg == "--volume" && hasValue)   volumes.emplace_back(argv[++i]);
+        else if (arg == "--seconds" && hasValue)  seconds = std::stod(argv[++i]);
+        else if (arg == "--save" && hasValue)     savePath = argv[++i];
+        else if (arg == "--open" && hasValue)     openPath = argv[++i];
+        else
+        {
+            std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
+            return 2;
+        }
+    }
+
+    HostEngine host;
+    host.setEventCallback([](HostEvent event, uint, int, float, const std::string& text) {
+        if (event == HostEvent::Error)
+            std::fprintf(stderr, "engine error: %s\n", text.c_str());
+        else if (event == HostEvent::EngineStopped)
+            gQuit = true;
+    });
+    if (!host.start(driver, HostEngine::Mode::Patchbay))
+    {
+        std::fprintf(stderr, "engine init failed (%s): %s\n", driver.c_str(), host.lastError().c_str());
+        return 1;
+    }
+
+    chost::Session session(host);
+    bool ok = true;
+    if (!openPath.empty())
+    {
+        if (!session.load(openPath))
+        {
+            std::fprintf(stderr, "open failed: %s\n", session.lastError().c_str());
+            return 1;
+        }
+    }
+    else if (!session.init())
+    {
+        std::fprintf(stderr, "session init failed: %s\n", session.lastError().c_str());
+        return 1;
+    }
+
+    for (const std::string& f : files)
+    {
+        const int t = session.addTrack("Audio " + std::to_string(session.tracks().size() + 1));
+        if (t < 0 || !session.setTrackFile(t, f))
+        {
+            std::fprintf(stderr, "track %s: %s\n", f.c_str(), session.lastError().c_str());
+            ok = false;
+        }
+    }
+    for (const std::string& ins : inserts)
+    {
+        const auto colon = ins.find(':');
+        if (colon == std::string::npos || !session.addInsert(std::stoi(ins.substr(0, colon)), ins.substr(colon + 1)))
+        {
+            std::fprintf(stderr, "insert %s: %s\n", ins.c_str(), session.lastError().c_str());
+            ok = false;
+        }
+    }
+    for (int t : mutes)
+        session.setMuted(t, true);
+    for (int t : solos)
+        session.setSolo(t, true);
+    for (const std::string& v : volumes)
+        if (const auto eq = v.find('='); eq != std::string::npos)
+            session.setVolume(std::stoi(v.substr(0, eq)), std::stof(v.substr(eq + 1)));
+
+    for (size_t i = 0; i < session.tracks().size(); ++i)
+    {
+        const chost::Track& t = session.tracks()[i];
+        std::printf("track %zu \"%s\": source=%d inserts=%zu fader=%u file=%s\n", i, t.name.c_str(), t.source,
+                    t.inserts.size(), t.fader, t.file.c_str());
+    }
+
+    host.relocate(0);
+    host.play();
+    float peak = 0.0f;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    while (!gQuit && host.isRunning() && std::chrono::steady_clock::now() < until)
+    {
+        host.idle();
+        const auto [l, r] = host.outputPeaks(session.master());
+        peak = std::max({peak, l, r});
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    std::printf("master peak %.3f\n", peak);
+
+    if (!savePath.empty() && !session.save(savePath))
+    {
+        std::fprintf(stderr, "save failed: %s\n", session.lastError().c_str());
+        ok = false;
+    }
+    host.stop();
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char* argv[])
 {
     std::signal(SIGINT, onSignal);
@@ -249,11 +367,15 @@ int main(int argc, char* argv[])
         return cmdScan();
     if (cmd == "run")
         return cmdRun(argc - 2, argv + 2);
+    if (cmd == "mix")
+        return cmdMix(argc - 2, argv + 2);
 
     std::fprintf(stderr,
                  "usage:\n"
                  "  chost-cli drivers\n"
                  "  chost-cli scan\n"
-                 "  chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]\n");
+                 "  chost-cli run [--driver NAME] [--file AUDIO] [--plugin SPEC]... [--set N:P=V]... [--seconds S] [--save F]\n"
+                 "  chost-cli mix [--driver NAME] [--track AUDIO]... [--insert T:SPEC]... [--mute T] [--solo T]\n"
+                 "                [--volume T=V] [--seconds S] [--save F.chost] [--open F.chost]\n");
     return 2;
 }
