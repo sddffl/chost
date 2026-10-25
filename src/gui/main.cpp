@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDialog>
+#include <QIcon>
 #include <QTimer>
 
 int main(int argc, char* argv[])
@@ -13,6 +14,10 @@ int main(int argc, char* argv[])
     QApplication::setOrganizationName(QStringLiteral("chost"));
     QApplication::setApplicationVersion(QStringLiteral(CHOST_VERSION));
     theme::apply(app);
+    QIcon icon;
+    for (int size : {16, 32, 48, 256, 512})
+        icon.addFile(QStringLiteral(":/icons/icon-%1.png").arg(size), QSize(size, size));
+    QApplication::setWindowIcon(icon);
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("chost audio plugin host"));

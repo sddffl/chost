@@ -68,7 +68,14 @@ install(TARGETS chost-cli RUNTIME DESTINATION bin)
 if(CHOST_BUILD_GUI)
     find_package(Qt6 REQUIRED COMPONENTS Widgets)
     set(CMAKE_AUTOMOC ON)
-    add_executable(chost WIN32
+    set(CMAKE_AUTORCC ON)
+    # the app icon: drawn in resources/icons/chost.svg (chost-small.svg for 16 and 24 px)
+    set(CHOST_ICON resources/icons/chost.qrc)
+    if(WIN32)
+        enable_language(RC)
+        list(APPEND CHOST_ICON resources/icons/chost.rc)
+    endif()
+    add_executable(chost WIN32 ${CHOST_ICON}
         src/gui/main.cpp
         src/gui/MainWindow.cpp src/gui/MainWindow.h
         src/gui/PluginWindows.cpp src/gui/PluginWindows.h
