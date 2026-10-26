@@ -1,0 +1,35 @@
+// Dark colour scheme in the spirit of Cubase's project window and MixConsole.
+
+#pragma once
+
+#include <QColor>
+
+class QApplication;
+
+namespace theme {
+
+inline const QColor window{0x1f, 0x22, 0x26};
+inline const QColor panel{0x2a, 0x2e, 0x33};
+inline const QColor panelLight{0x35, 0x3a, 0x40};
+inline const QColor border{0x14, 0x16, 0x19};
+inline const QColor text{0xd6, 0xd9, 0xdc};
+inline const QColor textDim{0x8b, 0x90, 0x96};
+inline const QColor accent{0x4a, 0x90, 0xd9};
+inline const QColor lcd{0x10, 0x12, 0x15};
+inline const QColor trackColor{0x3d, 0x7f, 0xc4};
+inline const QColor event{0x6f, 0x9f, 0xc9};
+inline const QColor waveform{0x14, 0x2c, 0x44};
+inline const QColor cursor{0xf0, 0xf0, 0xf0};
+inline const QColor meterLow{0x3f, 0xbf, 0x5f};
+inline const QColor meterMid{0xe0, 0xc0, 0x40};
+inline const QColor meterHigh{0xe0, 0x40, 0x40};
+inline const QColor mute{0xe0, 0x8a, 0x2c};
+inline const QColor solo{0xe6, 0xc8, 0x2e};
+inline const QColor selection{0x45, 0x4c, 0x55};
+
+// track colours, handed out in turn like Cubase's auto-colour
+QColor trackColour(int index);
+
+void apply(QApplication& app);
+
+} // namespace theme

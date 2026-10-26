@@ -1,0 +1,356 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y carla carla-dev carla-vst qt6-base-dev cmake g++ pkg-config pulseaudio python3-numpy
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+
+      - name: Smoke test
+        run: |
+          python3 tests/make_tone.py tone.wav 48000
+          ./build/chost-cli drivers
+          ./build/chost-cli scan | head -20
+          # a 48 kHz file on the 44.1 kHz dummy engine exercises the resampling workaround,
+          # and the stereo gain plugin at 0.5 must halve the level
+          ./build/chost-cli run --driver Dummy --file tone.wav \
+              --plugin lv2:http://kxstudio.sf.net/carla/plugins/audiogain_s --set 1:Gain=0.5 \
+              --seconds 2 | tee run.log
+          grep -E '^\[1\] .*peak L/R: 0\.24' run.log
+          QT_QPA_PLATFORM=offscreen ./build/chost --file tone.wav --screenshot linux.png
+
+      - name: Multitrack test
+        run: |
+          # multitrack mixing needs Carla's patchbay, which needs a real driver: a silent PulseAudio sink
+          pulseaudio -D --exit-idle-time=-1 --disallow-exit -n \
+              --load="module-null-sink sink_name=null" --load="module-native-protocol-unix"
+          sleep 1
+          python3 tests/make_tone.py a.wav 44100
+          python3 tests/make_tone.py b.wav 48000
+          gain=lv2:http://kxstudio.sf.net/carla/plugins/audiogain_s
+          mix() { ./build/chost-cli mix --driver PulseAudio --seconds 4 "$@" | tee mix.log; grep "master peak" mix.log; }
+          # every tone peaks at 0.488: two tracks sum, mute and solo remove one, a fader at 0.5 halves one
+          mix --track a.wav --track b.wav | grep -q 'master peak 0.97'
+          mix --track a.wav --track b.wav --mute 1 | grep -q 'master peak 0.48'
+          mix --track a.wav --track b.wav --solo 0 --volume 0=0.5 | grep -q 'master peak 0.24'
+          mix --track a.wav --track b.wav --track a.wav --insert 0:$gain --insert 2:$gain --remove-track 1 | grep -q 'master peak 0.97'
+          mix --track a.wav --track b.wav --insert 1:$gain --mute 0 --volume 1=0.5 --save s.chost | grep -q 'master peak 0.24'
+          mix --open s.chost | grep -q 'master peak 0.24'
+          # the metronome clicks outside the mix (master silent), and keeps clicking after the first bar
+          ./build/chost-cli mix --driver PulseAudio --seconds 7 --tempo 120 --click 1 --click-sound sf2:$PWD/resources/sounds/TimGM6mb.sf2 | tee click.log
+          grep -q 'master peak 0.000' click.log
+          grep -P 'click peak 0\.[3-9]\d*, after 2.5 s 0\.[3-9]' click.log
+          # dither: silence in a 16-bit export becomes a one-step noise floor, without it exact zeros
+          ./build/chost-render --session s.chost --output quiet.wav --bits 16 --seconds 2 --mute 0 --mute 1 | grep -q DONE
+          ./build/chost-render --session s.chost --output quiet-plain.wav --bits 16 --seconds 2 --mute 0 --mute 1 --no-dither | grep -q DONE
+          python3 -c "
+          import struct, sys, wave
+          def samples(f):
+              w = wave.open(f); return struct.unpack('<%dh' % (w.getnframes() * 2), w.readframes(w.getnframes()))
+          d, p = samples('quiet.wav'), samples('quiet-plain.wav')
+          ok = max(map(abs, d)) == 1 and 0.2 < sum(1 for x in d if x) / len(d) < 0.3 and not any(p)
+          print('dither', 'ok' if ok else 'WRONG'); sys.exit(0 if ok else 1)"
+          # buses: a group at half volume; a send doubling a muted-free track; a solo keeps its reverb; saved and reopened
+          mix --track a.wav --track b.wav --bus 组 --output 0=2 --output 1=2 --volume 2=0.5 | grep -q 'master peak 0.4[89]'
+          mix --track a.wav --track b.wav --bus 混响 --send 0=2:1.0 --mute 1 | grep -q 'master peak 0.97'
+          mix --track a.wav --track b.wav --bus 混响 --send 0=2:1.0 --solo 1 | grep -q 'master peak 0.4[89]'
+          mix --track a.wav --track b.wav --bus 混响 --send 0=2:1.0 --solo 2 | grep -q 'master peak 0.97'
+          mix --track a.wav --track b.wav --bus 组 --bus 混响 --output 0=2 --send 0=3:1 --mute 1 --save bus.chost | grep -q 'master peak 0.97'
+          mix --open bus.chost | grep -q 'master peak 0.97'
+          # pan: hard left keeps the power (0.49 on both sides becomes 0.69 on the left), and is saved
+          mix --track a.wav --pan 0=-1 --save pan.chost | grep -q 'left 0.69., right 0.000'
+          mix --open pan.chost | grep -q 'left 0.69., right 0.000'
+          if ./build/chost-cli mix --driver PulseAudio --seconds 1 --track a.wav --bus A --bus B --output 1=2 --output 2=1 2>&1 | grep -q 'feed itself'; then :; else exit 1; fi
+          # the same session mixed down offline by chost-render, faster than real time
+          ./build/chost-render --session s.chost --output render.wav --seconds 3 | tee render.log
+          grep -P '^DONE render\.wav\t3\.00\t-12\.\d' render.log
+          ./build/chost-render --session s.chost --output none.wav --seconds 3 --mute 1 | grep -P '^DONE .*\t-120\.0'
+          # undo and redo in the GUI: tracks, faders, inserts and a removed insert all come back, and still play
+          QT_QPA_PLATFORM=offscreen ./build/chost --file a.wav --file b.wav --test-undo $gain | tee undo.log
+          grep -q 'UNDO TEST PASSED' undo.log
+          # a chost that goes down leaves its unsaved project on the side, and the next one brings it back
+          export XDG_DATA_HOME=$PWD/xdg
+          CHOST_AUTOSAVE_SECONDS=1 QT_QPA_PLATFORM=offscreen timeout -s KILL 15 ./build/chost --file a.wav --file b.wav || true
+          test -f xdg/chost/chost/autosave/slot-0/project.chost
+          QT_QPA_PLATFORM=offscreen ./build/chost --recover --screenshot recovered.png | tee recover.log
+          grep -q 'RECOVERED 2 tracks' recover.log
+          test ! -e xdg/chost/chost/autosave/slot-0 # a normal end clears it
+          # saving over a project keeps the version it replaces
+          QT_QPA_PLATFORM=offscreen ./build/chost --open s.chost --save --screenshot saved.png
+          ls s_备份/*/s.chost s_备份/*/s.carxp
+          # an AI assistant working chost through chost-mcp, which starts chost (offscreen here) itself
+          QT_QPA_PLATFORM=offscreen timeout 300 python3 tests/mcp_client.py ./build/chost-mcp $PWD/a.wav $PWD/b.wav $gain | tee mcp.log
+          grep -q 'MCP TEST PASSED' mcp.log
+          # loudness by ITU BS.1770: a -23 dBFS 1 kHz sine on both channels is -23 LUFS
+          python3 -c "import math, struct, wave; w = wave.open('ref.wav', 'wb'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(48000); a = 10 ** (-23 / 20) * 32767; w.writeframes(b''.join(struct.pack('<hh', *(2 * [round(a * math.sin(2 * math.pi * 1000 * i / 48000))])) for i in range(480000))); w.close()"
+          ./build/chost-cli loudness ref.wav | tee loudness.log
+          grep -qP '\t-23\.0 LUFS' loudness.log
+          # AI mix balance: both tones measured and their faders set, the whole mix checked for headroom
+          QT_QPA_PLATFORM=offscreen timeout 150 ./build/chost --file a.wav --file b.wav --mix-balance forward \
+              --screenshot balance.png --screenshot-delay 60000 | tee balance.log
+          test "$(grep -cP '^BALANCE .*LUFS.* dB\t' balance.log)" = 2
+          grep -q '^BALANCED ' balance.log
+          pkill -x chost || true
+          # the chord pad's harmony: G7 goes home to C, and a progression becomes a MIDI part
+          ./build/chost-cli chords --key "C major" --after G7 | tee chords.log
+          grep -P '^PAD 0\tC\tI\t1\.00' chords.log
+          ./build/chost-cli chords --key "A minor" --progression "Am F | C G G7" --output prog.mid --pattern arpeggio | tee prog.log
+          grep -q 'PROGRESSION Am F | C G G7' prog.log
+          QT_QPA_PLATFORM=offscreen ./build/chost --chord-progression "Am F | C G" --screenshot chordpad.png --screenshot-delay 3000
+          test -f chordpad-1.png
+          # scales: the key of a part from its notes, and stray notes pulled into a scale
+          ./build/chost-cli scale --scale "E harmonic minor" | grep -P '^SCALE E harmonic minor\tE F# G A B C D#$'
+          # (A minor and C major have the same notes; either is right for Am F C G)
+          ./build/chost-cli scale --guess prog.mid | grep -P '^GUESS (A minor|C major)\t0\.[6-9]'
+          ./build/chost-cli scale --scale "D major" --fit prog.mid --output fitted.mid | grep -q 'FIT [1-9]'
+          ./build/chost-cli scale --scale "D major" --fit fitted.mid | grep -q 'FIT 0 of'
+          QT_QPA_PLATFORM=offscreen ./build/chost --file prog.mid --select 0 --edit-notes --note-scale "D major" --fit-scale \
+              --screenshot scale.png --screenshot-delay 2500 | tee scale.log
+          grep -q 'FITTED [1-9]' scale.log
+          ./build/chost-cli scale --scale "D major" --fit prog_edit.mid | grep -q 'FIT 0 of'
+          # sheet music: MusicXML from the CLI, PDF and a preview from the GUI
+          ./build/chost-cli score --midi prog.mid --key "A minor" --title CI --output prog.musicxml | tee score.log
+          grep -P '^SCORE A minor\t4/4\t2 bars\t1 parts' score.log
+          grep -q '<score-partwise' prog.musicxml
+          QT_QPA_PLATFORM=offscreen ./build/chost --file prog.mid --score $PWD/prog.pdf --screenshot score.png --screenshot-delay 2500 \
+              | tee scorepdf.log
+          grep -q 'SCORE WRITTEN .*(1 pages)' scorepdf.log
+          head -c 5 prog.pdf | grep -q '%PDF-'
+          # clip edits: moved a second later the clip starts with silence; keeping 1-2 s leaves the rest silent
+          ./build/chost-cli clip --input a.wav --output moved.wav --edit move --seconds 1 | tee clip.log
+          grep -P '^SECOND 0\t0\.000' clip.log && grep -P '^SECOND 1\t0\.[1-9]' clip.log
+          ./build/chost-cli clip --input a.wav --output kept.wav --edit keep --start 1 --end 2 | tee keep.log
+          grep -P '^SECOND 0\t0\.000' keep.log && grep -P '^SECOND 1\t0\.[1-9]' keep.log && grep -P '^SECOND 2\t0\.000' keep.log
+          ./build/chost-cli clip --input a.wav --output loud.wav --edit gain --db 40 | grep -q '^NOTE peaks at'
+          if ./build/chost-cli clip --input a.wav --output x.wav --edit stretch; then exit 1; fi
+          QT_QPA_PLATFORM=offscreen ./build/chost --file a.wav --file b.wav --marker "0.5:主歌" --marker "1.5:副歌" --range 0.6:1.2 \
+              --screenshot markers.png --screenshot-delay 1500
+          QT_QPA_PLATFORM=offscreen ./build/chost --file a.wav --file b.wav --file a.wav --group 1,2 --reverb 1,3 \
+              --screenshot buses.png --screenshot-delay 1500
+          echo '{"mcpServers": {"other": {"command": "x"}}}' > claude.json
+          QT_QPA_PLATFORM=offscreen ./build/chost --claude-config claude.json | grep -q 'CLAUDE CONFIG WRITTEN'
+          python3 -c "import json; s = json.load(open('claude.json'))['mcpServers']; assert 'other' in s and s['chost']['command'].endswith('chost-mcp')"
+
+      - name: Stem separation test
+        run: |
+          # the separation itself needs the AI models; --selftest hands out prepared parts instead
+          python3 tests/make_song.py song
+          CHOST_STEMS_SELFTEST=1 CHOST_SELFTEST_STEMS=$PWD/song QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file song/mysong.wav --separate --play --screenshot stems.png --screenshot-delay 9000
+          ls song/mysong_stems | tee stems.log
+          test "$(ls song/mysong_stems/*.wav | wc -l)" = 14
+
+      - name: Audio to MIDI test
+        run: |
+          python3 -m venv ai-env
+          ai-env/bin/pip install -q onnxruntime librosa scipy
+          # the song's single parts, as stem separation would hand them over, converted from the GUI
+          mkdir midi && cp song/{lead,bass,piano,kick,snare,hh}.wav midi/
+          CHOST_AI_PYTHON=$PWD/ai-env/bin/python QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file midi/lead.wav --file midi/bass.wav --file midi/piano.wav \
+                  --file midi/kick.wav --file midi/snare.wav --file midi/hh.wav \
+                  --transcribe --screenshot midi.png --screenshot-delay 150000
+          python3 tests/check_transcription.py midi
+          # the MIDI plays through the bundled General MIDI sound font
+          sf2=sf2:$PWD/resources/sounds/TimGM6mb.sf2
+          ./build/chost-cli mix --driver PulseAudio --seconds 4 --midi midi/piano.mid@$sf2 --midi midi/bass.mid@$sf2 \
+              | tee midi.log
+          grep -E 'master peak 0\.[1-9]' midi.log
+          grep -q 'program Fingered Bass' midi.log
+          # the MIDI editor on a converted part
+          QT_QPA_PLATFORM=offscreen ./build/chost --file midi/piano.mid --select 0 --edit-notes \
+              --screenshot pianoroll.png --screenshot-delay 3000
+          test -f pianoroll-1.png
+          # converted parts as sheet music, read back as a notation program would
+          ./build/chost-cli score --midi midi/lead.mid --midi midi/piano.mid --midi midi/bass.mid --tempo 120 --grid 8 \
+              --output midi/song.musicxml
+          ai-env/bin/pip install -q music21
+          ai-env/bin/python tests/check_score.py midi/song.musicxml 3
+          # time signatures and triplets, from melodies played a little unevenly
+          for f in triplets waltz jig drums; do python3 tests/make_rhythms.py $f.mid; done
+          ./build/chost-cli score --midi triplets.mid --key "C major" --output triplets.musicxml | tee rhythm.log
+          ./build/chost-cli score --midi waltz.mid --key "C major" --time 3/4 --output waltz.musicxml | tee -a rhythm.log
+          ./build/chost-cli score --midi jig.mid --key "G major" --time 6/8 --output jig.musicxml | tee -a rhythm.log
+          grep -P '^SCORE C major\t4/4\t3 bars\t1 parts\t19 notes\t0 rests\t1 ties\t4 triplets' rhythm.log
+          grep -P '^SCORE C major\t3/4\t4 bars\t1 parts\t10 notes\t0 rests\t1 ties\t0 triplets' rhythm.log
+          grep -P '^SCORE G major\t6/8\t3 bars\t1 parts\t10 notes\t0 rests\t0 ties\t0 triplets' rhythm.log
+          ai-env/bin/python tests/check_score.py triplets.musicxml 1 4
+          ai-env/bin/python tests/check_score.py waltz.musicxml 1 0
+          ai-env/bin/python tests/check_score.py jig.musicxml 1 0
+          # a drum part on a percussion staff, with the melody
+          ./build/chost-cli score --midi drums.mid --midi triplets.mid --key "C major" --output drums.musicxml | tee drums.log
+          grep -P '^PART drums.mid\tdrums$' drums.log
+          grep -q '<sign>percussion</sign>' drums.musicxml
+          grep -q '<notehead>x</notehead>' drums.musicxml
+          ai-env/bin/python tests/check_score.py drums.musicxml 2 4
+          QT_QPA_PLATFORM=offscreen ./build/chost --file jig.mid --score $PWD/jig.pdf --score-time 6/8 --screenshot jig.png \
+              --screenshot-delay 2500 | grep -q 'SCORE WRITTEN .*(1 pages)'
+
+      - name: Tempo, key, mastering, arrangement and pitch correction test
+        run: |
+          py=$PWD/ai-env/bin/python
+          python3 tests/make_song.py fast 137
+          $py tools/chost_analyze.py --input fast/mysong.wav | tee analyze.log
+          # the chord pad recognises a song's chords (the arranger's recognition, without arranging)
+          $py tools/chost_arrange.py --chords-only --output-dir chords --tempo 120 --audio song/mysong.wav | tee chords-only.log
+          grep -q '^CHORDS Am | F | C | G' chords-only.log
+          grep -P '^TEMPO 137\.0\t' analyze.log
+          grep -E '^KEY (C major|A minor)' analyze.log
+          $py tools/chost_master.py --input song/mysong.wav --output master.wav --style warm | tee master.log
+          # -14 LUFS and the true peak at most -1 dB
+          awk -F'[ \t]' '/^AFTER/ { ok = $2 > -14.3 && $2 < -13.7 && $3 <= -1.0 } END { exit !ok }' master.log
+          # export and mastering from the GUI, both rendering through chost-render
+          CHOST_AI_PYTHON=$py HOME=$PWD/home QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file song/mysong.wav --file song/bass.wav --export-mix --master \
+                  --screenshot master.png --screenshot-delay 40000
+          test -f home/Music/chost/mysong.wav
+          test -f home/Music/chost/mysong_母带.wav
+          # auto-arrangement: typed chords in every style play the chords in range, the song's chords are heard
+          chords="C G | Am F | Dm7 G7 | C/E"
+          for style in pop rock ballad folk electronic chinese; do
+            $py tools/chost_arrange.py --output-dir arr/$style --tempo 100 --style $style --chords "$chords" > /dev/null
+            python3 tests/check_arrangement.py arr/$style "$chords" 100 $style
+          done
+          $py tools/chost_arrange.py --output-dir arr/song --tempo 120 --audio song/mysong.wav | tee arrange.log
+          grep -E '^CHORDS Am \| F \| C \| G \| Am \| F \| C \| G$' arrange.log
+          CHOST_AI_PYTHON=$py HOME=$PWD/home QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file song/mysong.wav --arrange --screenshot arrange.png --screenshot-delay 25000
+          test "$(ls home/.local/share/chost/chost/mysong_编曲/1/*.mid | wc -l)" = 5
+          # pitch correction: every note in tune, the vibrato kept (or gone, the Auto-Tune effect), the key heard
+          $py tests/make_vocal.py vocal
+          $py tools/chost_tune.py --input vocal/vocal.wav --output tuned.wav --key auto | tee tune.log
+          grep -E '^KEY A minor$' tune.log
+          $py tests/check_tuning.py vocal tuned.wav
+          $py tools/chost_tune.py --input vocal/vocal.wav --output hard.wav --key "A minor" --hard > /dev/null
+          $py tests/check_tuning.py vocal hard.wav --hard
+          CHOST_AI_PYTHON=$py HOME=$PWD/home QT_QPA_PLATFORM=offscreen \
+              ./build/chost --file song/mysong.wav --file vocal/vocal.wav --select 1 --tune --screenshot tune.png --screenshot-delay 30000
+          test -f vocal/vocal_修音.wav
+          test -f vocal/vocal_修音.wav.source
+
+      - name: Plugin discovery test
+        run: |
+          # carla's discovery tool tells instruments from effects; carla ships VST2 plugins of both kinds
+          ./build/chost-cli scan --discover | tee discover.log
+          grep -E '^VST2 +Carla-Rack +.*instrument' discover.log
+          grep -E '^VST2 +Carla-RackFX ' discover.log | grep -v instrument
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chost-linux-screenshot
+          path: |
+            linux.png
+            stems*.png
+            midi*.png
+            pianoroll*.png
+            scale*.png
+            score*.png
+            master*.png
+            markers.png
+            buses.png
+            arrange*.png
+            tune*.png
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git unzip curl
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-python
+
+      - name: Fetch Carla
+        run: scripts/fetch-carla-windows.sh "$PWD/carla-root"
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCARLA_ROOT="$PWD/carla-root"
+          cmake --build build
+
+      - name: Package
+        run: scripts/package-windows.sh build carla-root dist/chost
+
+      - name: Smoke test
+        run: |
+          python tests/make_tone.py tone.wav 48000
+          cd dist/chost
+          ./chost-cli.exe drivers
+          ./chost-cli.exe run --driver Dummy --file ../../tone.wav --seconds 2 | tee ../../run.log
+          grep -E '^\[0\] tone .*peak L/R: 0\.4' ../../run.log
+          ./chost.exe --file ../../tone.wav --screenshot ../../windows.png
+          ls -la ../../windows.png
+          # no sound card on the runner: multitrack falls back to the Dummy driver's rack
+          ./chost-cli.exe mix --driver Dummy --track ../../tone.wav --track ../../tone.wav --seconds 1
+          test -f tools/chost_separate.py
+          test -f tools/chost_transcribe.py
+          test -f tools/models/basic_pitch_nmp.onnx
+          test -f sounds/TimGM6mb.sf2
+          test -f carla-discovery-native.exe
+          ./chost-cli.exe scan --discover | tail -5
+          # MIDI tracks with the bundled sound font load on Windows too
+          ./chost-cli.exe mix --driver Dummy --midi ../../tests/data/notes.mid@sf2:sounds/TimGM6mb.sf2 --seconds 1 | tee ../../midi.log
+          grep -q 'program' ../../midi.log
+          # offline mixdown: a session saved on the Dummy driver, rendered by chost-render
+          ./chost-cli.exe mix --driver Dummy --track ../../tone.wav --track ../../tone.wav --seconds 1 --save ../../w.chost
+          ./chost-render.exe --session ../../w.chost --output ../../w.wav | tee ../../render.log
+          grep -q '^DONE' ../../render.log
+          test -f tools/chost_analyze.py
+          test -f tools/chost_master.py
+          test -f tools/chost_arrange.py
+          test -f tools/chost_tune.py
+          # chost-mcp answers an assistant without chost running (it starts chost on the first tool call)
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+              '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | ./chost-mcp.exe | tee ../../mcp.log
+          grep -q '"name":"get_project"' ../../mcp.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chost-windows-x64
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chost-windows-screenshot
+          path: windows.png
+
+      - name: Zip for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cd dist && zip -qr ../chost-windows-x64.zip chost
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: chost-windows-x64.zip
