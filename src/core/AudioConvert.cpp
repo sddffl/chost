@@ -217,6 +217,10 @@ std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const
     AudioFileInfo info;
     if (!probeAudioFile(path, info) || engineRate == 0 || info.sampleRate == engineRate)
         return path; // nothing to fix, or a format Carla handles on its own
+    
+    const double duration = static_cast<double>(info.frames) / info.sampleRate;
+if (duration >= 30.0 || info.sampleRate <= engineRate)
+    return path;
 
     Decoded d;
     if (!decode(path, d, false) || d.info.channels == 0)
