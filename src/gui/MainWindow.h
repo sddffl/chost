@@ -206,8 +206,7 @@ private:
     void stop();
     void seek(double seconds);
     void setPlayhead(double seconds);
-    double playhead() const;
-    double maxTrackDuration() const;
+    double maxTrackDuration();
     void showError(const QString& what);
     void updateTitle();
 

@@ -3560,23 +3560,13 @@ void MainWindow::stop()
     }
 }
 
-double MainWindow::playhead() const
-{
-    const double rate = fHost.sampleRate();
-    return rate > 0.0 ? static_cast<double>(fHost.transportFrame()) / rate : 0.0;
-}
-
-double MainWindow::maxTrackDuration() const
+double MainWindow::maxTrackDuration()
 {
     double maxSec = 0.0;
     for (const chost::Track& t : fSession.tracks())
     {
         if (!t.file.empty())
-        {
-            auto it = fClips.find(QString::fromStdString(t.file));
-            if (it != fClips.end())
-                maxSec = std::max(maxSec, it->seconds);
-        }
+            maxSec = std::max(maxSec, clip(QString::fromStdString(t.file)).seconds);
     }
     return maxSec;
 }
