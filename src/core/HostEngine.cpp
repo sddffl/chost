@@ -227,7 +227,31 @@ bool parseSpec(const std::string& spec, PluginSpec& out)
     const std::string rest = spec.substr(colon + 1);
 
     if (kind == "lv2")       { out.type = PLUGIN_LV2;  out.label = rest; }
-    else if (kind == "vst3") { out.type = PLUGIN_VST3; out.filename = rest; }
+    else if (kind == "vst3")
+    {
+        out.type = PLUGIN_VST3;
+        out.filename = rest;
+#ifdef _WIN32
+        std::error_code ec;
+        const fs::path p = fs::u8path(rest);
+        if (fs::is_directory(p, ec))
+        {
+            const fs::path inner = p / "Contents" / "x86_64-win";
+            if (fs::is_directory(inner, ec))
+            {
+                for (const auto& entry : fs::directory_iterator(inner, ec))
+                {
+                    const std::string ext = entry.path().extension().string();
+                    if (ext == ".vst3" || ext == ".dll")
+                    {
+                        out.filename = entry.path().u8string();
+                        break;
+                    }
+                }
+            }
+        }
+#endif
+    }
     else if (kind == "vst2" || kind == "vst2-32")
     {
         out.type = PLUGIN_VST2;
@@ -484,7 +508,20 @@ bool HostEngine::addPlugin(const std::string& specStr)
 void HostEngine::setPlayerFile(uint id, const std::string& path)
 {
     if (fHandle != nullptr)
-        carla_set_custom_data(fHandle, id, CUSTOM_DATA_TYPE_STRING, "file", path.c_str());
+    {
+        std::string target = path;
+#ifdef _WIN32
+        if (!isPureAscii(path))
+        {
+            std::string error;
+            const std::string cacheDir = (fs::temp_directory_path() / "chost-audio").u8string();
+            std::string prepared = prepareAudioFile(path, static_cast<uint32_t>(sampleRate()), cacheDir, error);
+            if (!prepared.empty())
+                target = prepared;
+        }
+#endif
+        carla_set_custom_data(fHandle, id, CUSTOM_DATA_TYPE_STRING, "file", target.c_str());
+    }
 }
 
 void HostEngine::sendNote(uint id, uint8_t channel, uint8_t note, uint8_t velocity)
@@ -537,6 +574,23 @@ bool HostEngine::loadAudioFile(const std::string& path)
 bool HostEngine::loadMidiFile(const std::string& path)
 {
     fError.clear();
+#ifdef _WIN32
+    if (!isPureAscii(path))
+    {
+        std::error_code ec;
+        const fs::path tempDir = fs::temp_directory_path() / "chost-audio";
+        fs::create_directories(tempDir, ec);
+
+        uint64_t hash = 14695981039346656037ULL;
+        for (unsigned char c : path) { hash ^= c; hash *= 1099511628211ULL; }
+        char hexBuf[32];
+        std::snprintf(hexBuf, sizeof(hexBuf), "chost_midi_%016llx.mid", static_cast<unsigned long long>(hash));
+        const fs::path safePath = tempDir / hexBuf;
+        fs::copy_file(fs::u8path(path), safePath, fs::copy_options::overwrite_existing, ec);
+        if (!ec)
+            return carla_load_file(fHandle, safePath.u8string().c_str());
+    }
+#endif
     return carla_load_file(fHandle, path.c_str());
 }
 
@@ -821,8 +875,46 @@ bool HostEngine::connectToOutput(uint plugin)
     return from >= 0 && to >= 0 && connectGroups(static_cast<uint>(from), static_cast<uint>(to));
 }
 
-bool HostEngine::saveProject(const std::string& path) { fError.clear(); return carla_save_project(fHandle, path.c_str()); }
-bool HostEngine::loadProject(const std::string& path) { fError.clear(); return carla_load_project(fHandle, path.c_str()); }
+bool HostEngine::saveProject(const std::string& path)
+{
+    fError.clear();
+#ifdef _WIN32
+    if (!isPureAscii(path))
+    {
+        std::error_code ec;
+        const fs::path tempDir = fs::temp_directory_path() / "chost-audio";
+        fs::create_directories(tempDir, ec);
+        const fs::path tempCarxp = tempDir / "temp_save.carxp";
+        if (!carla_save_project(fHandle, tempCarxp.u8string().c_str()))
+            return false;
+        fs::copy_file(tempCarxp, fs::u8path(path), fs::copy_options::overwrite_existing, ec);
+        fs::remove(tempCarxp, ec);
+        return !ec;
+    }
+#endif
+    return carla_save_project(fHandle, path.c_str());
+}
+
+bool HostEngine::loadProject(const std::string& path)
+{
+    fError.clear();
+#ifdef _WIN32
+    if (!isPureAscii(path))
+    {
+        std::error_code ec;
+        const fs::path tempDir = fs::temp_directory_path() / "chost-audio";
+        fs::create_directories(tempDir, ec);
+        const fs::path tempCarxp = tempDir / "temp_load.carxp";
+        fs::copy_file(fs::u8path(path), tempCarxp, fs::copy_options::overwrite_existing, ec);
+        if (ec)
+            return false;
+        const bool ok = carla_load_project(fHandle, tempCarxp.u8string().c_str());
+        fs::remove(tempCarxp, ec);
+        return ok;
+    }
+#endif
+    return carla_load_project(fHandle, path.c_str());
+}
 
 void HostEngine::engineCallback(void* ptr, EngineCallbackOpcode action, uint pluginId,
                                 int value1, int value2, int, float valuef, const char* valueStr)

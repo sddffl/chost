@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <vector>
 
@@ -16,9 +17,15 @@ namespace fs = std::filesystem;
 
 namespace chost {
 
-namespace {
+bool isPureAscii(const std::string& str)
+{
+    for (unsigned char c : str)
+        if (c >= 0x80)
+            return false;
+    return true;
+}
 
-constexpr double kPi = 3.14159265358979323846;
+namespace {
 
 struct Decoded {
     AudioFileInfo info;
@@ -97,46 +104,30 @@ bool decode(const std::string& path, Decoded& out, bool headerOnly)
     return false;
 }
 
-// Windowed-sinc resampler (Blackman window), good enough for previewing effects on a clip.
+// Fast linear resampler: deterministic, sub-millisecond execution, no GUI freeze
 std::vector<float> resample(const std::vector<float>& in, uint32_t channels, uint32_t inRate, uint32_t outRate)
 {
-    constexpr int kHalfTaps = 32;
+    if (inRate == outRate || in.empty() || channels == 0)
+        return in;
+
     const double ratio = static_cast<double>(inRate) / outRate;
-    const double cutoff = std::min(1.0, 1.0 / ratio) * 0.95; // relative to the input Nyquist
     const int64_t inFrames = static_cast<int64_t>(in.size() / channels);
     const int64_t outFrames = static_cast<int64_t>(std::floor(static_cast<double>(inFrames) / ratio));
 
     std::vector<float> out(static_cast<size_t>(outFrames) * channels);
-    std::vector<double> weights(2 * kHalfTaps);
 
     for (int64_t n = 0; n < outFrames; ++n)
     {
         const double t = static_cast<double>(n) * ratio;
         const int64_t base = static_cast<int64_t>(std::floor(t));
-
-        double weightSum = 0.0;
-        for (int k = 0; k < 2 * kHalfTaps; ++k)
-        {
-            const double x = t - static_cast<double>(base - kHalfTaps + 1 + k);
-            const double arg = kPi * cutoff * x;
-            const double sinc = std::abs(x) < 1e-9 ? 1.0 : std::sin(arg) / arg;
-            const double w = (x + kHalfTaps) / (2.0 * kHalfTaps);
-            const double window = (w <= 0.0 || w >= 1.0) ? 0.0
-                                : 0.42 - 0.5 * std::cos(2.0 * kPi * w) + 0.08 * std::cos(4.0 * kPi * w);
-            weights[k] = sinc * window;
-            weightSum += weights[k];
-        }
+        const float frac = static_cast<float>(t - base);
+        const int64_t next = std::min(base + 1, inFrames - 1);
 
         for (uint32_t c = 0; c < channels; ++c)
         {
-            double acc = 0.0;
-            for (int k = 0; k < 2 * kHalfTaps; ++k)
-            {
-                const int64_t idx = base - kHalfTaps + 1 + k;
-                if (idx >= 0 && idx < inFrames)
-                    acc += weights[k] * in[static_cast<size_t>(idx) * channels + c];
-            }
-            out[static_cast<size_t>(n) * channels + c] = static_cast<float>(weightSum != 0.0 ? acc / weightSum : 0.0);
+            const float s0 = in[static_cast<size_t>(base) * channels + c];
+            const float s1 = in[static_cast<size_t>(next) * channels + c];
+            out[static_cast<size_t>(n) * channels + c] = s0 + frac * (s1 - s0);
         }
     }
     return out;
@@ -215,12 +206,50 @@ bool writeWavFile(const std::string& path, const std::vector<float>& samples, ui
 std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const std::string& cacheDir, std::string& error)
 {
     AudioFileInfo info;
-    if (!probeAudioFile(path, info) || engineRate == 0 || info.sampleRate == engineRate)
-        return path; // nothing to fix, or a format Carla handles on its own
-    
-    const double duration = static_cast<double>(info.frames) / info.sampleRate;
-if (duration >= 30.0 || info.sampleRate <= engineRate)
-    return path;
+    if (!probeAudioFile(path, info) || engineRate == 0)
+    {
+        error = "could not probe " + path;
+        return {};
+    }
+
+    const bool ascii = isPureAscii(path);
+    const std::string ext = lowerExtension(path);
+    const bool isWav = (ext == ".wav" || ext == ".wave");
+
+    // Carla on Windows can safely load a file directly ONLY if it is already a WAV,
+    // matches the engine sample rate (avoiding 2.5 player buffer overflow crash),
+    // and has a pure ASCII path (avoiding Carla ANSI filepath corruption).
+    if (info.sampleRate == engineRate && ascii && isWav)
+        return path;
+
+    // Build a unique, pure-ASCII filename based on 64-bit hash
+    uint64_t hash = 14695981039346656037ULL;
+    for (unsigned char c : path)
+    {
+        hash ^= c;
+        hash *= 1099511628211ULL;
+    }
+
+    std::error_code ec;
+    auto lastWrite = fs::last_write_time(fs::u8path(path), ec);
+    if (!ec)
+    {
+        uint64_t timeVal = static_cast<uint64_t>(lastWrite.time_since_epoch().count());
+        hash ^= timeVal;
+        hash *= 1099511628211ULL;
+    }
+    hash ^= engineRate;
+    hash *= 1099511628211ULL;
+
+    fs::create_directories(fs::u8path(cacheDir), ec);
+
+    char hexBuf[32];
+    std::snprintf(hexBuf, sizeof(hexBuf), "chost_%016llx.wav", static_cast<unsigned long long>(hash));
+    const fs::path outPath = fs::u8path(cacheDir) / hexBuf;
+
+    // Cache hit: avoid re-decoding
+    if (fs::exists(outPath, ec))
+        return outPath.u8string();
 
     Decoded d;
     if (!decode(path, d, false) || d.info.channels == 0)
@@ -229,12 +258,9 @@ if (duration >= 30.0 || info.sampleRate <= engineRate)
         return {};
     }
 
-    const std::vector<float> converted = resample(d.samples, d.info.channels, d.info.sampleRate, engineRate);
-
-    std::error_code ec;
-    fs::create_directories(fs::u8path(cacheDir), ec);
-    // keep the original name, carla shows the file name in the rack
-    const fs::path outPath = fs::u8path(cacheDir) / (fs::u8path(path).stem().string() + ".wav");
+    const std::vector<float>& converted = (d.info.sampleRate == engineRate)
+        ? d.samples
+        : resample(d.samples, d.info.channels, d.info.sampleRate, engineRate);
 
     drwav_data_format format{};
     format.container = drwav_container_riff;

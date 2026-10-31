@@ -18,6 +18,9 @@ struct AudioFileInfo {
     uint64_t frames = 0;
 };
 
+// Returns true if the string consists entirely of ASCII characters (0x00 - 0x7F).
+bool isPureAscii(const std::string& str);
+
 // WAV, FLAC and MP3 are understood; returns false for anything else.
 bool probeAudioFile(const std::string& path, AudioFileInfo& info);
 
