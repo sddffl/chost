@@ -23,6 +23,8 @@
 #include "TranscribeDialog.h"
 #include "TuneDialog.h"
 #include "Widgets.h"
+#include "LowerZone.h"
+#include "SampleEditor.h"
 #include "core/AudioConvert.h"
 #include "core/Click.h"
 
@@ -177,7 +179,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* main = new QSplitter(Qt::Vertical);
     main->addWidget(top);
-    main->addWidget(buildMixConsole());
+    main->addWidget(buildLowerZone());
     main->setStretchFactor(0, 1);
     main->setSizes({500, 400});
     setCentralWidget(main);
@@ -629,6 +631,21 @@ QWidget* MainWindow::buildBrowser()
     return pane;
 }
 
+QWidget* MainWindow::buildLowerZone()
+{
+    auto* mix = buildMixConsole();
+    fLowerZone = new LowerZone(mix, this);
+    connect(fLowerZone->sampleEditor(), &SampleEditor::seekRequested, this, &MainWindow::seek);
+    connect(fLowerZone->sampleEditor(), &SampleEditor::clipEditRequested, this, [this](int track, const chost::ClipEdit& edit, const QString& desc) {
+        editClip(track, edit, desc);
+    });
+    connect(fLowerZone->sampleEditor(), &SampleEditor::rangeChanged, this, [this](double s, double e) {
+        if (fArrange)
+            fArrange->setRange(s, e);
+    });
+    return fLowerZone;
+}
+
 QWidget* MainWindow::buildMixConsole()
 {
     auto* pane = new QWidget;
@@ -781,6 +798,10 @@ void MainWindow::tick()
     fArrange->setPlayhead(seconds, playing);
     if (fPianoRoll)
         fPianoRoll->setPlayhead(seconds);
+    if (fLowerZone && fLowerZone->sampleEditor())
+        fLowerZone->sampleEditor()->setPlayhead(seconds);
+    if (fLowerZone && fLowerZone->pianoRoll())
+        fLowerZone->pianoRoll()->setPlayhead(seconds);
     if (fChordPad)
         fChordPad->setPlayhead(seconds, playing);
 
@@ -1119,6 +1140,15 @@ void MainWindow::selectTrack(int track)
         return;
     fSelected = track;
     refreshSelection();
+    if (fLowerZone && fLowerZone->sampleEditor() && fLowerZone->currentTab() == LowerZone::TabEditor)
+    {
+        const std::vector<chost::Track>& tracks = fSession.tracks();
+        if (fSelected >= 0 && fSelected < static_cast<int>(tracks.size()) && tracks[fSelected].kind == chost::TrackKind::Audio && !tracks[fSelected].file.empty())
+        {
+            fLowerZone->sampleEditor()->setTrack(fSelected, QString::fromStdString(tracks[fSelected].name),
+                                                 QString::fromStdString(tracks[fSelected].file), trackColour(fSelected));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2430,10 +2460,34 @@ void MainWindow::midiFileEdited(const QString& oldPath, const QString& newPath, 
 void MainWindow::editNotes(int track)
 {
     const std::vector<chost::Track>& tracks = fSession.tracks();
-    if (track < 0 || track >= static_cast<int>(tracks.size()) || tracks[track].kind != chost::TrackKind::Instrument ||
-        tracks[track].file.empty())
+    if (track < 0 || track >= static_cast<int>(tracks.size()) || tracks[track].file.empty())
         return;
     selectTrack(track);
+
+    if (tracks[track].kind == chost::TrackKind::Audio)
+    {
+        if (fLowerZone && fLowerZone->sampleEditor())
+        {
+            fLowerZone->sampleEditor()->setTempo(fSession.tempo());
+            fLowerZone->sampleEditor()->setTrack(track, QString::fromStdString(tracks[track].name),
+                                                 QString::fromStdString(tracks[track].file), trackColour(track));
+            fLowerZone->setCurrentTab(LowerZone::TabEditor);
+        }
+        return;
+    }
+
+    if (fLowerZone && fLowerZone->pianoRoll())
+    {
+        chost::MidiClip clipData;
+        std::string err;
+        if (chost::readMidiFile(tracks[track].file, clipData, err))
+        {
+            fLowerZone->pianoRoll()->setClip(clipData);
+            fLowerZone->pianoRoll()->setColour(trackColour(track));
+        }
+        fLowerZone->setCurrentTab(LowerZone::TabPianoRoll);
+    }
+
     const QString path = QString::fromStdString(tracks[track].file);
     if (fPianoRoll && fPianoRoll->midiPath() == path)
     {

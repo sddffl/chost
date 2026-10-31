@@ -27,6 +27,8 @@ class ScoreDialog;
 class ScriptJob;
 struct RenderSnapshot;
 class InsertRack;
+class LowerZone;
+class SampleEditor;
 class PianoRollDialog;
 class PluginDiscovery;
 class PluginEditor;
@@ -129,6 +131,7 @@ private:
     QWidget* buildInspector();
     QWidget* buildBrowser();
     QWidget* buildMixConsole();
+    QWidget* buildLowerZone();
     void connectInsertRack(InsertRack* rack);
 
     void startEngine(const QString& driver);
@@ -279,6 +282,7 @@ private:
     QHBoxLayout* fStripRow = nullptr;
     std::vector<ChannelStrip*> fStrips;
     ChannelStrip* fOutputStrip = nullptr;
+    LowerZone* fLowerZone = nullptr;
 
     QTimer* fTimer = nullptr;
 };

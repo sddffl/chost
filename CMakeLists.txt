@@ -102,6 +102,8 @@ if(CHOST_BUILD_GUI)
         src/gui/ChordPad.cpp src/gui/ChordPad.h
         src/gui/ScoreView.cpp src/gui/ScoreView.h
         src/gui/ScoreDialog.cpp src/gui/ScoreDialog.h
+        src/gui/SampleEditor.cpp src/gui/SampleEditor.h
+        src/gui/LowerZone.cpp src/gui/LowerZone.h
         src/control/Tools.cpp src/control/Tools.h)
     target_compile_definitions(chost PRIVATE CHOST_VERSION="${PROJECT_VERSION}" CHOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(chost PRIVATE chost_core Qt6::Widgets Qt6::Network)
