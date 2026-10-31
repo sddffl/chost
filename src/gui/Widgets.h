@@ -14,6 +14,8 @@ class QScrollBar;
 class QSlider;
 class QToolButton;
 
+QString formatTime(double seconds);
+
 // Vertical stereo peak meter, -60 .. +6 dB, with a falling peak hold.
 class LevelMeter : public QWidget {
     Q_OBJECT
