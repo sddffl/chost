@@ -477,14 +477,20 @@ void ArrangeView::paintEvent(QPaintEvent*)
     if (hasRange())
     {
         const int r0 = secondsToX(fRangeStart), r1 = secondsToX(fRangeEnd);
-        p.fillRect(QRect(r0, kMarkerBand, r1 - r0, kRulerHeight - kMarkerBand), QColor(0x4a, 0x90, 0xd9, 110));
+        p.fillRect(QRect(r0, kMarkerBand, r1 - r0, kRulerHeight - kMarkerBand), QColor(0x7c, 0x4d, 0xff, 140));
         p.setClipRect(content);
-        p.fillRect(QRect(r0, kRulerHeight, r1 - r0, content.height()), QColor(0x4a, 0x90, 0xd9, 28));
+        p.fillRect(QRect(r0, kRulerHeight, r1 - r0, content.height()), QColor(0x7c, 0x4d, 0xff, 25));
         if (fSelected >= 0)
-            p.fillRect(QRect(r0, laneRect(fSelected).top(), r1 - r0, kLaneHeight), QColor(0x4a, 0x90, 0xd9, 60));
-        p.setPen(QColor(0x6f, 0xa8, 0xe6));
+            p.fillRect(QRect(r0, laneRect(fSelected).top(), r1 - r0, kLaneHeight), QColor(0x7c, 0x4d, 0xff, 55));
+        p.setPen(QColor(0x9d, 0x7c, 0xff));
         p.drawLine(r0, kMarkerBand, r0, content.bottom());
         p.drawLine(r1, kMarkerBand, r1, content.bottom());
+        const QPolygon leftFlag({QPoint(r0, kMarkerBand), QPoint(r0 + 7, kMarkerBand), QPoint(r0, kMarkerBand + 7)});
+        const QPolygon rightFlag({QPoint(r1, kMarkerBand), QPoint(r1 - 7, kMarkerBand), QPoint(r1, kMarkerBand + 7)});
+        p.setBrush(QColor(0xa8, 0x88, 0xff));
+        p.setPen(Qt::NoPen);
+        p.drawPolygon(leftFlag);
+        p.drawPolygon(rightFlag);
         p.setClipRect(QRect(kHeaderWidth, 0, right - kHeaderWidth, height() - scrollH));
     }
 

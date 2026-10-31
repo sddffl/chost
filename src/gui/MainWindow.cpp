@@ -830,30 +830,31 @@ void MainWindow::tick()
     setPlayhead(seconds);
 
     const double maxDur = maxTrackDuration();
-    if (playing)
+    if (fLoopEnabled)
     {
-        if (fLoopEnabled)
+        const double targetStart = (fRangeEndSec > fRangeStartSec + 0.1) ? fRangeStartSec : 0.0;
+        const double targetEnd = (fRangeEndSec > fRangeStartSec + 0.1) ? fRangeEndSec : maxDur;
+        if (targetEnd > targetStart + 0.05)
         {
-            const double targetStart = (fRangeEndSec > fRangeStartSec + 0.1) ? fRangeStartSec : 0.0;
-            const double targetEnd = (fRangeEndSec > fRangeStartSec + 0.1) ? fRangeEndSec : maxDur;
-            if (targetEnd > targetStart + 0.05 && seconds >= targetEnd - 0.02)
+            if ((playing && seconds >= targetEnd - 0.02) || (!playing && fWasPlaying && seconds >= targetEnd - 0.5))
             {
                 seek(targetStart);
                 if (!fHost.isPlaying())
                     fHost.play();
             }
         }
-        else if (maxDur > 0.0 && seconds >= maxDur)
-        {
-            fHost.pause();
-            seek(fPlayStartPosition);
-        }
+    }
+    else if (playing && maxDur > 0.0 && seconds >= maxDur)
+    {
+        fHost.pause();
+        seek(fPlayStartPosition);
     }
 
     {
         const QSignalBlocker blocker(fPlayButton);
         fPlayButton->setChecked(playing);
     }
+    fWasPlaying = playing;
 
     for (auto& [id, editor] : fEditors)
         if (editor)

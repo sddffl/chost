@@ -23,6 +23,7 @@ public:
     void setTrack(int trackIndex, const QString& trackName, const QString& filePath, const QColor& color);
     void setTempo(double bpm);
     void setPlayhead(double seconds);
+    void setSelection(double start, double end);
     void clearTrack();
 
     int currentTrack() const { return fTrackIndex; }

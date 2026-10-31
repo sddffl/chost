@@ -226,7 +226,16 @@ void SampleEditor::clearTrack()
     fFilePath.clear();
     fDensePeaks.clear();
     fDuration = 0.0;
+    fSelectionStart = 0.0;
+    fSelectionEnd = 0.0;
     fInfoLabel->setText(QStringLiteral("尚未选中音频轨道"));
+    update();
+}
+
+void SampleEditor::setSelection(double start, double end)
+{
+    fSelectionStart = std::max(0.0, start);
+    fSelectionEnd = fDuration > 0.0 ? std::min(fDuration, end) : end;
     update();
 }
 
@@ -362,6 +371,18 @@ void SampleEditor::drawRuler(QPainter& p, const QRect& rulerRect)
                 p.setPen(QColor(0x35, 0x3a, 0x42));
                 p.drawLine(beatX, rulerRect.top() + 14, beatX, rulerRect.bottom());
             }
+        }
+    }
+
+    if (fSelectionEnd > fSelectionStart)
+    {
+        const int r0 = timeToX(fSelectionStart, rulerRect.left());
+        const int r1 = timeToX(fSelectionEnd, rulerRect.left());
+        const int x0 = std::max(rulerRect.left(), std::min(r0, r1));
+        const int x1 = std::min(rulerRect.right(), std::max(r0, r1));
+        if (x1 > x0)
+        {
+            p.fillRect(QRect(x0, rulerRect.top(), x1 - x0, 5), QColor(0x7c, 0x4d, 0xff, 220));
         }
     }
 }

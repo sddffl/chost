@@ -259,6 +259,7 @@ private:
     QToolButton* fPlayButton = nullptr;
     QToolButton* fLoopButton = nullptr;
     bool fLoopEnabled = false;
+    bool fWasPlaying = false;
     double fPlayStartPosition = 0.0;
     double fRangeStartSec = 0.0;
     double fRangeEndSec = 0.0;
