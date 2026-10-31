@@ -718,10 +718,27 @@ void ArrangeView::mousePressEvent(QMouseEvent* event)
             emit seekRequested(fMarkers[static_cast<size_t>(marker)].seconds);
             return;
         }
+
+        const int playheadX = secondsToX(fPlayhead);
+        if (std::abs(pos.x() - playheadX) <= 8)
+        {
+            fDrag = Drag::Playhead;
+            return;
+        }
+
         if (pos.y() < kRulerHeight)
         {
-            fDrag = Drag::Range; // a click seeks, a drag marks a range
-            emit seekRequested(fPressSeconds);
+            if (event->modifiers() & Qt::ShiftModifier)
+            {
+                fDrag = Drag::Range;
+            }
+            else
+            {
+                fDrag = Drag::Playhead;
+                const double s = snap(fPressSeconds, event->modifiers());
+                emit seekRequested(s);
+                setPlayhead(s, false);
+            }
             return;
         }
         if (lane >= 0 && lane != fSelected)
@@ -729,13 +746,21 @@ void ArrangeView::mousePressEvent(QMouseEvent* event)
             fSelected = lane;
             emit trackSelected(lane);
         }
-        // on a clip: a drag moves it
-        if (lane >= 0 && !fLanes[lane].clipName.isEmpty() && fPressSeconds <= fLanes[lane].seconds)
+        const int laneTop = (lane >= 0 ? laneRect(lane).top() : 0);
+        const bool onClipHeader = (pos.y() - laneTop <= 18);
+        if (lane >= 0 && !fLanes[lane].clipName.isEmpty() && fPressSeconds <= fLanes[lane].seconds &&
+            ((event->modifiers() & Qt::AltModifier) || onClipHeader))
         {
             fDrag = Drag::Clip;
             fDragLane = lane;
         }
-        emit seekRequested(fPressSeconds);
+        else
+        {
+            fDrag = Drag::Playhead;
+            const double s = snap(fPressSeconds, event->modifiers());
+            emit seekRequested(s);
+            setPlayhead(s, false);
+        }
     }
 }
 
@@ -744,7 +769,15 @@ void ArrangeView::mouseMoveEvent(QMouseEvent* event)
     const QPoint pos = event->position().toPoint();
     if (fDrag == Drag::None)
     {
-        setCursor(markerAt(pos) >= 0 ? Qt::SizeHorCursor : pos.y() < kRulerHeight && pos.x() >= kHeaderWidth ? Qt::IBeamCursor : Qt::ArrowCursor);
+        const int playheadX = secondsToX(fPlayhead);
+        if (std::abs(pos.x() - playheadX) <= 6)
+            setCursor(Qt::SizeHorCursor);
+        else if (markerAt(pos) >= 0)
+            setCursor(Qt::SizeHorCursor);
+        else if (pos.y() < kRulerHeight && pos.x() >= kHeaderWidth)
+            setCursor(Qt::SplitHCursor);
+        else
+            setCursor(Qt::ArrowCursor);
         return;
     }
     if (!fDragging && std::abs(pos.x() - fPressPos.x()) < 4)
@@ -753,6 +786,13 @@ void ArrangeView::mouseMoveEvent(QMouseEvent* event)
     const double at = xToSeconds(pos.x());
     switch (fDrag)
     {
+    case Drag::Playhead:
+    {
+        const double s = snap(std::max(0.0, at), event->modifiers());
+        emit seekRequested(s);
+        setPlayhead(s, false);
+        break;
+    }
     case Drag::Range:
         setRange(snap(fPressSeconds, event->modifiers()), snap(at, event->modifiers()));
         break;
@@ -786,6 +826,8 @@ void ArrangeView::mouseReleaseEvent(QMouseEvent*)
             emit clipMoveRequested(fDragLane, fDragDelta);
         else if (drag == Drag::Marker && std::abs(fDragDelta) > 1e-6)
             emit markerMoved(fDragMarker, fMarkers[static_cast<size_t>(fDragMarker)].seconds + fDragDelta);
+        else if (drag == Drag::Playhead)
+            emit seekRequested(fPlayhead);
     }
     fDragging = false;
     fDragDelta = 0.0;

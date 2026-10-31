@@ -200,6 +200,14 @@ MainWindow::MainWindow(QWidget* parent)
         editClip(lane, edit, QStringLiteral("移动片段 %1 拍").arg(beats > 0 ? QStringLiteral("+") + QString::number(beats, 'g', 3) : QString::number(beats, 'g', 3)));
     });
     connect(fArrange, &ArrangeView::rangeChanged, this, [this](double start, double end) {
+        fRangeStartSec = std::min(start, end);
+        fRangeEndSec = std::max(start, end);
+        if (fRangeEndSec > fRangeStartSec + 0.05)
+        {
+            fLoopEnabled = true;
+            if (fLoopButton)
+                fLoopButton->setChecked(true);
+        }
         if (end > start)
         {
             const double beat = 60.0 / fSession.tempo();
@@ -225,6 +233,11 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* space = new QShortcut(QKeySequence(Qt::Key_Space), this);
     connect(space, &QShortcut::activated, this, &MainWindow::togglePlay);
+    auto* slash = new QShortcut(QKeySequence(Qt::Key_Slash), this);
+    connect(slash, &QShortcut::activated, this, [this] {
+        if (fLoopButton)
+            fLoopButton->toggle();
+    });
 
     fHost.setEventCallback([this](HostEvent event, uint pluginId, int index, float value, const std::string& text) {
         // carla may call this from its own threads, widgets are only touched on the GUI thread
@@ -415,6 +428,9 @@ void MainWindow::buildTransport()
     fPlayButton = transportButton(QStringLiteral("▶"), QStringLiteral("播放（空格）"));
     fPlayButton->setCheckable(true);
     connect(fPlayButton, &QToolButton::clicked, this, &MainWindow::togglePlay);
+    fLoopButton = transportButton(QStringLiteral("🔁"), QStringLiteral("循环播放（/）"));
+    fLoopButton->setCheckable(true);
+    connect(fLoopButton, &QToolButton::toggled, this, [this](bool on) { fLoopEnabled = on; });
     auto* click = new QToolButton;
     click->setObjectName(QStringLiteral("transport"));
     click->setDefaultAction(fClickAction);
@@ -636,6 +652,16 @@ QWidget* MainWindow::buildLowerZone()
     auto* mix = buildMixConsole();
     fLowerZone = new LowerZone(mix, this);
     connect(fLowerZone->sampleEditor(), &SampleEditor::seekRequested, this, &MainWindow::seek);
+    connect(fLowerZone->sampleEditor(), &SampleEditor::rangeChanged, this, [this](double start, double end) {
+        fRangeStartSec = std::min(start, end);
+        fRangeEndSec = std::max(start, end);
+        if (fRangeEndSec > fRangeStartSec + 0.05)
+        {
+            fLoopEnabled = true;
+            if (fLoopButton)
+                fLoopButton->setChecked(true);
+        }
+    });
     connect(fLowerZone->sampleEditor(), &SampleEditor::clipEditRequested, this, [this](int track, const chost::ClipEdit& edit, const QString& desc) {
         editClip(track, edit, desc);
     });
@@ -795,25 +821,25 @@ void MainWindow::tick()
     const double rate = fHost.sampleRate();
     const double seconds = rate > 0.0 ? static_cast<double>(fHost.transportFrame()) / rate : 0.0;
     const bool playing = fHost.isPlaying();
-    fArrange->setPlayhead(seconds, playing);
-    if (fPianoRoll)
-        fPianoRoll->setPlayhead(seconds);
-    if (fLowerZone && fLowerZone->sampleEditor())
-        fLowerZone->sampleEditor()->setPlayhead(seconds);
-    if (fLowerZone && fLowerZone->pianoRoll())
-        fLowerZone->pianoRoll()->setPlayhead(seconds);
-    if (fChordPad)
-        fChordPad->setPlayhead(seconds, playing);
+    setPlayhead(seconds);
 
-    const int ms = static_cast<int>(seconds * 1000.0);
-    fTimeLcd->setText(QStringLiteral("%1:%2:%3.%4")
-                          .arg(ms / 3600000, 2, 10, QLatin1Char('0'))
-                          .arg(ms / 60000 % 60, 2, 10, QLatin1Char('0'))
-                          .arg(ms / 1000 % 60, 2, 10, QLatin1Char('0'))
-                          .arg(ms % 1000, 3, 10, QLatin1Char('0')));
-    const double beats = seconds * fSession.tempo() / 60.0;
-    const int sixteenths = static_cast<int>(beats * 4.0);
-    fBarsLcd->setText(QStringLiteral("%1. %2. %3").arg(sixteenths / 16 + 1, 3).arg(sixteenths / 4 % 4 + 1).arg(sixteenths % 4 + 1));
+    const double maxDur = maxTrackDuration();
+    if (playing)
+    {
+        if (fLoopEnabled && fRangeEndSec > fRangeStartSec + 0.1 && seconds >= fRangeEndSec)
+        {
+            seek(fRangeStartSec);
+        }
+        else if (fLoopEnabled && (fRangeEndSec <= fRangeStartSec + 0.1) && maxDur > 0.0 && seconds >= maxDur)
+        {
+            seek(0.0);
+        }
+        else if (!fLoopEnabled && maxDur > 0.0 && seconds >= maxDur)
+        {
+            fHost.pause();
+            seek(fPlayStartPosition);
+        }
+    }
 
     {
         const QSignalBlocker blocker(fPlayButton);
@@ -3499,20 +3525,91 @@ void MainWindow::play()
 void MainWindow::togglePlay()
 {
     if (fHost.isPlaying())
+    {
         fHost.pause();
+        seek(fPlayStartPosition);
+    }
     else
+    {
+        const double cur = playhead();
+        const double maxDur = maxTrackDuration();
+        if (maxDur > 0.0 && cur >= maxDur - 0.05)
+        {
+            seek(0.0);
+            fPlayStartPosition = 0.0;
+        }
+        else
+        {
+            fPlayStartPosition = cur;
+        }
         fHost.play();
+    }
 }
 
 void MainWindow::stop()
 {
-    fHost.pause();
-    seek(0.0);
+    if (fHost.isPlaying())
+    {
+        fHost.pause();
+        seek(fPlayStartPosition);
+    }
+    else
+    {
+        seek(0.0);
+        fPlayStartPosition = 0.0;
+    }
+}
+
+double MainWindow::playhead() const
+{
+    const double rate = fHost.sampleRate();
+    return rate > 0.0 ? static_cast<double>(fHost.transportFrame()) / rate : 0.0;
+}
+
+double MainWindow::maxTrackDuration() const
+{
+    double maxSec = 0.0;
+    for (const chost::Track& t : fSession.tracks())
+    {
+        if (!t.file.empty())
+        {
+            auto it = fClips.find(QString::fromStdString(t.file));
+            if (it != fClips.end())
+                maxSec = std::max(maxSec, it->seconds);
+        }
+    }
+    return maxSec;
+}
+
+void MainWindow::setPlayhead(double seconds)
+{
+    const bool playing = fHost.isPlaying();
+    fArrange->setPlayhead(seconds, playing);
+    if (fPianoRoll)
+        fPianoRoll->setPlayhead(seconds);
+    if (fLowerZone && fLowerZone->sampleEditor())
+        fLowerZone->sampleEditor()->setPlayhead(seconds);
+    if (fLowerZone && fLowerZone->pianoRoll())
+        fLowerZone->pianoRoll()->setPlayhead(seconds);
+    if (fChordPad)
+        fChordPad->setPlayhead(seconds, playing);
+
+    const int ms = static_cast<int>(seconds * 1000.0);
+    fTimeLcd->setText(QStringLiteral("%1:%2:%3.%4")
+                          .arg(ms / 3600000, 2, 10, QLatin1Char('0'))
+                          .arg(ms / 60000 % 60, 2, 10, QLatin1Char('0'))
+                          .arg(ms / 1000 % 60, 2, 10, QLatin1Char('0'))
+                          .arg(ms % 1000, 3, 10, QLatin1Char('0')));
+    const double beats = seconds * fSession.tempo() / 60.0;
+    const int sixteenths = static_cast<int>(beats * 4.0);
+    fBarsLcd->setText(QStringLiteral("%1. %2. %3").arg(sixteenths / 16 + 1, 3).arg(sixteenths / 4 % 4 + 1).arg(sixteenths % 4 + 1));
 }
 
 void MainWindow::seek(double seconds)
 {
-    fHost.relocate(static_cast<uint64_t>(std::max(0.0, seconds) * fHost.sampleRate()));
+    const double s = std::max(0.0, seconds);
+    fHost.relocate(static_cast<uint64_t>(s * fHost.sampleRate()));
+    setPlayhead(s);
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event)

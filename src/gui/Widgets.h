@@ -169,7 +169,7 @@ private:
     double fRangeStart = 0.0;
     double fRangeEnd = 0.0;
 
-    enum class Drag { None, Range, Clip, Marker };
+    enum class Drag { None, Range, Clip, Marker, Playhead };
     Drag fDrag = Drag::None;
     bool fDragging = false; // moved far enough to be a drag, not a click
     QPoint fPressPos;

@@ -205,6 +205,9 @@ private:
     void togglePlay();
     void stop();
     void seek(double seconds);
+    void setPlayhead(double seconds);
+    double playhead() const;
+    double maxTrackDuration() const;
     void showError(const QString& what);
     void updateTitle();
 
@@ -253,6 +256,11 @@ private:
 
     // transport
     QToolButton* fPlayButton = nullptr;
+    QToolButton* fLoopButton = nullptr;
+    bool fLoopEnabled = false;
+    double fPlayStartPosition = 0.0;
+    double fRangeStartSec = 0.0;
+    double fRangeEndSec = 0.0;
     QAction* fClickAction = nullptr;
     QString fClickFile;        // the click part the metronome plays, made for the tempo and length it has
     QLabel* fTimeLcd = nullptr;

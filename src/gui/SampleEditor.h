@@ -71,6 +71,7 @@ private:
     double fSelectionStart = 0.0;
     double fSelectionEnd = 0.0;
     bool fSelecting = false;
+    bool fScrubbing = false;
 
     std::vector<float> fDensePeaks;
     uint32_t fSampleRate = 44100;

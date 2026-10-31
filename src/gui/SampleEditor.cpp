@@ -530,10 +530,14 @@ void SampleEditor::mousePressEvent(QMouseEvent* event)
 
     if (event->button() == Qt::LeftButton)
     {
-        if (event->pos().y() <= kToolbarHeight + kRulerHeight)
+        const int playX = timeToX(fPlayhead, waveLeft);
+        if (std::abs(event->pos().x() - playX) <= 8 || event->pos().y() <= kToolbarHeight + kRulerHeight)
         {
-            // Clicked in ruler -> seek
-            emit seekRequested(snapTime(clickTime));
+            fScrubbing = true;
+            const double t = snapTime(std::max(0.0, clickTime));
+            emit seekRequested(t);
+            setPlayhead(t);
+            update();
             return;
         }
 
@@ -563,27 +567,51 @@ void SampleEditor::mousePressEvent(QMouseEvent* event)
 
 void SampleEditor::mouseMoveEvent(QMouseEvent* event)
 {
+    const int waveLeft = kKeyWidth;
+    if (fScrubbing)
+    {
+        const double t = snapTime(std::max(0.0, xToTime(event->pos().x(), waveLeft)));
+        emit seekRequested(t);
+        setPlayhead(t);
+        update();
+        return;
+    }
     if (fSelecting)
     {
-        const int waveLeft = kKeyWidth;
         fSelectionEnd = snapTime(xToTime(event->pos().x(), waveLeft));
         emit rangeChanged(std::min(fSelectionStart, fSelectionEnd), std::max(fSelectionStart, fSelectionEnd));
         update();
+        return;
     }
+    const int playX = timeToX(fPlayhead, waveLeft);
+    if (std::abs(event->pos().x() - playX) <= 6 || event->pos().y() <= kToolbarHeight + kRulerHeight)
+        setCursor(Qt::SizeHorCursor);
+    else if (fTool == Tool::Scissors)
+        setCursor(Qt::CrossCursor);
+    else
+        setCursor(Qt::ArrowCursor);
 }
 
 void SampleEditor::mouseReleaseEvent(QMouseEvent* event)
 {
-    if (event->button() == Qt::LeftButton && fSelecting)
+    if (event->button() == Qt::LeftButton)
     {
-        fSelecting = false;
-        if (std::abs(fSelectionEnd - fSelectionStart) < 0.05)
+        if (fScrubbing)
         {
-            fSelectionStart = 0.0;
-            fSelectionEnd = 0.0;
-            emit rangeChanged(0.0, 0.0);
+            fScrubbing = false;
+            return;
         }
-        update();
+        if (fSelecting)
+        {
+            fSelecting = false;
+            if (std::abs(fSelectionEnd - fSelectionStart) < 0.05)
+            {
+                fSelectionStart = 0.0;
+                fSelectionEnd = 0.0;
+                emit rangeChanged(0.0, 0.0);
+            }
+            update();
+        }
     }
 }
 
