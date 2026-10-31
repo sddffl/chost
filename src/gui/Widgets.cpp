@@ -460,13 +460,18 @@ void ArrangeView::paintEvent(QPaintEvent*)
             continue;
         const int x = secondsToX(b * beat);
         p.setPen(isBar ? theme::text : theme::textDim);
-        p.drawLine(x, kMarkerBand + (isBar ? 12 : 22), x, kRulerHeight - 1);
-        if (isBar && bar * fPixelsPerSecond > 26.0)
-            p.drawText(x + 4, kMarkerBand + 13, QString::number(b / 4 + 1));
+        p.drawLine(x, kMarkerBand + (isBar ? 10 : 20), x, kRulerHeight - 1);
+        if (isBar && bar * fPixelsPerSecond > 22.0)
+        {
+            p.setPen(theme::text);
+            p.drawText(x + 4, kMarkerBand + 14, QString::number(b / 4 + 1));
+        }
+        else if (!isBar && bar * fPixelsPerSecond > 90.0)
+        {
+            p.setPen(theme::textDim);
+            p.drawText(x + 2, kMarkerBand + 14, QStringLiteral(".%1").arg(b % 4 + 1));
+        }
     }
-    p.setPen(theme::textDim);
-    for (int s = static_cast<int>(firstSecond / 10.0) * 10; s <= lastSecond; s += 10)
-        p.drawText(secondsToX(s) + 4, kRulerHeight - 4, formatTime(s));
 
     // ---- the range: on the ruler, and over the lanes (the selected one most)
     if (hasRange())
@@ -847,6 +852,11 @@ void ArrangeView::keyPressEvent(QKeyEvent* event)
         emit trackDeleteRequested();
         return;
     }
+    if (event->key() == Qt::Key_P)
+    {
+        emit locatorsToSelectionRequested();
+        return;
+    }
     QWidget::keyPressEvent(event);
 }
 
@@ -862,8 +872,8 @@ void ArrangeView::mouseDoubleClickEvent(QMouseEvent* event)
     const int lane = pos.y() > kRulerHeight ? laneAt(pos.y()) : -2;
     if (lane == -1)
         emit trackMenuRequested(-1, mapToGlobal(pos));
-    else if (lane >= 0 && pos.x() >= kHeaderWidth)
-        emit clipDoubleClicked(lane); // opens the MIDI editor, as in Cubase
+    else if (lane >= 0)
+        emit clipDoubleClicked(lane); // opens the Lower Zone editor, as in Cubase
 }
 
 void ArrangeView::contextMenuEvent(QContextMenuEvent* event)

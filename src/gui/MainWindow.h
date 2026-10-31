@@ -71,6 +71,7 @@ public:
     void separateStems(bool autoStart = false); // AI stem separation of the selected track
     void transcribe(bool allTracks, bool autoStart = false); // AI audio to MIDI
     void editNotes(int track);                               // the piano roll of a MIDI track
+    void setLocatorsToSelection();                           // Cubase shortcut 'P': fit cycle range to selected track/event and enable loop
     PianoRollDialog* pianoRoll() const { return fPianoRoll; } // the one open, if any
     // a MIDI track's file was rewritten (to newPath, maybe the same): its track plays and shows it, undoably
     void midiFileEdited(const QString& oldPath, const QString& newPath, const QString& what);
@@ -290,6 +291,7 @@ private:
     std::vector<ChannelStrip*> fStrips;
     ChannelStrip* fOutputStrip = nullptr;
     LowerZone* fLowerZone = nullptr;
+    QSplitter* fMainSplitter = nullptr;
 
     QTimer* fTimer = nullptr;
 };

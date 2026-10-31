@@ -177,12 +177,12 @@ MainWindow::MainWindow(QWidget* parent)
     top->setStretchFactor(1, 1);
     top->setSizes({230, 880, 320});
 
-    auto* main = new QSplitter(Qt::Vertical);
-    main->addWidget(top);
-    main->addWidget(buildLowerZone());
-    main->setStretchFactor(0, 1);
-    main->setSizes({500, 400});
-    setCentralWidget(main);
+    fMainSplitter = new QSplitter(Qt::Vertical);
+    fMainSplitter->addWidget(top);
+    fMainSplitter->addWidget(buildLowerZone());
+    fMainSplitter->setStretchFactor(0, 1);
+    fMainSplitter->setSizes({500, 400});
+    setCentralWidget(fMainSplitter);
 
     connect(fArrange, &ArrangeView::seekRequested, this, &MainWindow::seek);
     connect(fArrange, &ArrangeView::trackSelected, this, &MainWindow::selectTrack);
@@ -191,6 +191,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(fArrange, &ArrangeView::foldToggled, this, &MainWindow::setFolded);
     connect(fArrange, &ArrangeView::trackMenuRequested, this, &MainWindow::trackMenu);
     connect(fArrange, &ArrangeView::trackDeleteRequested, this, &MainWindow::removeSelectedTrack);
+    connect(fArrange, &ArrangeView::locatorsToSelectionRequested, this, &MainWindow::setLocatorsToSelection);
     connect(fArrange, &ArrangeView::filesDropped, this, &MainWindow::dropFiles);
     connect(fArrange, &ArrangeView::clipDoubleClicked, this, &MainWindow::editNotes);
     connect(fArrange, &ArrangeView::clipMoveRequested, this, [this](int lane, double seconds) {
@@ -239,6 +240,8 @@ MainWindow::MainWindow(QWidget* parent)
         if (fLoopButton)
             fLoopButton->toggle();
     });
+    auto* pKey = new QShortcut(QKeySequence(Qt::Key_P), this);
+    connect(pKey, &QShortcut::activated, this, &MainWindow::setLocatorsToSelection);
 
     fHost.setEventCallback([this](HostEvent event, uint pluginId, int index, float value, const std::string& text) {
         // carla may call this from its own threads, widgets are only touched on the GUI thread
@@ -371,6 +374,7 @@ void MainWindow::buildMenus()
     transport->addAction(QStringLiteral("播放 / 暂停（空格）"), this, &MainWindow::togglePlay);
     transport->addAction(QStringLiteral("停止"), this, &MainWindow::stop);
     transport->addAction(QStringLiteral("回到开头"), this, [this] { seek(0.0); });
+    transport->addAction(QStringLiteral("设置定位器到选区（P）"), QKeySequence(Qt::Key_P), this, &MainWindow::setLocatorsToSelection);
     transport->addSeparator();
     transport->addAction(QStringLiteral("在播放位置添加标记"), QKeySequence(QStringLiteral("Ctrl+M")), this, [this] {
         const int marker = addMarker(playhead());
@@ -828,15 +832,18 @@ void MainWindow::tick()
     const double maxDur = maxTrackDuration();
     if (playing)
     {
-        if (fLoopEnabled && fRangeEndSec > fRangeStartSec + 0.1 && seconds >= fRangeEndSec)
+        if (fLoopEnabled)
         {
-            seek(fRangeStartSec);
+            const double targetStart = (fRangeEndSec > fRangeStartSec + 0.1) ? fRangeStartSec : 0.0;
+            const double targetEnd = (fRangeEndSec > fRangeStartSec + 0.1) ? fRangeEndSec : maxDur;
+            if (targetEnd > targetStart + 0.05 && seconds >= targetEnd - 0.02)
+            {
+                seek(targetStart);
+                if (!fHost.isPlaying())
+                    fHost.play();
+            }
         }
-        else if (fLoopEnabled && (fRangeEndSec <= fRangeStartSec + 0.1) && maxDur > 0.0 && seconds >= maxDur)
-        {
-            seek(0.0);
-        }
-        else if (!fLoopEnabled && maxDur > 0.0 && seconds >= maxDur)
+        else if (maxDur > 0.0 && seconds >= maxDur)
         {
             fHost.pause();
             seek(fPlayStartPosition);
@@ -2492,6 +2499,17 @@ void MainWindow::editNotes(int track)
         return;
     selectTrack(track);
 
+    if (fMainSplitter)
+    {
+        QList<int> sizes = fMainSplitter->sizes();
+        if (sizes.size() >= 2 && sizes[1] < 140)
+        {
+            const int total = fMainSplitter->height() > 300 ? fMainSplitter->height() : 800;
+            const int lowerH = std::min(400, std::max(260, total / 3));
+            fMainSplitter->setSizes({total - lowerH, lowerH});
+        }
+    }
+
     if (tracks[track].kind == chost::TrackKind::Audio)
     {
         if (fLowerZone && fLowerZone->sampleEditor())
@@ -3602,6 +3620,40 @@ void MainWindow::seek(double seconds)
     const double s = std::max(0.0, seconds);
     fHost.relocate(static_cast<uint64_t>(s * fHost.sampleRate()));
     setPlayhead(s);
+}
+
+void MainWindow::setLocatorsToSelection()
+{
+    double start = 0.0;
+    double end = 0.0;
+    const std::vector<chost::Track>& trks = fSession.tracks();
+    if (fSelected >= 0 && fSelected < static_cast<int>(trks.size()))
+    {
+        const auto& t = trks[static_cast<size_t>(fSelected)];
+        if (!t.file.empty())
+        {
+            start = 0.0;
+            end = clip(QString::fromStdString(t.file)).seconds;
+        }
+    }
+    if (end <= start + 0.05)
+    {
+        start = 0.0;
+        end = maxTrackDuration();
+    }
+    if (end > start + 0.05)
+    {
+        fRangeStartSec = start;
+        fRangeEndSec = end;
+        fArrange->setRange(start, end);
+        if (fLowerZone && fLowerZone->sampleEditor())
+            fLowerZone->sampleEditor()->setSelection(start, end);
+        fLoopEnabled = true;
+        if (fLoopButton)
+            fLoopButton->setChecked(true);
+        statusBar()->showMessage(QStringLiteral("循环选区已框选对齐音频（%1 至 %2），已开启循环播放（按 / 或点击 🔁 切换）")
+                                     .arg(formatTime(start), formatTime(end)), 4000);
+    }
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event)
