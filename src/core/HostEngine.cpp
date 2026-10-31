@@ -725,7 +725,24 @@ bool HostEngine::isPlaying() const
 }
 
 uint64_t HostEngine::transportFrame() const { return isRunning() ? carla_get_current_transport_frame(fHandle) : 0; }
-void HostEngine::relocate(uint64_t frame) { carla_transport_relocate(fHandle, frame); }
+void HostEngine::relocate(uint64_t frame)
+{
+    if (fHandle == nullptr)
+        return;
+    carla_transport_relocate(fHandle, frame);
+
+    // Refresh audiofile streaming pool buffers so seeking backward (or any jump)
+    // immediately flushes Carla's internal read pool and resumes playback at the new frame.
+    const uint32_t count = carla_get_current_plugin_count(fHandle);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const char* file = carla_get_custom_data_value(fHandle, i, CUSTOM_DATA_TYPE_STRING, "file");
+        if (file != nullptr && *file != '\0')
+        {
+            carla_set_custom_data(fHandle, i, CUSTOM_DATA_TYPE_STRING, "file", file);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // patchbay
