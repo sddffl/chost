@@ -47,13 +47,13 @@ int volumeToFader(float volume)
     return static_cast<int>(std::cbrt(std::clamp(volume, 0.0f, kMaxVolume) / kMaxVolume) * kFaderSteps + 0.5f);
 }
 
+} // namespace
+
 QString formatTime(double seconds)
 {
     const int total = static_cast<int>(seconds);
     return QStringLiteral("%1:%2").arg(total / 60).arg(total % 60, 2, 10, QLatin1Char('0'));
 }
-
-} // namespace
 
 // ---------------------------------------------------------------------------------------------------------------------
 

@@ -41,6 +41,7 @@ class QPushButton;
 class QTimer;
 class QToolButton;
 class QTreeWidget;
+class QSplitter;
 class StemDialog;
 class TranscribeDialog;
 class TuneDialog;
