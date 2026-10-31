@@ -243,9 +243,19 @@ std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const
 
     fs::create_directories(fs::u8path(cacheDir), ec);
 
-    char hexBuf[32];
-    std::snprintf(hexBuf, sizeof(hexBuf), "chost_%016llx.wav", static_cast<unsigned long long>(hash));
-    const fs::path outPath = fs::u8path(cacheDir) / hexBuf;
+    // Keep original filename if ASCII (so Carla shows recognizable track/plugin names),
+    // otherwise use safe pure-ASCII hash for Chinese / multibyte paths.
+    fs::path outPath;
+    if (ascii)
+    {
+        outPath = fs::u8path(cacheDir) / (fs::u8path(path).stem().string() + ".wav");
+    }
+    else
+    {
+        char hexBuf[32];
+        std::snprintf(hexBuf, sizeof(hexBuf), "chost_%016llx.wav", static_cast<unsigned long long>(hash));
+        outPath = fs::u8path(cacheDir) / hexBuf;
+    }
 
     // Cache hit: avoid re-decoding
     if (fs::exists(outPath, ec))
