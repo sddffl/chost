@@ -190,6 +190,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(fArrange, &ArrangeView::soloToggled, this, &MainWindow::setSolo);
     connect(fArrange, &ArrangeView::foldToggled, this, &MainWindow::setFolded);
     connect(fArrange, &ArrangeView::trackMenuRequested, this, &MainWindow::trackMenu);
+    connect(fArrange, &ArrangeView::trackDeleteRequested, this, &MainWindow::removeSelectedTrack);
     connect(fArrange, &ArrangeView::filesDropped, this, &MainWindow::dropFiles);
     connect(fArrange, &ArrangeView::clipDoubleClicked, this, &MainWindow::editNotes);
     connect(fArrange, &ArrangeView::clipMoveRequested, this, [this](int lane, double seconds) {
@@ -363,7 +364,8 @@ void MainWindow::buildMenus()
     track->addAction(QStringLiteral("新建混响效果轨，选中轨道发送过去"), this, [this, selectedOnly] { addBus(BusKind::Reverb, selectedOnly()); });
     track->addAction(QStringLiteral("新建延迟效果轨，选中轨道发送过去"), this, [this, selectedOnly] { addBus(BusKind::Delay, selectedOnly()); });
     track->addSeparator();
-    track->addAction(QStringLiteral("删除选中轨道"), QKeySequence(QStringLiteral("Ctrl+Del")), this, &MainWindow::removeSelectedTrack);
+    QAction* deleteTrackAction = track->addAction(QStringLiteral("删除选中轨道"), this, &MainWindow::removeSelectedTrack);
+    deleteTrackAction->setShortcuts({QKeySequence::Delete, QKeySequence(Qt::Key_Backspace), QKeySequence(QStringLiteral("Ctrl+Del"))});
 
     QMenu* transport = menuBar()->addMenu(QStringLiteral("走带"));
     transport->addAction(QStringLiteral("播放 / 暂停（空格）"), this, &MainWindow::togglePlay);

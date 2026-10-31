@@ -842,6 +842,11 @@ void ArrangeView::keyPressEvent(QKeyEvent* event)
         emit rangeChanged(0.0, 0.0);
         return;
     }
+    if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)
+    {
+        emit trackDeleteRequested();
+        return;
+    }
     QWidget::keyPressEvent(event);
 }
 

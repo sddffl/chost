@@ -116,6 +116,7 @@ signals:
     void soloToggled(int lane, bool solo);
     void foldToggled(int lane, bool folded);
     void trackMenuRequested(int lane, const QPoint& globalPos); // lane -1: the empty area below the tracks
+    void trackDeleteRequested();
     void filesDropped(const QStringList& paths, int lane);       // lane -1: make new tracks
     void rangeChanged(double start, double end);
     void clipMoveRequested(int lane, double seconds);            // a clip dragged later (> 0) or earlier
