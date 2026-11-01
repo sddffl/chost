@@ -26,6 +26,54 @@ import shutil
 import sys
 import traceback
 
+import socket
+
+def _detect_proxy():
+    if not os.environ.get("HTTP_PROXY") and not os.environ.get("HTTPS_PROXY"):
+        for port in (10808, 7890, 10809, 7897, 1080):
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.15)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                proxy_url = f"http://127.0.0.1:{port}"
+                os.environ["HTTP_PROXY"] = proxy_url
+                os.environ["HTTPS_PROXY"] = proxy_url
+                break
+            except Exception:
+                pass
+
+_detect_proxy()
+
+
+def _patch_download():
+    try:
+        from audio_separator.separator import Separator
+        orig_download = Separator.download_file_if_not_exists
+
+        def patched(self, url, output_path):
+            if os.path.isfile(output_path):
+                return
+            urls_to_try = [url]
+            if "github.com" in url:
+                urls_to_try.append("https://ghproxy.net/" + url)
+                urls_to_try.append("https://mirror.ghproxy.com/" + url)
+
+            last_err = None
+            for u in urls_to_try:
+                try:
+                    return orig_download(self, u, output_path)
+                except Exception as e:
+                    last_err = e
+            if last_err:
+                raise last_err
+
+        Separator.download_file_if_not_exists = patched
+    except Exception:
+        pass
+
+_patch_download()
+
 LABELS = {
     "vocals": "人声",
     "drums": "鼓",
