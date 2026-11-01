@@ -15,6 +15,8 @@
 
 class ArrangeDialog;
 class ArrangeView;
+class TapeDeckWidget;
+class QDockWidget;
 class ChannelStrip;
 class ExportDialog;
 class Autosave;
@@ -259,6 +261,9 @@ private:
     bool fAnalysisQuiet = false;
 
     // transport
+    TapeDeckWidget* fTapeDeck = nullptr;
+    QDockWidget* fTapeDock = nullptr;
+    QToolButton* fTapeDockButton = nullptr;
     QToolButton* fPlayButton = nullptr;
     QToolButton* fLoopButton = nullptr;
     bool fLoopEnabled = false;

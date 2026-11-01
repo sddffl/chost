@@ -21,6 +21,8 @@
 #include "ScriptJob.h"
 #include "StemDialog.h"
 #include "Theme.h"
+#include "TapeDeckWidget.h"
+#include <QDockWidget>
 #include "TranscribeDialog.h"
 #include "TuneDialog.h"
 #include "Widgets.h"
@@ -184,6 +186,27 @@ MainWindow::MainWindow(QWidget* parent)
     fMainSplitter->setStretchFactor(0, 1);
     fMainSplitter->setSizes({500, 400});
     setCentralWidget(fMainSplitter);
+
+    fTapeDeck = new TapeDeckWidget(this);
+    connect(fTapeDeck, &TapeDeckWidget::playRequested, this, &MainWindow::togglePlay);
+    connect(fTapeDeck, &TapeDeckWidget::pauseRequested, this, &MainWindow::togglePlay);
+    connect(fTapeDeck, &TapeDeckWidget::stopRequested, this, &MainWindow::stop);
+    connect(fTapeDeck, &TapeDeckWidget::rewindRequested, this, [this] { seek(0.0); });
+    connect(fTapeDeck, &TapeDeckWidget::recordRequested, this, [this] { autoRemaster(); });
+
+    fTapeDock = new QDockWidget(QStringLiteral("PRODUCER FM-01X 模拟磁带机与双指针 VU 电平"), this);
+    fTapeDock->setObjectName(QStringLiteral("producerTapeDock"));
+    fTapeDock->setWidget(fTapeDeck);
+    fTapeDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable);
+    addDockWidget(Qt::RightDockWidgetArea, fTapeDock);
+
+    connect(fTapeDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        if (fTapeDockButton && fTapeDockButton->isChecked() != visible)
+        {
+            const QSignalBlocker blocker(fTapeDockButton);
+            fTapeDockButton->setChecked(visible);
+        }
+    });
 
     connect(fArrange, &ArrangeView::seekRequested, this, &MainWindow::seek);
     connect(fArrange, &ArrangeView::trackSelected, this, &MainWindow::selectTrack);
@@ -477,6 +500,7 @@ void MainWindow::buildTransport()
 
     bar->addSeparator();
     auto* remaster = new QToolButton;
+    remaster->setObjectName(QStringLiteral("aiHero"));
     remaster->setText(QStringLiteral("⚡ 全自动母带"));
     remaster->setToolTip(QStringLiteral("一键全自动：分析测速定调、RTX 3090 GPU 14轨细分分轨、伴奏转MIDI、人声顶级修音、多轨平衡润色与商业级母带导出至桌面"));
     bar->addWidget(remaster);
@@ -511,6 +535,18 @@ void MainWindow::buildTransport()
     mastering->setToolTip(QStringLiteral("把整首混音做成可以发布的母带：音色平衡、压缩、响度标准"));
     bar->addWidget(mastering);
     connect(mastering, &QToolButton::clicked, this, [this] { masterMix(); });
+
+    bar->addSeparator();
+    fTapeDockButton = new QToolButton;
+    fTapeDockButton->setText(QStringLiteral("📼 模拟磁带机"));
+    fTapeDockButton->setCheckable(true);
+    fTapeDockButton->setChecked(true);
+    fTapeDockButton->setToolTip(QStringLiteral("显示/隐藏 PRODUCER FM-01X 模拟磁带机与双指针 VU 动态电平窗口"));
+    bar->addWidget(fTapeDockButton);
+    connect(fTapeDockButton, &QToolButton::toggled, this, [this](bool visible) {
+        if (fTapeDock)
+            fTapeDock->setVisible(visible);
+    });
 
     auto* spacer = new QWidget;
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -830,10 +866,25 @@ void MainWindow::tick()
         const auto [l, r] = fHost.outputPeaks(tracks[i].fader);
         fStrips[i]->setLevels(l, r);
     }
+    float masterL = 0.0f, masterR = 0.0f;
     if (fSession.isReady())
     {
         const auto [l, r] = fHost.outputPeaks(fSession.master());
+        masterL = l;
+        masterR = r;
         fOutputStrip->setLevels(l, r);
+    }
+    if (fTapeDeck)
+    {
+        fTapeDeck->setLevels(masterL, masterR);
+        fTapeDeck->setTime(seconds);
+        fTapeDeck->setPlaying(playing);
+
+        const int sel = fArrange ? fArrange->selectedTrack() : -1;
+        if (sel >= 0 && sel < static_cast<int>(tracks.size()))
+            fTapeDeck->setTrackName(QString::fromStdString(tracks[sel].name));
+        else
+            fTapeDeck->setTrackName(QStringLiteral("MASTER BUS"));
     }
 
     const double rate = fHost.sampleRate();

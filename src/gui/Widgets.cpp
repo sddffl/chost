@@ -405,7 +405,7 @@ void ArrangeView::paintEvent(QPaintEvent*)
             continue;
         const QRect lane = laneRect(i);
         p.fillRect(QRect(kHeaderWidth, lane.top(), right, lane.height()),
-                   i == fSelected ? QColor(0x2c, 0x31, 0x37) : QColor(0x26, 0x2a, 0x2f));
+                   i == fSelected ? QColor(0x1d, 0x24, 0x30) : (i % 2 == 0 ? QColor(0x13, 0x15, 0x19) : QColor(0x17, 0x1a, 0x21)));
         p.setPen(theme::border);
         p.drawLine(kHeaderWidth, lane.bottom(), right, lane.bottom());
     }
@@ -421,7 +421,7 @@ void ArrangeView::paintEvent(QPaintEvent*)
         if (!isBar && !showBeats)
             continue;
         const int x = secondsToX(b * beat);
-        p.setPen(isBar ? QColor(0x4a, 0x50, 0x57, 160) : QColor(0x3a, 0x3f, 0x45, 110));
+        p.setPen(isBar ? QColor(0x2c, 0x32, 0x40) : QColor(0x1c, 0x20, 0x28));
         p.drawLine(x, kRulerHeight, x, content.bottom());
     }
 
@@ -509,17 +509,79 @@ void ArrangeView::paintEvent(QPaintEvent*)
         p.drawText(flag.adjusted(5, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, fMarkers[i].name);
     }
 
-    // ---- project cursor
+    // ---- project cursor (glowing laser with audio-reactive note pulse orbs)
     const int cx = secondsToX(fPlayhead);
     if (cx >= kHeaderWidth)
     {
-        p.setPen(QPen(theme::cursor, 1));
+        // Glowing cyan laser playhead line
+        p.setPen(QPen(QColor(0, 229, 255, 60), 3));
         p.drawLine(cx, 0, cx, content.bottom());
+        p.setPen(QPen(QColor(0, 240, 255, 230), 1));
+        p.drawLine(cx, 0, cx, content.bottom());
+
+        // Futuristic top transport pointer
         QPolygon tri;
-        tri << QPoint(cx - 6, kMarkerBand) << QPoint(cx + 6, kMarkerBand) << QPoint(cx, kMarkerBand + 8);
-        p.setBrush(theme::cursor);
+        tri << QPoint(cx - 7, kMarkerBand) << QPoint(cx + 7, kMarkerBand) << QPoint(cx, kMarkerBand + 9);
+        p.setBrush(QColor(0, 229, 255));
+        p.setPen(Qt::NoPen);
         p.drawPolygon(tri);
         p.setBrush(Qt::NoBrush);
+
+        // Note pulse light orbs on each track ("播放竖线条 有那个小亮光 随着音符跳动")
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int i = 0; i < static_cast<int>(fLanes.size()); ++i)
+        {
+            const Lane& l = fLanes[i];
+            if (l.hidden || l.folder)
+                continue;
+            const QRect lane = laneRect(i);
+            const int cy = lane.center().y();
+
+            float intensity = 0.0f;
+            if (!l.muted && l.seconds > 0.0 && fPlayhead >= 0.0 && fPlayhead <= l.seconds)
+            {
+                if (l.midi)
+                {
+                    for (const NoteBar& nb : l.notes)
+                    {
+                        if (nb.start <= fPlayhead && fPlayhead <= nb.end)
+                        {
+                            intensity = 0.9f;
+                            break;
+                        }
+                    }
+                }
+                else if (!l.peaks.empty())
+                {
+                    const size_t peakIdx = static_cast<size_t>((fPlayhead / l.seconds) * l.peaks.size());
+                    if (peakIdx < l.peaks.size())
+                        intensity = std::clamp(l.peaks[peakIdx] * 1.8f, 0.0f, 1.0f);
+                }
+            }
+
+            if (intensity > 0.04f)
+            {
+                const float radius = 7.0f + 16.0f * intensity;
+                QRadialGradient halo(QPointF(cx, cy), radius);
+                QColor c = l.colour;
+                halo.setColorAt(0.0, QColor(c.red(), c.green(), c.blue(), static_cast<int>(240 * intensity)));
+                halo.setColorAt(0.4, QColor(c.red(), c.green(), c.blue(), static_cast<int>(100 * intensity)));
+                halo.setColorAt(1.0, QColor(c.red(), c.green(), c.blue(), 0));
+                p.setBrush(halo);
+                p.setPen(Qt::NoPen);
+                p.drawEllipse(QPointF(cx, cy), radius, radius);
+
+                p.setBrush(Qt::white);
+                p.drawEllipse(QPointF(cx, cy), 3.0f + 2.0f * intensity, 3.0f + 2.0f * intensity);
+            }
+            else
+            {
+                p.setBrush(QColor(l.colour.red(), l.colour.green(), l.colour.blue(), 130));
+                p.setPen(Qt::NoPen);
+                p.drawEllipse(QPointF(cx, cy), 2.5f, 2.5f);
+            }
+        }
+        p.setRenderHint(QPainter::Antialiasing, false);
     }
 
     // ---- track header column (drawn last so it covers the scrolled content)
@@ -577,10 +639,27 @@ void ArrangeView::paintEvent(QPaintEvent*)
                    p.fontMetrics().elidedText(info, Qt::ElideMiddle, kHeaderWidth - 24 - indent));
 
         auto button = [&](const QRect& r, bool on, const QColor& colour, const QString& text) {
-            p.fillRect(r, on ? colour : theme::panel);
-            p.setPen(on ? Qt::black : theme::text);
-            p.drawRect(r.adjusted(0, 0, -1, -1));
-            p.drawText(r, Qt::AlignCenter, text);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            const QRectF rf = r.adjusted(1, 1, -1, -1);
+            if (on)
+            {
+                p.setBrush(colour);
+                p.setPen(QPen(colour.lighter(130), 1.0));
+                p.drawRoundedRect(rf, 3, 3);
+                p.setPen(Qt::black);
+            }
+            else
+            {
+                p.setBrush(QColor(0x1e, 0x22, 0x2a));
+                p.setPen(QPen(QColor(0x32, 0x38, 0x46), 1.0));
+                p.drawRoundedRect(rf, 3, 3);
+                p.setPen(QColor(0x8a, 0x92, 0xa0));
+            }
+            QFont btnFont = p.font();
+            btnFont.setBold(true);
+            p.setFont(btnFont);
+            p.drawText(rf, Qt::AlignCenter, text);
+            p.setRenderHint(QPainter::Antialiasing, false);
         };
         button(muteRect(i), l.muted, theme::mute, QStringLiteral("M"));
         button(soloRect(i), l.solo, theme::solo, QStringLiteral("S"));
@@ -622,19 +701,22 @@ void ArrangeView::paintLane(QPainter& p, int i)
     const int x0 = secondsToX(0.0);
     const int x1 = secondsToX(l.seconds);
     const QRect clip(x0, lane.top() + 2, x1 - x0, lane.height() - 5);
-    const QColor body = silent ? l.colour.darker(220) : l.colour.lighter(135);
-    const QColor wave = silent ? l.colour.darker(140) : l.colour.darker(230);
+    const QColor cardBg = silent ? QColor(0x16, 0x18, 0x20) : QColor(l.colour.red() / 6 + 0x14, l.colour.green() / 6 + 0x16, l.colour.blue() / 6 + 0x1c);
+    const QColor borderCol = silent ? QColor(0x28, 0x2e, 0x38) : l.colour.darker(140);
+    const QColor wave = silent ? QColor(0x50, 0x56, 0x62) : l.colour;
 
     p.setRenderHint(QPainter::Antialiasing, true);
     QPainterPath shape;
     shape.addRoundedRect(clip, 4, 4);
-    p.fillPath(shape, body);
+    p.fillPath(shape, cardBg);
+    p.setPen(QPen(borderCol, 1.0));
+    p.drawPath(shape);
     p.setRenderHint(QPainter::Antialiasing, false);
-    p.fillRect(QRect(clip.left(), clip.top(), clip.width(), 15), body.darker(125));
 
+    p.fillRect(QRect(clip.left() + 1, clip.top() + 1, clip.width() - 2, 16), silent ? QColor(0x20, 0x24, 0x2c) : l.colour.darker(170));
     p.setPen(Qt::white);
     const int labelLeft = std::max(clip.left(), kHeaderWidth) + 6;
-    p.drawText(QRect(labelLeft, clip.top(), std::max(0, clip.right() - labelLeft - 4), 15), Qt::AlignVCenter, l.clipName);
+    p.drawText(QRect(labelLeft, clip.top() + 1, std::max(0, clip.right() - labelLeft - 4), 15), Qt::AlignVCenter, l.clipName);
 
     if (l.midi)
     {
