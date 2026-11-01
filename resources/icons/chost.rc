@@ -1,0 +1,2 @@
+// the icon of chost.exe, its desktop shortcut and its taskbar button
+IDI_ICON1 ICON "chost.ico"
