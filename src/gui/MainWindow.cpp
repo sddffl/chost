@@ -2324,6 +2324,87 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
 
     fRemasterDialog = new RemasterDialog(trackName, audioFile, this);
 
+    // Live execution visualization: updates the main host window step-by-step
+    connect(fRemasterDialog, &RemasterDialog::progressUpdated, this, [this](int percent, const QString& message) {
+        statusBar()->showMessage(QStringLiteral("⚡ AI 全自动母带执行中 [%1%]：%2").arg(percent).arg(message));
+    });
+
+    connect(fRemasterDialog, &RemasterDialog::songAnalyzed, this, [this](double bpm, const QString& key) {
+        setTempo(bpm);
+        fSession.setKey(key.toStdString());
+        refreshSongInfo();
+        fHistory->record(QStringLiteral("AI 识别速度与调性"));
+        statusBar()->showMessage(QStringLiteral("⚡ 步骤①完成：识别歌曲速度 %1 BPM，调性 %2").arg(bpm, 0, 'f', 1).arg(keyText(fSession.key())), 6000);
+    });
+
+    auto originalMuted = std::make_shared<bool>(false);
+    connect(fRemasterDialog, &RemasterDialog::stemReady, this, [this, target, originalMuted](const QString& id, const QString& label, const QString& path) {
+        if (!*originalMuted && target >= 0 && target < static_cast<int>(fSession.tracks().size()))
+        {
+            fSession.setMuted(target, true);
+            *originalMuted = true;
+        }
+        const int track = addAudioTrack(path, label);
+        if (track >= 0 && track < static_cast<int>(fSession.tracks().size()))
+        {
+            fSession.setRole(track, id.toStdString());
+            refreshTracks();
+            refreshMixState();
+        }
+    });
+
+    connect(fRemasterDialog, &RemasterDialog::vocalTuned, this, [this](const QString& role, const QString& path) {
+        const std::vector<chost::Track>& tracks = fSession.tracks();
+        for (size_t i = 0; i < tracks.size(); ++i)
+        {
+            if (tracks[i].role == role.toStdString() || QString::fromStdString(tracks[i].name).contains(role))
+            {
+                fSession.setTrackFile(static_cast<int>(i), path.toStdString());
+                break;
+            }
+        }
+        refreshTracks();
+    });
+
+    connect(fRemasterDialog, &RemasterDialog::midiReady, this, [this](const QString& role, const QString& path) {
+        QString label = role.toUpper();
+        if (role == QLatin1String("bass")) label = QStringLiteral("贝斯 (MIDI)");
+        else if (role == QLatin1String("piano")) label = QStringLiteral("钢琴 (MIDI)");
+        else if (role == QLatin1String("guitar")) label = QStringLiteral("吉他 (MIDI)");
+        addMidiTrack(path, label, role);
+        refreshTracks();
+    });
+
+    connect(fRemasterDialog, &RemasterDialog::trackBalanced, this, [this](const QString& role, float volumeDb, float pan) {
+        const std::vector<chost::Track>& tracks = fSession.tracks();
+        for (size_t i = 0; i < tracks.size(); ++i)
+        {
+            if (tracks[i].role == role.toStdString())
+            {
+                const float lin = std::pow(10.0f, volumeDb / 20.0f);
+                fSession.setVolume(static_cast<int>(i), lin);
+                fSession.setPan(static_cast<int>(i), pan);
+                break;
+            }
+        }
+        refreshMixState();
+    });
+
+    connect(fRemasterDialog, &RemasterDialog::masterReady, this, [this](const QString& masterPath) {
+        if (!masterPath.isEmpty() && QFileInfo::exists(masterPath))
+        {
+            const int masterTrack = addAudioTrack(masterPath, QStringLiteral("⚡ 顶级母带"));
+            if (masterTrack >= 0 && masterTrack < static_cast<int>(fSession.tracks().size()))
+            {
+                fSession.setRole(masterTrack, kMasterRole);
+                fSession.setMuted(masterTrack, true);
+            }
+            refreshTracks();
+            refreshMixState();
+            statusBar()->showMessage(QStringLiteral("🎉 全自动顶级母带重制全部完成！已导出至桌面：%1").arg(masterPath), 15000);
+        }
+    });
+
     connect(fRemasterDialog, &RemasterDialog::importRequested, this, [this, target](const QString& masterPath, const QString& workDir) {
         History::Group step(*fHistory, QStringLiteral("AI 全自动重制与母带载入"));
         if (target >= 0 && target < static_cast<int>(fSession.tracks().size()))

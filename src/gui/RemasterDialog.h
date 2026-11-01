@@ -25,7 +25,13 @@ public:
     QString audioFile() const { return fAudioFile; }
 
 signals:
+    void songAnalyzed(double bpm, const QString& key);
+    void stemReady(const QString& id, const QString& label, const QString& path);
+    void vocalTuned(const QString& role, const QString& path);
+    void midiReady(const QString& role, const QString& path);
+    void trackBalanced(const QString& role, float volumeDb, float pan);
     void masterReady(const QString& masterPath);
+    void progressUpdated(int percent, const QString& message);
     void importRequested(const QString& masterPath, const QString& workDir);
     void remasterFinished(bool ok);
 

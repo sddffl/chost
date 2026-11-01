@@ -25,6 +25,23 @@ import time
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 PYTHON_EXE = sys.executable
 
+STEM_LABELS = {
+    "vocals": "人声",
+    "lead": "主唱",
+    "backing": "和声",
+    "bass": "贝斯",
+    "drums": "鼓组",
+    "kick": "底鼓",
+    "snare": "军鼓",
+    "toms": "通鼓",
+    "hh": "踩镲",
+    "ride": "叮叮镲",
+    "crash": "吊镲",
+    "guitar": "吉他",
+    "piano": "钢琴",
+    "other": "其他伴奏",
+}
+
 # Auto configure local models directory if present
 if os.path.exists(r"D:\AI_Models\audio_separator") and "AUDIO_SEPARATOR_MODEL_DIR" not in os.environ:
     os.environ["AUDIO_SEPARATOR_MODEL_DIR"] = r"D:\AI_Models\audio_separator"
@@ -84,10 +101,7 @@ def run_command(cmd, desc=""):
         line_clean = line.strip()
         if line_clean:
             lines.append(line_clean)
-            if line_clean.startswith("PROGRESS ") or "ERROR" in line_clean or line_clean.startswith("STEM "):
-                print(line_clean, flush=True)
-            else:
-                print(line_clean, flush=True)
+            print(line_clean, flush=True)
     proc.wait()
     return proc.returncode, lines
 
@@ -107,6 +121,7 @@ def analyze_audio(input_file):
             parts = l.split(maxsplit=2)
             if len(parts) >= 2:
                 key = parts[1]
+    print(f"ANALYZE {bpm:.1f}\t{key}", flush=True)
     return bpm, key
 
 
@@ -138,7 +153,9 @@ def separate_audio(input_file, out_dir, level="finest"):
             for k in ["bass", "drums", "piano", "guitar", "other", "vocals", "lead", "backing",
                       "kick", "snare", "toms", "hh", "ride", "crash"]:
                 if f"_{k}.wav" in f.lower():
-                    stems[k] = full
+                    if k not in stems:
+                        stems[k] = full
+                        print(f"STEM {k}\t{STEM_LABELS.get(k, k)}\t{full}", flush=True)
     return stems
 
 
@@ -163,6 +180,7 @@ def tune_vocals(stems, key, out_dir):
             code, lines = run_command(cmd, f"正在对 {role}（{'和声' if role == 'backing' else '主唱'}）进行智能修音（调性：{key}）...")
             if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
                 tuned_stems[role] = out_file
+                print(f"TUNED {role}\t{out_file}", flush=True)
     return tuned_stems
 
 
@@ -229,6 +247,11 @@ def mix_and_master(stems, tuned_stems, out_master_path):
 
     log(f"正在进行多轨混音求和，共 {len(tracks_to_mix)} 条音轨...")
 
+    # Emit balance settings so the host mixer reflects them live
+    for name, path, vol, pan in tracks_to_mix:
+        vol_db = 20.0 * np.log10(max(vol, 1e-4))
+        print(f"BALANCE {name}\t{vol_db:.1f}\t{pan:.2f}", flush=True)
+
     # Load audio files and sum
     sr = 44100
     max_len = 0
@@ -237,10 +260,7 @@ def mix_and_master(stems, tuned_stems, out_master_path):
     for name, path, vol, pan in tracks_to_mix:
         data, file_sr = sf.read(path, always_2d=True)
         if file_sr != sr:
-            # Simple fallback or keep first file's sr
             sr = file_sr
-        # Apply panning (-1.0 to 1.0)
-        # pan: -1.0 is left, 0 is center, 1.0 is right
         gain_l = np.cos((pan + 1.0) * np.pi / 4.0) * vol
         gain_r = np.sin((pan + 1.0) * np.pi / 4.0) * vol
         processed = np.zeros_like(data)

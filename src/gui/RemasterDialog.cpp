@@ -276,23 +276,60 @@ void RemasterDialog::readOutput()
                 const QString msg = rest.mid(space + 1).trimmed();
                 fProgress->setValue(pct);
                 fStatus->setText(msg);
+                emit progressUpdated(pct, msg);
             }
         }
-        else if (line.startsWith(QLatin1String("MASTER ")))
+        else if (line.startsWith(QLatin1String("ANALYZE ")))
         {
-            fMasterPath = line.mid(7).trimmed();
+            const QStringList parts = line.mid(8).trimmed().split(QLatin1Char('\t'));
+            if (!parts.isEmpty())
+            {
+                const double bpm = parts.value(0).toDouble();
+                const QString key = parts.value(1);
+                emit songAnalyzed(bpm, key);
+            }
         }
         else if (line.startsWith(QLatin1String("STEM ")))
         {
             const QStringList parts = line.mid(5).trimmed().split(QLatin1Char('\t'));
             if (parts.size() >= 3)
-                fDiscoveredStems.append(qMakePair(parts[1], parts[2]));
+            {
+                const QString id = parts[0];
+                const QString label = parts[1];
+                const QString path = parts[2];
+                fDiscoveredStems.append(qMakePair(label, path));
+                emit stemReady(id, label, path);
+            }
+        }
+        else if (line.startsWith(QLatin1String("TUNED ")))
+        {
+            const QStringList parts = line.mid(6).trimmed().split(QLatin1Char('\t'));
+            if (parts.size() >= 2)
+            {
+                emit vocalTuned(parts[0], parts[1]);
+            }
         }
         else if (line.startsWith(QLatin1String("MIDI ")))
         {
             const QStringList parts = line.mid(5).trimmed().split(QLatin1Char('\t'));
             if (parts.size() >= 2)
+            {
                 fDiscoveredMidis.append(qMakePair(parts[0], parts[1]));
+                emit midiReady(parts[0], parts[1]);
+            }
+        }
+        else if (line.startsWith(QLatin1String("BALANCE ")))
+        {
+            const QStringList parts = line.mid(8).trimmed().split(QLatin1Char('\t'));
+            if (parts.size() >= 3)
+            {
+                emit trackBalanced(parts[0], parts[1].toFloat(), parts[2].toFloat());
+            }
+        }
+        else if (line.startsWith(QLatin1String("MASTER ")))
+        {
+            fMasterPath = line.mid(7).trimmed();
+            emit masterReady(fMasterPath);
         }
 
         log(line);
