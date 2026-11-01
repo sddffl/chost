@@ -299,6 +299,8 @@ void StemDialog::run(Job job, const QString& program, const QStringList& args)
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+    if (QDir(QStringLiteral("D:/AI_Models/audio_separator")).exists())
+        env.insert(QStringLiteral("AUDIO_SEPARATOR_MODEL_DIR"), QStringLiteral("D:/AI_Models/audio_separator"));
     fProcess.setProcessEnvironment(env);
     setBusy(true);
     fProcess.start(program, args);
@@ -323,10 +325,13 @@ void StemDialog::readOutput()
                 const QString device = parts.value(2);
                 fReady = true;
                 resources::setAiPython(fPython->text().trimmed());
-                fStatus->setText(QStringLiteral("✓ AI 组件已就绪（audio-separator %1，%2）")
-                                     .arg(parts.value(1), device.startsWith(QLatin1String("cuda"))
-                                                              ? QStringLiteral("用显卡 %1").arg(device.mid(5))
-                                                              : QStringLiteral("用 CPU")));
+                fStatus->setText(QStringLiteral("✓ AI 核心与所有分轨模型已就绪（%1），请直接点击下方“开始分轨”")
+                                     .arg(device.startsWith(QLatin1String("cuda"))
+                                              ? QStringLiteral("已启用 RTX 显卡加速")
+                                              : QStringLiteral("CPU 模式")));
+                fInstall->setEnabled(false);
+                fInstall->setText(QStringLiteral("已就绪"));
+                fStart->setEnabled(true);
             }
             else
             {
@@ -411,7 +416,7 @@ void StemDialog::setBusy(bool busy)
 {
     setProperty("busy", busy);
     fStart->setEnabled(!busy && fReady);
-    fInstall->setEnabled(!busy);
+    fInstall->setEnabled(!busy && !fReady);
     fCancel->setEnabled(busy);
     fPython->setEnabled(!busy);
 }
