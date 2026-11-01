@@ -874,23 +874,22 @@ void MainWindow::tick()
         masterR = r;
         fOutputStrip->setLevels(l, r);
     }
+    const double rate = fHost.sampleRate();
+    const double seconds = rate > 0.0 ? static_cast<double>(fHost.transportFrame()) / rate : 0.0;
+    const bool playing = fHost.isPlaying();
+    setPlayhead(seconds);
+
     if (fTapeDeck)
     {
         fTapeDeck->setLevels(masterL, masterR);
         fTapeDeck->setTime(seconds);
         fTapeDeck->setPlaying(playing);
 
-        const int sel = fArrange ? fArrange->selectedTrack() : -1;
-        if (sel >= 0 && sel < static_cast<int>(tracks.size()))
-            fTapeDeck->setTrackName(QString::fromStdString(tracks[sel].name));
+        if (fSelected >= 0 && fSelected < static_cast<int>(tracks.size()))
+            fTapeDeck->setTrackName(QString::fromStdString(tracks[fSelected].name));
         else
             fTapeDeck->setTrackName(QStringLiteral("MASTER BUS"));
     }
-
-    const double rate = fHost.sampleRate();
-    const double seconds = rate > 0.0 ? static_cast<double>(fHost.transportFrame()) / rate : 0.0;
-    const bool playing = fHost.isPlaying();
-    setPlayhead(seconds);
 
     const double maxDur = maxTrackDuration();
     if (fLoopEnabled)
