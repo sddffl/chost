@@ -306,6 +306,13 @@ static const char* const kTools = R"json([
   }}
 },
 {
+  "name": "ai_remaster",
+  "description": "AI Autonomous Master Pipeline: analyzes tempo/key, separates 14 stems on GPU, transcribes accompaniment to MIDI, tunes vocals and backing vocals with Melodyne/Nectar, balances and masters to streaming loudness standard (-14 LUFS, -1 dB TP), and exports the master WAV directly to Desktop. Runs in background: see wait_for_jobs.",
+  "inputSchema": {"type": "object", "properties": {
+    "track": {"type": "integer", "minimum": 0, "description": "The audio track to remaster. Defaults to the selected or first audio track."}
+  }}
+},
+{
   "name": "ai_separate_stems",
   "description": "AI stem separation of an audio track (a song): vocals, drums, bass, guitar, piano and the rest, the drums split further into kick, snare, toms and cymbals, each on a track of its own. Takes minutes; runs in the background: see wait_for_jobs.",
   "inputSchema": {"type": "object", "properties": {

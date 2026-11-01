@@ -10,6 +10,7 @@
 #include "History.h"
 #include "Instruments.h"
 #include "MasterDialog.h"
+#include "RemasterDialog.h"
 #include "BalanceDialog.h"
 #include "PianoRoll.h"
 #include "ScoreDialog.h"
@@ -401,6 +402,8 @@ void MainWindow::buildMenus()
     plugins->addAction(QStringLiteral("重新扫描插件"), this, &MainWindow::rescanPlugins);
 
     QMenu* ai = menuBar()->addMenu(QStringLiteral("AI"));
+    ai->addAction(QStringLiteral("⚡ AI 全自动音乐重制与顶级母带…"), QKeySequence(QStringLiteral("Ctrl+Shift+R")), this, [this] { autoRemaster(); });
+    ai->addSeparator();
     ai->addAction(QStringLiteral("自动分轨…"), QKeySequence(QStringLiteral("Ctrl+Shift+S")), this, [this] { separateStems(); });
     ai->addAction(QStringLiteral("转 MIDI（选中轨道）…"), QKeySequence(QStringLiteral("Ctrl+Shift+M")), this, [this] { transcribe(false); });
     ai->addAction(QStringLiteral("转 MIDI（多条轨道）…"), this, [this] { transcribe(true); });
@@ -473,6 +476,11 @@ void MainWindow::buildTransport()
     connect(analyze, &QToolButton::clicked, this, [this] { analyzeSong(); });
 
     bar->addSeparator();
+    auto* remaster = new QToolButton;
+    remaster->setText(QStringLiteral("⚡ 全自动母带"));
+    remaster->setToolTip(QStringLiteral("一键全自动：分析测速定调、RTX 3090 GPU 14轨细分分轨、伴奏转MIDI、人声顶级修音、多轨平衡润色与商业级母带导出至桌面"));
+    bar->addWidget(remaster);
+    connect(remaster, &QToolButton::clicked, this, [this] { autoRemaster(); });
     auto* stems = new QToolButton;
     stems->setText(QStringLiteral("AI 分轨"));
     stems->setToolTip(QStringLiteral("把选中轨道的音频分离成人声、鼓、贝斯、吉他、钢琴等单独的轨道"));
@@ -544,6 +552,10 @@ QWidget* MainWindow::buildInspector()
     fInspectorReplace = new QPushButton(QStringLiteral("替换音频…"));
     body->addWidget(fInspectorReplace);
     connect(fInspectorReplace, &QPushButton::clicked, this, &MainWindow::replaceAudio);
+    fInspectorRemaster = new QPushButton(QStringLiteral("⚡ 全自动母带…"));
+    fInspectorRemaster->setToolTip(QStringLiteral("一键全自动音乐重制与顶级母带"));
+    body->addWidget(fInspectorRemaster);
+    connect(fInspectorRemaster, &QPushButton::clicked, this, [this] { autoRemaster(); });
     fInspectorStems = new QPushButton(QStringLiteral("AI 自动分轨…"));
     body->addWidget(fInspectorStems);
     connect(fInspectorStems, &QPushButton::clicked, this, [this] { separateStems(); });
@@ -1055,6 +1067,7 @@ void MainWindow::refreshSelection()
         fInspectorName->setText(QString());
         fInspectorName->setStyleSheet(QString());
         fInspectorInfo->setText(QStringLiteral("还没有轨道。把音频或 MIDI 文件拖进来，或用 文件 → 导入。"));
+        fInspectorRemaster->setEnabled(false);
         fInspectorStems->setEnabled(false);
         fInspectorMidi->setEnabled(false);
         fInspectorTune->setEnabled(false);
@@ -1070,9 +1083,11 @@ void MainWindow::refreshSelection()
     fInspectorName->setText(QString::fromStdString(t.name));
     fInspectorName->setStyleSheet(QStringLiteral("QLineEdit { background: %1; color: white; font-weight: bold; }").arg(trackColour(fSelected).name()));
     fInspectorReplace->setText(instrument ? QStringLiteral("替换 MIDI…") : QStringLiteral("替换音频…"));
+    fInspectorRemaster->setVisible(!instrument && !bus);
     fInspectorStems->setVisible(!instrument && !bus);
     fInspectorMidi->setVisible(!instrument && !bus);
     fInspectorTune->setVisible(!instrument && !bus);
+    fInspectorRemaster->setEnabled(!t.file.empty());
     fInspectorStems->setEnabled(!t.file.empty());
     fInspectorMidi->setEnabled(!t.file.empty());
     fInspectorTune->setEnabled(!t.file.empty() && t.role != kMasterRole);
@@ -1565,6 +1580,7 @@ void MainWindow::trackMenu(int track, const QPoint& globalPos)
         else
         {
             menu.addAction(QStringLiteral("替换音频…"), this, &MainWindow::replaceAudio);
+            menu.addAction(QStringLiteral("⚡ AI 全自动音乐重制与顶级母带…"), this, [this, track] { autoRemaster(track); })->setEnabled(!t.file.empty());
             menu.addAction(QStringLiteral("AI 自动分轨…"), this, [this] { separateStems(); })->setEnabled(!t.file.empty());
             menu.addAction(QStringLiteral("AI 转 MIDI…"), this, [this] { transcribe(false); })->setEnabled(!t.file.empty());
         }
@@ -2269,6 +2285,93 @@ void MainWindow::sendMenu(int track, int slot, const QPoint& globalPos)
 
 // ---------------------------------------------------------------------------------------------------------------------
 // AI
+
+RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    int target = trackIndex >= 0 ? trackIndex : fSelected;
+    if (target < 0 || target >= static_cast<int>(tracks.size()) || tracks[target].file.empty() || tracks[target].kind != chost::TrackKind::Audio)
+    {
+        target = -1;
+        for (size_t i = 0; i < tracks.size(); ++i)
+        {
+            if (tracks[i].kind == chost::TrackKind::Audio && !tracks[i].file.empty())
+            {
+                target = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+
+    QString trackName = QStringLiteral("我的音乐");
+    QString audioFile;
+    if (target >= 0 && target < static_cast<int>(tracks.size()))
+    {
+        trackName = QString::fromStdString(tracks[target].name);
+        audioFile = QString::fromStdString(tracks[target].file);
+        selectTrack(target);
+    }
+
+    if (fRemasterDialog && fRemasterDialog->isVisible())
+    {
+        fRemasterDialog->raise();
+        fRemasterDialog->activateWindow();
+        if (autoStart)
+            fRemasterDialog->setAutoStart(true);
+        return fRemasterDialog;
+    }
+    delete fRemasterDialog;
+
+    fRemasterDialog = new RemasterDialog(trackName, audioFile, this);
+
+    connect(fRemasterDialog, &RemasterDialog::importRequested, this, [this, target](const QString& masterPath, const QString& workDir) {
+        History::Group step(*fHistory, QStringLiteral("AI 全自动重制与母带载入"));
+        if (target >= 0 && target < static_cast<int>(fSession.tracks().size()))
+            fSession.setMuted(target, true);
+
+        const QDir stemsDir(workDir + QStringLiteral("/stems"));
+        if (stemsDir.exists())
+        {
+            const QStringList stemFiles = stemsDir.entryList(QStringList{QStringLiteral("*.wav")}, QDir::Files, QDir::Name);
+            for (const QString& sf : stemFiles)
+            {
+                const QString fullPath = stemsDir.filePath(sf);
+                QString label = sf;
+                if (label.endsWith(QStringLiteral(".wav"), Qt::CaseInsensitive))
+                    label.chop(4);
+                const int underscore = label.lastIndexOf(QLatin1Char('_'));
+                if (underscore >= 0)
+                    label = label.mid(underscore + 1);
+                addAudioTrack(fullPath, label);
+            }
+        }
+
+        const QDir work(workDir);
+        const QStringList midFiles = work.entryList(QStringList{QStringLiteral("*.mid")}, QDir::Files, QDir::Name);
+        for (const QString& mf : midFiles)
+        {
+            const QString fullPath = work.filePath(mf);
+            QString role = mf;
+            if (role.endsWith(QStringLiteral(".mid"), Qt::CaseInsensitive))
+                role.chop(4);
+            addMidiTrack(fullPath, role + QStringLiteral(" (MIDI)"), role);
+        }
+
+        if (!masterPath.isEmpty() && QFileInfo::exists(masterPath))
+        {
+            const int masterTrack = addAudioTrack(masterPath, QStringLiteral("⚡ 顶级母带"));
+            if (masterTrack >= 0 && masterTrack < static_cast<int>(fSession.tracks().size()))
+            {
+                fSession.setMuted(masterTrack, true);
+            }
+        }
+    });
+
+    fRemasterDialog->show();
+    if (autoStart)
+        fRemasterDialog->setAutoStart(true);
+    return fRemasterDialog;
+}
 
 void MainWindow::separateStems(bool autoStart)
 {

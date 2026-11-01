@@ -314,6 +314,7 @@ jobs:
           # no sound card on the runner: multitrack falls back to the Dummy driver's rack
           ./chost-cli.exe mix --driver Dummy --track ../../tone.wav --track ../../tone.wav --seconds 1
           test -f tools/chost_separate.py
+          test -f tools/chost_workflow_remaster.py
           test -f tools/chost_transcribe.py
           test -f tools/models/basic_pitch_nmp.onnx
           test -f sounds/TimGM6mb.sf2

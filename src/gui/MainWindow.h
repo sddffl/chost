@@ -43,6 +43,7 @@ class QToolButton;
 class QTreeWidget;
 class QSplitter;
 class StemDialog;
+class RemasterDialog;
 class TranscribeDialog;
 class TuneDialog;
 
@@ -69,6 +70,7 @@ public:
     void recoverAtStart(bool autoRecover);
     void saveSessionNow() { saveSession(); }
     void selectTrack(int track);
+    RemasterDialog* autoRemaster(int track = -1, bool autoStart = false); // AI autonomous end-to-end remastering
     void separateStems(bool autoStart = false); // AI stem separation of the selected track
     void transcribe(bool allTracks, bool autoStart = false); // AI audio to MIDI
     void editNotes(int track);                               // the piano roll of a MIDI track
@@ -236,6 +238,7 @@ private:
     int fNextColour = 0;
     int fSelected = -1;
     QString fSessionPath;
+    QPointer<RemasterDialog> fRemasterDialog;
     QPointer<StemDialog> fStemDialog;
     QPointer<TranscribeDialog> fTranscribeDialog;
     QPointer<PianoRollDialog> fPianoRoll;
@@ -276,6 +279,7 @@ private:
     QLineEdit* fInspectorName = nullptr;
     QLabel* fInspectorInfo = nullptr;
     QPushButton* fInspectorReplace = nullptr;
+    QPushButton* fInspectorRemaster = nullptr;
     QPushButton* fInspectorStems = nullptr;
     QPushButton* fInspectorMidi = nullptr;
     QPushButton* fInspectorTune = nullptr;

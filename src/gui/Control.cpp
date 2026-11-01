@@ -6,6 +6,7 @@
 #include "History.h"
 #include "MainWindow.h"
 #include "MasterDialog.h"
+#include "RemasterDialog.h"
 #include "PianoRoll.h"
 #include "ScoreDialog.h"
 #include "PluginDiscovery.h"
@@ -1149,6 +1150,27 @@ void Control::call(const QString& tool, const QJsonObject& args, Reply reply)
             check();
             startJob(QStringLiteral("analyze"), what, nullptr);
             result = QJsonObject{{QStringLiteral("started"), QStringLiteral("analyze")}};
+        }
+        else if (tool == QLatin1String("ai_remaster"))
+        {
+            int track = -1;
+            if (has("track"))
+            {
+                track = trackArg();
+                if (tracks[track].kind != chost::TrackKind::Audio || tracks[track].file.empty())
+                    throw Fail{QStringLiteral("track %1 has no audio").arg(track)};
+                w.selectTrack(track);
+            }
+            freshDialog(w.fRemasterDialog, QStringLiteral("autonomous remastering"));
+            RemasterDialog* dialog = w.autoRemaster(track, true);
+            check();
+            if (!dialog)
+                throw Fail{QStringLiteral("remastering could not start")};
+            const int id = startJob(QStringLiteral("remaster"), w.projectName(), dialog);
+            connect(dialog, &RemasterDialog::masterReady, this, [this, id](const QString& file) {
+                setJobFile(id, file);
+            });
+            result = QJsonObject{{QStringLiteral("started"), QStringLiteral("remaster")}};
         }
         else if (tool == QLatin1String("ai_separate_stems") || tool == QLatin1String("ai_tune"))
         {
