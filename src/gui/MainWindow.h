@@ -68,7 +68,7 @@ public:
     bool addPluginSpec(const QString& spec);       // as an insert of the selected track
     bool loadAudioFile(const QString& path);       // into the selected track, or a new one
     int addAudioTrack(const QString& path, const QString& name = {}); // a .mid makes an instrument track; -1 on error
-    int addMidiTrack(const QString& path, const QString& name = {}, const QString& role = {});
+    int addMidiTrack(const QString& path, const QString& name = {}, const QString& role = {}, bool safeBundled = false);
     bool openSession(const QString& path);
     // a project an earlier chost could not save before it went down: asks whether to bring it back
     // (autoRecover: without asking, for tests)

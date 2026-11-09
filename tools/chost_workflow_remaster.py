@@ -161,7 +161,19 @@ def separate_audio(input_file, out_dir, level="finest"):
 
 def tune_vocals(stems, key, out_dir):
     tuned_stems = dict(stems)
-    for role in ["lead", "vocals", "backing"]:
+    # 核心排重：如果已成功分离出主唱(lead)与和声(backing)，则自动剔除冗余的总人声(vocals)
+    # 彻底杜绝主唱与总人声两轨重叠叠加播放造成的严重相位抵消与机械双重杂音！
+    roles_to_tune = []
+    if "lead" in stems and os.path.exists(stems["lead"]):
+        roles_to_tune.append("lead")
+        if "backing" in stems and os.path.exists(stems["backing"]):
+            roles_to_tune.append("backing")
+        if "vocals" in tuned_stems:
+            del tuned_stems["vocals"]
+    elif "vocals" in stems and os.path.exists(stems["vocals"]):
+        roles_to_tune.append("vocals")
+
+    for role in roles_to_tune:
         if role in stems and os.path.exists(stems[role]):
             in_file = stems[role]
 
@@ -180,19 +192,22 @@ def tune_vocals(stems, key, out_dir):
             tune_input = clean_file if (os.path.exists(clean_file) and os.path.getsize(clean_file) > 1000) else in_file
 
             out_file = os.path.join(out_dir, f"tuned_{role}.wav")
-            strength = "0.90" if role == "backing" else "0.85"
-            speed = "15" if role == "backing" else "20"
+            # 2. 自然人性化修音（避免电音/机械假声）：
+            # 降低纠偏刚度(主唱0.55/和声0.70)，增大过渡平滑时间(主唱45ms/和声35ms)，保留歌者自然颤音与情感起伏(drift 0.15)
+            strength = "0.70" if role == "backing" else "0.55"
+            speed = "35" if role == "backing" else "45"
             cmd = [
                 PYTHON_EXE,
                 os.path.join(TOOLS_DIR, "chost_tune.py"),
                 "--input", tune_input,
                 "--output", out_file,
-                "--key", key,
+                "--key", key if key else "auto",
                 "--scale", "smart",
                 "--strength", strength,
-                "--speed", speed
+                "--speed", speed,
+                "--drift", "0.15"
             ]
-            code, lines = run_command(cmd, f"正在对 {role}（{'和声' if role == 'backing' else '主唱'}）进行智能修音（调性：{key}）...")
+            code, lines = run_command(cmd, f"正在对 {role}（{'和声' if role == 'backing' else '主唱'}）进行智能修音（自然人性化调校，调性：{key}）...")
             if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
                 tuned_stems[role] = out_file
                 print(f"TUNED {role}\t{out_file}", flush=True)

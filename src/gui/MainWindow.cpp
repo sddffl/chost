@@ -1396,7 +1396,7 @@ int MainWindow::addAudioTrack(const QString& path, const QString& name)
     return track;
 }
 
-int MainWindow::addMidiTrack(const QString& path, const QString& name, const QString& role)
+int MainWindow::addMidiTrack(const QString& path, const QString& name, const QString& role, bool safeBundled)
 {
     QString trackName = name;
     chost::MidiClip midi;
@@ -1422,7 +1422,11 @@ int MainWindow::addMidiTrack(const QString& path, const QString& name, const QSt
         showError(QStringLiteral("无法打开 MIDI 文件：%1\n\n%2").arg(path, error));
         return -1;
     }
-    if (!loadInstrument(track, instruments::choiceFor(QString::fromStdString(fSession.tracks()[track].role))))
+    // 关键稳定性防护：在全自动化批处理或要求 safeBundled 时，加载超轻量、100% 稳定的内置 GM SoundFont
+    // 坚决杜绝在后台自动转谱时瞬间加载 Keyscape/Omnisphere 等巨型 VST3 引起的内存暴涨或非法内存访问崩溃！
+    const auto choice = safeBundled ? instruments::Choice{instruments::bundledSpec(), QStringLiteral("TimGM6mb"), {}}
+                                    : instruments::choiceFor(QString::fromStdString(fSession.tracks()[track].role));
+    if (!loadInstrument(track, choice))
         statusBar()->showMessage(QStringLiteral("没有加载到乐器，请在检查器里选择一个乐器"), 8000);
     if (first && readable && midi.tempo > 0.0 && std::abs(midi.tempo - fSession.tempo()) > 0.01)
     {
@@ -2504,6 +2508,18 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
         if (track >= 0 && track < static_cast<int>(fSession.tracks().size()))
         {
             fSession.setRole(track, id.toStdString());
+            // 排重机制：如果已经分出了 lead（主唱），则将总人声 vocals 轨静音，防止双人声重叠发音
+            if (id == QLatin1String("vocals"))
+            {
+                for (const auto& t : fSession.tracks())
+                {
+                    if (t.role == "lead")
+                    {
+                        fSession.setMuted(track, true);
+                        break;
+                    }
+                }
+            }
             refreshTracks();
             refreshMixState();
         }
@@ -2527,7 +2543,7 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
         if (role == QLatin1String("bass")) label = QStringLiteral("贝斯 (MIDI)");
         else if (role == QLatin1String("piano")) label = QStringLiteral("钢琴 (MIDI)");
         else if (role == QLatin1String("guitar")) label = QStringLiteral("吉他 (MIDI)");
-        addMidiTrack(path, label, role);
+        addMidiTrack(path, label, role, /*safeBundled=*/true);
         refreshTracks();
     });
 
@@ -2591,7 +2607,7 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
             QString role = mf;
             if (role.endsWith(QStringLiteral(".mid"), Qt::CaseInsensitive))
                 role.chop(4);
-            addMidiTrack(fullPath, role + QStringLiteral(" (MIDI)"), role);
+            addMidiTrack(fullPath, role + QStringLiteral(" (MIDI)"), role, /*safeBundled=*/true);
         }
 
         if (!masterPath.isEmpty() && QFileInfo::exists(masterPath))
