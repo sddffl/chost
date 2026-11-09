@@ -433,6 +433,8 @@ void MainWindow::buildMenus()
     ai->addAction(QStringLiteral("MIDI 轨全部换成真实音源"), this, &MainWindow::applyInstruments);
     ai->addAction(QStringLiteral("自动编曲…"), QKeySequence(QStringLiteral("Ctrl+Shift+A")), this, [this] { arrange(); });
     ai->addAction(QStringLiteral("AI 修音…"), QKeySequence(QStringLiteral("Ctrl+Shift+T")), this, [this] { tune(); });
+    ai->addAction(QStringLiteral("AI 声音修复（去爆音/去嗡鸣/杂音）…"), this, &MainWindow::repairSelectedTrack);
+    ai->addAction(QStringLiteral("AI 语音增强与去混响（NVIDIA RE-USE）…"), this, &MainWindow::enhanceSelectedTrack);
     ai->addAction(QStringLiteral("和弦板（和弦提示）…"), QKeySequence(QStringLiteral("Ctrl+Shift+K")), this, [this] { chordPad(); });
     ai->addSeparator();
     ai->addAction(QStringLiteral("识别速度和调性"), this, [this] { analyzeSong(); });
@@ -603,6 +605,14 @@ QWidget* MainWindow::buildInspector()
     fInspectorTune->setToolTip(QStringLiteral("把这条人声里跑调的音修准"));
     body->addWidget(fInspectorTune);
     connect(fInspectorTune, &QPushButton::clicked, this, [this] { tune(); });
+    fInspectorRepair = new QPushButton(QStringLiteral("AI 声音修复…"));
+    fInspectorRepair->setToolTip(QStringLiteral("消除爆音、低频嗡鸣、杂音（MAD/IIR 滤波）"));
+    body->addWidget(fInspectorRepair);
+    connect(fInspectorRepair, &QPushButton::clicked, this, &MainWindow::repairSelectedTrack);
+    fInspectorEnhance = new QPushButton(QStringLiteral("AI 语音增强…"));
+    fInspectorEnhance->setToolTip(QStringLiteral("NVIDIA RE-USE 神经网络去混响与语音增强"));
+    body->addWidget(fInspectorEnhance);
+    connect(fInspectorEnhance, &QPushButton::clicked, this, &MainWindow::enhanceSelectedTrack);
 
     // instrument tracks: which instrument plays the MIDI, and its sound
     fInstrumentBox = new QWidget;
@@ -1121,6 +1131,8 @@ void MainWindow::refreshSelection()
         fInspectorStems->setEnabled(false);
         fInspectorMidi->setEnabled(false);
         fInspectorTune->setEnabled(false);
+        fInspectorRepair->setEnabled(false);
+        fInspectorEnhance->setEnabled(false);
         fInstrumentBox->hide();
         refreshInserts();
         return;
@@ -1137,10 +1149,14 @@ void MainWindow::refreshSelection()
     fInspectorStems->setVisible(!instrument && !bus);
     fInspectorMidi->setVisible(!instrument && !bus);
     fInspectorTune->setVisible(!instrument && !bus);
+    fInspectorRepair->setVisible(!instrument && !bus);
+    fInspectorEnhance->setVisible(!instrument && !bus);
     fInspectorRemaster->setEnabled(!t.file.empty());
     fInspectorStems->setEnabled(!t.file.empty());
     fInspectorMidi->setEnabled(!t.file.empty());
     fInspectorTune->setEnabled(!t.file.empty() && t.role != kMasterRole);
+    fInspectorRepair->setEnabled(!t.file.empty() && t.role != kMasterRole);
+    fInspectorEnhance->setEnabled(!t.file.empty() && t.role != kMasterRole);
     if (bus)
     {
         QStringList members, senders;
@@ -3549,6 +3565,100 @@ int MainWindow::placeChords(int track, const QString& midiPath)
         return track;
     }
     return addMidiTrack(midiPath, QStringLiteral("和弦"), QStringLiteral("piano"));
+}
+
+void MainWindow::repairSelectedTrack()
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (fSelected < 0 || fSelected >= static_cast<int>(tracks.size()))
+        return;
+    const chost::Track& t = tracks[fSelected];
+    if (t.kind != chost::TrackKind::Audio || t.file.empty() || t.role == kMasterRole)
+    {
+        showError(QStringLiteral("请先选中一条包含音频的音轨。"));
+        return;
+    }
+    const QString inPath = QString::fromStdString(t.file);
+    const QFileInfo fi(inPath);
+    const QString outPath = fi.dir().filePath(fi.completeBaseName() + QStringLiteral("_repaired.wav"));
+
+    auto* job = new ScriptJob(this);
+    const int trackIdx = fSelected;
+    connect(job, &ScriptJob::progress, this, [this](int pct, const QString& msg) {
+        statusBar()->showMessage(QStringLiteral("正在修复音频：%1% %2").arg(pct).arg(msg));
+    });
+    connect(job, &ScriptJob::finished, this, [this, job, trackIdx, outPath](bool ok, const QString& msg) {
+        job->deleteLater();
+        if (!ok)
+        {
+            showError(QStringLiteral("声音修复失败：%1").arg(msg));
+            return;
+        }
+        closeEditors();
+        if (!fSession.setTrackFile(trackIdx, outPath.toStdString()))
+        {
+            showError(QStringLiteral("无法载入修复后的音频：%1").arg(QString::fromStdString(fSession.lastError())));
+            return;
+        }
+        fClips.remove(outPath);
+        refreshTracks();
+        selectTrack(trackIdx);
+        fHistory->record(QStringLiteral("AI 声音修复"));
+        statusBar()->showMessage(QStringLiteral("声音修复完成！已自动替换为去爆音/去嗡鸣后的音频。"), 8000);
+    });
+
+    statusBar()->showMessage(QStringLiteral("正在启动 AI 声音修复（De-click / De-hum）…"));
+    if (!job->start(QStringLiteral("chost_repair.py"), {QStringLiteral("--action"), QStringLiteral("clean"), QStringLiteral("--input"), inPath, QStringLiteral("--output"), outPath}))
+    {
+        job->deleteLater();
+    }
+}
+
+void MainWindow::enhanceSelectedTrack()
+{
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (fSelected < 0 || fSelected >= static_cast<int>(tracks.size()))
+        return;
+    const chost::Track& t = tracks[fSelected];
+    if (t.kind != chost::TrackKind::Audio || t.file.empty() || t.role == kMasterRole)
+    {
+        showError(QStringLiteral("请先选中一条包含音频的音轨。"));
+        return;
+    }
+    const QString inPath = QString::fromStdString(t.file);
+    const QFileInfo fi(inPath);
+    const QString outPath = fi.dir().filePath(fi.completeBaseName() + QStringLiteral("_enhanced.wav"));
+
+    auto* job = new ScriptJob(this);
+    const int trackIdx = fSelected;
+    connect(job, &ScriptJob::progress, this, [this](int pct, const QString& msg) {
+        statusBar()->showMessage(QStringLiteral("正在语音增强：%1% %2").arg(pct).arg(msg));
+    });
+    connect(job, &ScriptJob::finished, this, [this, job, trackIdx, outPath](bool ok, const QString& msg) {
+        job->deleteLater();
+        if (!ok)
+        {
+            showError(QStringLiteral("语音增强失败：%1").arg(msg));
+            return;
+        }
+        closeEditors();
+        if (!fSession.setTrackFile(trackIdx, outPath.toStdString()))
+        {
+            showError(QStringLiteral("无法载入增强后的音频：%1").arg(QString::fromStdString(fSession.lastError())));
+            return;
+        }
+        fClips.remove(outPath);
+        refreshTracks();
+        selectTrack(trackIdx);
+        fHistory->record(QStringLiteral("AI 语音增强"));
+        statusBar()->showMessage(QStringLiteral("NVIDIA RE-USE 语音增强完成！混响与噪声已消除。"), 8000);
+    });
+
+    statusBar()->showMessage(QStringLiteral("正在启动 NVIDIA RE-USE 语音增强与去混响…"));
+    if (!job->start(QStringLiteral("chost_reuse.py"), {QStringLiteral("--input"), inPath, QStringLiteral("--output"), outPath}))
+    {
+        job->deleteLater();
+    }
 }
 
 void MainWindow::tune(bool autoStart)

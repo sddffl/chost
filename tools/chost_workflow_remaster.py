@@ -164,13 +164,28 @@ def tune_vocals(stems, key, out_dir):
     for role in ["lead", "vocals", "backing"]:
         if role in stems and os.path.exists(stems[role]):
             in_file = stems[role]
+
+            # 1. 深度音频声学修复：去杂音去爆音 (Declick) + 工频陷波 (Dehum) + 35Hz次声切除
+            clean_file = os.path.join(out_dir, f"cleaned_{role}.wav")
+            clean_cmd = [
+                PYTHON_EXE,
+                os.path.join(TOOLS_DIR, "chost_repair.py"),
+                "--input", in_file,
+                "--output", clean_file,
+                "--action", "clean",
+                "--sensitivity", "0.55",
+                "--base-freq", "50.0"
+            ]
+            run_command(clean_cmd, f"正在对 {role} 进行声学修复（去爆音/口水音 Declick 与工频消除 Dehum）...")
+            tune_input = clean_file if (os.path.exists(clean_file) and os.path.getsize(clean_file) > 1000) else in_file
+
             out_file = os.path.join(out_dir, f"tuned_{role}.wav")
             strength = "0.90" if role == "backing" else "0.85"
             speed = "15" if role == "backing" else "20"
             cmd = [
                 PYTHON_EXE,
                 os.path.join(TOOLS_DIR, "chost_tune.py"),
-                "--input", in_file,
+                "--input", tune_input,
                 "--output", out_file,
                 "--key", key,
                 "--scale", "smart",

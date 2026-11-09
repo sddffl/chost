@@ -90,6 +90,8 @@ public:
     void analyzeSong(bool quiet = false);     // tempo and key of the selected (or first) audio track
     void arrange(bool autoStart = false, const QString& chords = {}); // AI > auto-arrangement
     void tune(bool autoStart = false);        // AI > pitch correction of a vocal track
+    void repairSelectedTrack();               // AI > DSP cleanup (declick, dehum)
+    void enhanceSelectedTrack();              // AI > NVIDIA RE-USE neural dereverb & enhancement
     ChordPadDialog* chordPad();               // AI > chord pad, opened (or raised)
     ScoreDialog* scoreDialog();               // File > sheet music, opened (or raised)
     // a clip edit on a track (its range from the arrangement's), into a new file the track then plays;
@@ -288,6 +290,8 @@ private:
     QPushButton* fInspectorStems = nullptr;
     QPushButton* fInspectorMidi = nullptr;
     QPushButton* fInspectorTune = nullptr;
+    QPushButton* fInspectorRepair = nullptr;
+    QPushButton* fInspectorEnhance = nullptr;
     QWidget* fInstrumentBox = nullptr;
     QLabel* fInstrumentName = nullptr;
     QPushButton* fInstrumentEdit = nullptr;
