@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QMouseEvent>
 #include <cmath>
 #include <algorithm>
 
