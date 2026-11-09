@@ -238,7 +238,7 @@ MainWindow::MainWindow(QWidget* parent)
     switchLayout->setContentsMargins(0, 0, 0, 0);
     auto* switchBar = new QTabBar(switcher);
     switchBar->setDrawBase(false);
-    switchBar->addTab(QStringLiteral("⚡ 5-Stem 声能 HUD"));
+    switchBar->addTab(QStringLiteral("⚡ 5-Stem & 声道共鸣 HUD"));
     switchBar->addTab(QStringLiteral("📼 模拟磁带机"));
     switchBar->setCurrentIndex(0);
     fRightStack->setCurrentIndex(1); // default to 5-Stem HUD!
@@ -249,9 +249,22 @@ MainWindow::MainWindow(QWidget* parent)
     switchLayout->addStretch();
 
     dockLayout->addWidget(switcher);
-    dockLayout->addWidget(fRightStack, 1);
 
-    fTapeDock = new QDockWidget(QStringLiteral("AI 监视器 (5-Stem 声能 HUD & 模拟磁带机)"), this);
+    auto* rightScroll = new QScrollArea(dockContainer);
+    rightScroll->setWidgetResizable(true);
+    rightScroll->setFrameShape(QFrame::NoFrame);
+    rightScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    rightScroll->setStyleSheet(QStringLiteral(
+        "QScrollArea { background: transparent; border: none; }"
+        "QScrollBar:vertical { width: 5px; background: #0c1017; margin: 0; }"
+        "QScrollBar::handle:vertical { background: #232d40; border-radius: 2px; min-height: 20px; }"
+        "QScrollBar::handle:vertical:hover { background: #00f0ff; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+    ));
+    rightScroll->setWidget(fRightStack);
+    dockLayout->addWidget(rightScroll, 1);
+
+    fTapeDock = new QDockWidget(QStringLiteral("AI 监视器 (5-Stem 声能 HUD & 人体物理发声共鸣)"), this);
     fTapeDock->setObjectName(QStringLiteral("producerTapeDock"));
     fTapeDock->setWidget(dockContainer);
     fTapeDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable);
