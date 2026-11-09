@@ -101,7 +101,8 @@ def run_command(cmd, desc=""):
         line_clean = line.strip()
         if line_clean:
             lines.append(line_clean)
-            print(line_clean, flush=True)
+            if not (line_clean.startswith("MIDI ") or line_clean.startswith("STEM ") or line_clean.startswith("TUNED ")):
+                print(line_clean, flush=True)
     proc.wait()
     return proc.returncode, lines
 
@@ -177,29 +178,15 @@ def tune_vocals(stems, key, out_dir):
         if role in stems and os.path.exists(stems[role]):
             in_file = stems[role]
 
-            # 1. 深度音频声学修复：去杂音去爆音 (Declick) + 工频陷波 (Dehum) + 35Hz次声切除
-            clean_file = os.path.join(out_dir, f"cleaned_{role}.wav")
-            clean_cmd = [
-                PYTHON_EXE,
-                os.path.join(TOOLS_DIR, "chost_repair.py"),
-                "--input", in_file,
-                "--output", clean_file,
-                "--action", "clean",
-                "--sensitivity", "0.55",
-                "--base-freq", "50.0"
-            ]
-            run_command(clean_cmd, f"正在对 {role} 进行声学修复（去爆音/口水音 Declick 与工频消除 Dehum）...")
-            tune_input = clean_file if (os.path.exists(clean_file) and os.path.getsize(clean_file) > 1000) else in_file
-
             out_file = os.path.join(out_dir, f"tuned_{role}.wav")
-            # 2. 自然人性化修音（避免电音/机械假声）：
-            # 降低纠偏刚度(主唱0.55/和声0.70)，增大过渡平滑时间(主唱45ms/和声35ms)，保留歌者自然颤音与情感起伏(drift 0.15)
-            strength = "0.70" if role == "backing" else "0.55"
-            speed = "35" if role == "backing" else "45"
+            # 神经分离人声本身无底噪与电音，切忌使用破坏性全轨时域差分 declick，避免切碎人声辅音咬字引发电流断续杂音
+            # 自然人性化修音：温和纠偏刚度(主唱0.45/和声0.60)，增大过渡平滑时间(主唱50ms/和声40ms)，保留歌者自然颤音与真实情感
+            strength = "0.60" if role == "backing" else "0.45"
+            speed = "40" if role == "backing" else "50"
             cmd = [
                 PYTHON_EXE,
                 os.path.join(TOOLS_DIR, "chost_tune.py"),
-                "--input", tune_input,
+                "--input", in_file,
                 "--output", out_file,
                 "--key", key if key else "auto",
                 "--scale", "smart",
@@ -211,24 +198,38 @@ def tune_vocals(stems, key, out_dir):
             if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
                 tuned_stems[role] = out_file
                 print(f"TUNED {role}\t{out_file}", flush=True)
+            else:
+                log(f"⚠️ {role} 智能修音未生成有效文件，自动采用高保真纯净原轨")
+                tuned_stems[role] = in_file
     return tuned_stems
 
 
 def transcribe_stems(stems, tempo, out_dir):
     midi_files = {}
-    for role in ["bass", "piano", "guitar"]:
-        if role in stems and os.path.exists(stems[role]):
-            in_file = stems[role]
+    target_roles = ["lead", "bass", "piano", "guitar", "other"]
+    role_labels = {
+        "lead": "主旋律人声",
+        "bass": "贝斯",
+        "piano": "钢琴",
+        "guitar": "吉他",
+        "other": "弦乐/副旋律"
+    }
+    for role in target_roles:
+        target_path = stems.get(role)
+        if not target_path and role == "lead":
+            target_path = stems.get("vocals")
+        if target_path and os.path.exists(target_path):
             out_mid = os.path.join(out_dir, f"{role}.mid")
             cmd = [
                 PYTHON_EXE,
                 os.path.join(TOOLS_DIR, "chost_transcribe.py"),
-                "--input", in_file,
+                "--input", target_path,
                 "--output", out_mid,
                 "--role", role,
                 "--tempo", str(tempo)
             ]
-            code, lines = run_command(cmd, f"正在将伴奏 {role} 转为高精度 MIDI...")
+            label = role_labels.get(role, role)
+            code, lines = run_command(cmd, f"正在将 {label} ({role}) 转为高精度 MIDI...")
             if os.path.exists(out_mid) and os.path.getsize(out_mid) > 50:
                 midi_files[role] = out_mid
                 print(f"MIDI {role}\t{out_mid}", flush=True)

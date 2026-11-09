@@ -312,10 +312,43 @@ void RemasterDialog::readOutput()
         else if (line.startsWith(QLatin1String("MIDI ")))
         {
             const QStringList parts = line.mid(5).trimmed().split(QLatin1Char('\t'));
+            QString role;
+            QString midiPath;
             if (parts.size() >= 2)
             {
-                fDiscoveredMidis.append(qMakePair(parts[0], parts[1]));
-                emit midiReady(parts[0], parts[1]);
+                if (parts[0].endsWith(QLatin1String(".mid"), Qt::CaseInsensitive))
+                {
+                    midiPath = parts[0];
+                    role = QFileInfo(midiPath).baseName();
+                }
+                else if (parts[1].endsWith(QLatin1String(".mid"), Qt::CaseInsensitive))
+                {
+                    role = parts[0];
+                    midiPath = parts[1];
+                }
+            }
+            else if (parts.size() == 1 && parts[0].endsWith(QLatin1String(".mid"), Qt::CaseInsensitive))
+            {
+                midiPath = parts[0];
+                role = QFileInfo(midiPath).baseName();
+            }
+
+            if (!midiPath.isEmpty() && QFileInfo::exists(midiPath))
+            {
+                bool alreadyDiscovered = false;
+                for (const auto& pair : fDiscoveredMidis)
+                {
+                    if (pair.second == midiPath)
+                    {
+                        alreadyDiscovered = true;
+                        break;
+                    }
+                }
+                if (!alreadyDiscovered)
+                {
+                    fDiscoveredMidis.append(qMakePair(role, midiPath));
+                    emit midiReady(role, midiPath);
+                }
             }
         }
         else if (line.startsWith(QLatin1String("BALANCE ")))

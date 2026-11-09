@@ -2539,10 +2539,19 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
     });
 
     connect(fRemasterDialog, &RemasterDialog::midiReady, this, [this](const QString& role, const QString& path) {
-        QString label = role.toUpper();
-        if (role == QLatin1String("bass")) label = QStringLiteral("贝斯 (MIDI)");
-        else if (role == QLatin1String("piano")) label = QStringLiteral("钢琴 (MIDI)");
-        else if (role == QLatin1String("guitar")) label = QStringLiteral("吉他 (MIDI)");
+        QString label = role.toUpper() + QStringLiteral(" (MIDI)");
+        if (role == QLatin1String("lead") || role == QLatin1String("vocal") || role == QLatin1String("vocals"))
+            label = QStringLiteral("主旋律 (MIDI)");
+        else if (role == QLatin1String("backing"))
+            label = QStringLiteral("和声旋律 (MIDI)");
+        else if (role == QLatin1String("bass"))
+            label = QStringLiteral("贝斯 (MIDI)");
+        else if (role == QLatin1String("piano"))
+            label = QStringLiteral("钢琴 (MIDI)");
+        else if (role == QLatin1String("guitar"))
+            label = QStringLiteral("吉他 (MIDI)");
+        else if (role == QLatin1String("other"))
+            label = QStringLiteral("弦乐/副旋律 (MIDI)");
         addMidiTrack(path, label, role, /*safeBundled=*/true);
         refreshTracks();
     });
@@ -2607,7 +2616,20 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
             QString role = mf;
             if (role.endsWith(QStringLiteral(".mid"), Qt::CaseInsensitive))
                 role.chop(4);
-            addMidiTrack(fullPath, role + QStringLiteral(" (MIDI)"), role, /*safeBundled=*/true);
+            QString label = role.toUpper() + QStringLiteral(" (MIDI)");
+            if (role == QLatin1String("lead") || role == QLatin1String("vocal") || role == QLatin1String("vocals"))
+                label = QStringLiteral("主旋律 (MIDI)");
+            else if (role == QLatin1String("backing"))
+                label = QStringLiteral("和声旋律 (MIDI)");
+            else if (role == QLatin1String("bass"))
+                label = QStringLiteral("贝斯 (MIDI)");
+            else if (role == QLatin1String("piano"))
+                label = QStringLiteral("钢琴 (MIDI)");
+            else if (role == QLatin1String("guitar"))
+                label = QStringLiteral("吉他 (MIDI)");
+            else if (role == QLatin1String("other"))
+                label = QStringLiteral("弦乐/副旋律 (MIDI)");
+            addMidiTrack(fullPath, label, role, /*safeBundled=*/true);
         }
 
         if (!masterPath.isEmpty() && QFileInfo::exists(masterPath))
