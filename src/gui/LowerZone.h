@@ -7,6 +7,7 @@
 
 class SampleEditor;
 class PianoRoll;
+class DynamicScoreView;
 
 class LowerZone : public QWidget {
     Q_OBJECT
@@ -15,13 +16,15 @@ public:
     enum TabIndex {
         TabMixConsole = 0,
         TabEditor = 1,
-        TabPianoRoll = 2
+        TabPianoRoll = 2,
+        TabScore = 3
     };
 
     explicit LowerZone(QWidget* mixConsoleWidget, QWidget* parent = nullptr);
 
     SampleEditor* sampleEditor() const { return fSampleEditor; }
     PianoRoll* pianoRoll() const { return fPianoRoll; }
+    DynamicScoreView* scoreView() const { return fScoreView; }
 
     void setCurrentTab(TabIndex index);
     TabIndex currentTab() const;
@@ -34,4 +37,5 @@ private:
     QStackedWidget* fStack = nullptr;
     SampleEditor* fSampleEditor = nullptr;
     PianoRoll* fPianoRoll = nullptr;
+    DynamicScoreView* fScoreView = nullptr;
 };

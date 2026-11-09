@@ -22,7 +22,10 @@
 #include "StemDialog.h"
 #include "Theme.h"
 #include "TapeDeckWidget.h"
+#include "StemEnergyHUDWidget.h"
+#include "DynamicScoreView.h"
 #include <QDockWidget>
+#include <QStackedWidget>
 #include "TranscribeDialog.h"
 #include "TuneDialog.h"
 #include "Widgets.h"
@@ -182,21 +185,75 @@ MainWindow::MainWindow(QWidget* parent)
 
     fMainSplitter = new QSplitter(Qt::Vertical);
     fMainSplitter->addWidget(top);
-    fMainSplitter->addWidget(buildLowerZone());
+    auto* lz = buildLowerZone();
+    fMainSplitter->addWidget(lz);
+    if (fLowerZone && fLowerZone->scoreView())
+    {
+        connect(fLowerZone->scoreView(), &DynamicScoreView::seekRequested, this, &MainWindow::seek);
+        connect(fLowerZone->scoreView(), &DynamicScoreView::autoTranscribeRequested, this, [this] { transcribe(true); });
+        connect(fLowerZone->scoreView(), &DynamicScoreView::exportPdfRequested, this, [this] { scoreDialog(); });
+    }
     fMainSplitter->setStretchFactor(0, 1);
     fMainSplitter->setSizes({500, 400});
     setCentralWidget(fMainSplitter);
 
-    fTapeDeck = new TapeDeckWidget(this);
+    fRightStack = new QStackedWidget;
+
+    // View 0: Classic Tape Deck
+    fTapeDeck = new TapeDeckWidget(fRightStack);
     connect(fTapeDeck, &TapeDeckWidget::playRequested, this, &MainWindow::togglePlay);
     connect(fTapeDeck, &TapeDeckWidget::pauseRequested, this, &MainWindow::togglePlay);
     connect(fTapeDeck, &TapeDeckWidget::stopRequested, this, &MainWindow::stop);
     connect(fTapeDeck, &TapeDeckWidget::rewindRequested, this, [this] { seek(0.0); });
     connect(fTapeDeck, &TapeDeckWidget::recordRequested, this, [this] { autoRemaster(); });
+    fRightStack->addWidget(fTapeDeck);
 
-    fTapeDock = new QDockWidget(QStringLiteral("PRODUCER FM-01X 模拟磁带机与双指针 VU 电平"), this);
+    // View 1: 5-Stem Cyberpunk Energy HUD
+    fStemHUD = new StemEnergyHUDWidget(fRightStack);
+    connect(fStemHUD, &StemEnergyHUDWidget::playToggled, this, &MainWindow::togglePlay);
+    connect(fStemHUD, &StemEnergyHUDWidget::autoRemasterRequested, this, [this] { autoRemaster(); });
+    connect(fStemHUD, &StemEnergyHUDWidget::stepClicked, this, [this](int step) {
+        if (step == 0) separateStems();
+        else if (step == 1) transcribe(false);
+        else if (step == 2) tune();
+        else if (step == 3) arrange();
+        else if (step == 4) autoRemaster();
+    });
+    fRightStack->addWidget(fStemHUD);
+
+    auto* dockContainer = new QWidget(this);
+    auto* dockLayout = new QVBoxLayout(dockContainer);
+    dockLayout->setContentsMargins(0, 0, 0, 0);
+    dockLayout->setSpacing(0);
+
+    // Switcher header
+    auto* switcher = new QWidget(dockContainer);
+    switcher->setFixedHeight(28);
+    switcher->setStyleSheet(QStringLiteral(
+        "QWidget { background: #121620; border-bottom: 1px solid #1a2232; }"
+        "QTabBar::tab { background: #1c2333; color: #8a9bb8; padding: 4px 12px; font-size: 11px; font-weight: bold; border-right: 1px solid #121620; }"
+        "QTabBar::tab:selected { background: #28344d; color: #00f0ff; border-bottom: 2px solid #00f0ff; }"
+    ));
+    auto* switchLayout = new QHBoxLayout(switcher);
+    switchLayout->setContentsMargins(0, 0, 0, 0);
+    auto* switchBar = new QTabBar(switcher);
+    switchBar->setDrawBase(false);
+    switchBar->addTab(QStringLiteral("⚡ 5-Stem 声能 HUD"));
+    switchBar->addTab(QStringLiteral("📼 模拟磁带机"));
+    switchBar->setCurrentIndex(0);
+    fRightStack->setCurrentIndex(1); // default to 5-Stem HUD!
+    connect(switchBar, &QTabBar::currentChanged, this, [this](int idx) {
+        fRightStack->setCurrentIndex(idx == 0 ? 1 : 0);
+    });
+    switchLayout->addWidget(switchBar);
+    switchLayout->addStretch();
+
+    dockLayout->addWidget(switcher);
+    dockLayout->addWidget(fRightStack, 1);
+
+    fTapeDock = new QDockWidget(QStringLiteral("AI 监视器 (5-Stem 声能 HUD & 模拟磁带机)"), this);
     fTapeDock->setObjectName(QStringLiteral("producerTapeDock"));
-    fTapeDock->setWidget(fTapeDeck);
+    fTapeDock->setWidget(dockContainer);
     fTapeDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable);
     addDockWidget(Qt::RightDockWidgetArea, fTapeDock);
 
@@ -899,6 +956,39 @@ void MainWindow::tick()
             fTapeDeck->setTrackName(QString::fromStdString(tracks[fSelected].name));
         else
             fTapeDeck->setTrackName(QStringLiteral("MASTER BUS"));
+    }
+
+    if (fStemHUD)
+    {
+        float vocalL = 0.0f, guitarL = 0.0f, drumsL = 0.0f, bassL = 0.0f, keysL = 0.0f;
+        for (size_t i = 0; i < tracks.size(); ++i)
+        {
+            const auto [l, r] = fHost.outputPeaks(tracks[i].fader);
+            const float pk = std::max(l, r);
+            const QString role = QString::fromStdString(tracks[i].role.empty() ? guessRole(QString::fromStdString(tracks[i].name)).toStdString() : tracks[i].role);
+            if (role == QLatin1String("vocals") || role == QLatin1String("lead") || role == QLatin1String("backing"))
+                vocalL = std::max(vocalL, pk);
+            else if (role == QLatin1String("guitar") || role.contains(QLatin1String("guitar")))
+                guitarL = std::max(guitarL, pk);
+            else if (role == QLatin1String("drums") || role == QLatin1String("kick") || role == QLatin1String("snare"))
+                drumsL = std::max(drumsL, pk);
+            else if (role == QLatin1String("bass"))
+                bassL = std::max(bassL, pk);
+            else
+                keysL = std::max(keysL, pk);
+        }
+        if (tracks.size() <= 1 && (masterL > 0.001f || masterR > 0.001f))
+        {
+            const float m = std::max(masterL, masterR);
+            vocalL = m * 0.95f;
+            guitarL = m * 0.82f;
+            drumsL = m * 1.05f;
+            bassL = m * 0.88f;
+            keysL = m * 0.76f;
+        }
+        fStemHUD->setStemLevels(vocalL, guitarL, drumsL, bassL, keysL);
+        fStemHUD->setMasterLevel(masterL, masterR);
+        fStemHUD->setPlaybackInfo(seconds, fSession.tempo(), QString::fromStdString(fSession.key()), QString(), playing);
     }
 
     const double maxDur = maxTrackDuration();
@@ -3948,6 +4038,11 @@ void MainWindow::setPlayhead(double seconds)
         fLowerZone->pianoRoll()->setPlayhead(seconds);
     if (fChordPad)
         fChordPad->setPlayhead(seconds, playing);
+    if (fLowerZone && fLowerZone->scoreView())
+    {
+        fLowerZone->scoreView()->setPlayhead(seconds, playing);
+        fLowerZone->scoreView()->setSongInfo(fSession.tempo(), QString::fromStdString(fSession.key()), QString());
+    }
 
     const int ms = static_cast<int>(seconds * 1000.0);
     fTimeLcd->setText(QStringLiteral("%1:%2:%3.%4")

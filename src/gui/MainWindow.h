@@ -16,7 +16,10 @@
 class ArrangeDialog;
 class ArrangeView;
 class TapeDeckWidget;
+class StemEnergyHUDWidget;
+class DynamicScoreView;
 class QDockWidget;
+class QStackedWidget;
 class ChannelStrip;
 class ExportDialog;
 class Autosave;
@@ -264,6 +267,8 @@ private:
 
     // transport
     TapeDeckWidget* fTapeDeck = nullptr;
+    StemEnergyHUDWidget* fStemHUD = nullptr;
+    QStackedWidget* fRightStack = nullptr;
     QDockWidget* fTapeDock = nullptr;
     QToolButton* fTapeDockButton = nullptr;
     QToolButton* fPlayButton = nullptr;

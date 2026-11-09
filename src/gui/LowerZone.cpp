@@ -2,6 +2,7 @@
 
 #include "SampleEditor.h"
 #include "PianoRoll.h"
+#include "DynamicScoreView.h"
 #include "Theme.h"
 
 #include <QVBoxLayout>
@@ -32,6 +33,10 @@ LowerZone::LowerZone(QWidget* mixConsoleWidget, QWidget* parent)
     fPianoRoll = new PianoRoll(this);
     fStack->addWidget(fPianoRoll);
 
+    // Page 3: Dynamic Score View (AI 动态总谱)
+    fScoreView = new DynamicScoreView(this);
+    fStack->addWidget(fScoreView);
+
     rootLayout->addWidget(fStack, 1);
 
     // Bottom tab bar bar styled like Cubase Lower Zone
@@ -55,6 +60,7 @@ LowerZone::LowerZone(QWidget* mixConsoleWidget, QWidget* parent)
     fTabBar->addTab(QStringLiteral("采样器控制"));
     fTabBar->addTab(QStringLiteral("调谐音频"));
     fTabBar->addTab(QStringLiteral("键盘"));
+    fTabBar->addTab(QStringLiteral("AI 动态总谱"));
 
     connect(fTabBar, &QTabBar::currentChanged, this, [this](int idx) {
         int stackIdx = 0;
@@ -62,8 +68,10 @@ LowerZone::LowerZone(QWidget* mixConsoleWidget, QWidget* parent)
             stackIdx = TabMixConsole;
         else if (idx == 1)
             stackIdx = TabEditor;
-        else if (idx >= 2)
+        else if (idx >= 2 && idx <= 4)
             stackIdx = TabPianoRoll;
+        else if (idx == 5)
+            stackIdx = TabScore;
 
         fStack->setCurrentIndex(stackIdx);
         emit tabChanged(idx);
@@ -91,6 +99,11 @@ void LowerZone::setCurrentTab(TabIndex index)
     {
         fTabBar->setCurrentIndex(4);
         fStack->setCurrentIndex(TabPianoRoll);
+    }
+    else if (index == TabScore)
+    {
+        fTabBar->setCurrentIndex(5);
+        fStack->setCurrentIndex(TabScore);
     }
 }
 

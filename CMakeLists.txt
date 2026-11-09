@@ -79,6 +79,8 @@ if(CHOST_BUILD_GUI)
         src/gui/main.cpp
         src/gui/MainWindow.cpp src/gui/MainWindow.h
         src/gui/TapeDeckWidget.cpp src/gui/TapeDeckWidget.h
+        src/gui/StemEnergyHUDWidget.cpp src/gui/StemEnergyHUDWidget.h
+        src/gui/DynamicScoreView.cpp src/gui/DynamicScoreView.h
         src/gui/PluginWindows.cpp src/gui/PluginWindows.h
         src/gui/StemDialog.cpp src/gui/StemDialog.h
         src/gui/RemasterDialog.cpp src/gui/RemasterDialog.h
