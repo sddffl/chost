@@ -36,7 +36,7 @@ endif()
 find_package(Threads REQUIRED)
 
 # the core is compiled once and linked against either flavour of carla
-add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp src/core/Chords.cpp src/core/Scales.cpp src/core/Score.cpp src/core/ClipEdit.cpp src/core/Click.cpp src/core/Loudness.cpp src/core/MixBalance.cpp)
+add_library(chost_core_objects OBJECT src/core/HostEngine.cpp src/core/AudioConvert.cpp src/core/MidiFile.cpp src/core/Session.cpp src/core/Chords.cpp src/core/Scales.cpp src/core/Score.cpp src/core/ClipEdit.cpp src/core/Click.cpp src/core/Loudness.cpp src/core/MixBalance.cpp src/dsp/RealtimeVocalTune.cpp src/dsp/AutomationCurve.cpp)
 target_include_directories(chost_core_objects PUBLIC src)
 target_include_directories(chost_core_objects PRIVATE third_party/dr_libs)
 target_compile_definitions(chost_core_objects PUBLIC REAL_BUILD)
