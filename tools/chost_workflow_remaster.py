@@ -205,7 +205,41 @@ def tune_vocals(stems, key, out_dir):
 
 
 def transcribe_stems(stems, tempo, out_dir):
+    """Transcribes separated stems into MIDI. Uses MuScriptor Large 1.4B if available, else Basic Pitch."""
     midi_files = {}
+    muscriptor_script = os.path.join(TOOLS_DIR, "chost_muscriptor.py")
+    large_weights = r"D:\AI_Models\muscriptor-large\model.safetensors"
+    
+    # If MuScriptor Large weights exist on disk, transcribe mix / stems directly with 1.4B transformer
+    if os.path.exists(muscriptor_script) and os.path.exists(large_weights) and os.path.getsize(large_weights) > 1000 * 1024 * 1024:
+        log("🚀 启用 RTX 3090 独占级 MuScriptor Large (1.4B 巨量大模型) 进行 35 乐器全声部终极采谱...")
+        # Prioritize master audio if available, else reconstruct mix from stems
+        source_mix = stems.get("mix") or stems.get("other") or stems.get("lead")
+        for k in ["mix", "other", "vocals", "lead"]:
+            if k in stems and os.path.exists(stems[k]):
+                source_mix = stems[k]
+                break
+        if source_mix and os.path.exists(source_mix):
+            cmd = [
+                PYTHON_EXE,
+                muscriptor_script,
+                "--input", source_mix,
+                "--output-dir", out_dir,
+                "--quantize"
+            ]
+            code, lines = run_command(cmd, "正在执行 MuScriptor Large 35 乐器声部神经解码...")
+            for l in lines:
+                if l.startswith("MIDI "):
+                    parts = l.split("\t")
+                    if len(parts) >= 2:
+                        role = parts[0].replace("MIDI ", "").strip()
+                        path = parts[1].strip()
+                        if os.path.exists(path):
+                            midi_files[role] = path
+            if midi_files:
+                return midi_files
+
+    # Fallback to per-stem transcription
     target_roles = ["lead", "bass", "piano", "guitar", "other"]
     role_labels = {
         "lead": "主旋律人声",
