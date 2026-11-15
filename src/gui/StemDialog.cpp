@@ -299,8 +299,6 @@ void StemDialog::run(Job job, const QString& program, const QStringList& args)
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
-    if (QDir(QStringLiteral("D:/AI_Models/audio_separator")).exists())
-        env.insert(QStringLiteral("AUDIO_SEPARATOR_MODEL_DIR"), QStringLiteral("D:/AI_Models/audio_separator"));
     fProcess.setProcessEnvironment(env);
     setBusy(true);
     fProcess.start(program, args);

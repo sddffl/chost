@@ -42,10 +42,6 @@ STEM_LABELS = {
     "other": "其他伴奏",
 }
 
-# Auto configure local models directory if present
-if os.path.exists(r"D:\AI_Models\audio_separator") and "AUDIO_SEPARATOR_MODEL_DIR" not in os.environ:
-    os.environ["AUDIO_SEPARATOR_MODEL_DIR"] = r"D:\AI_Models\audio_separator"
-
 
 def detect_and_set_proxy():
     for port in [10808, 7890, 10809]:
@@ -125,9 +121,11 @@ def analyze_audio(input_file):
     return bpm, key
 
 
-def separate_audio(input_file, out_dir, level="finest"):
+def separate_audio(input_file, out_dir, level="finest", model_dir=None):
+    """model_dir: where the separation models are (chost passes the folder its stem separation uses);
+    without one, AUDIO_SEPARATOR_MODEL_DIR, else chost_separate.py's own default."""
     os.makedirs(out_dir, exist_ok=True)
-    model_dir = os.environ.get("AUDIO_SEPARATOR_MODEL_DIR", r"D:\AI_Models\audio_separator")
+    model_dir = model_dir or os.environ.get("AUDIO_SEPARATOR_MODEL_DIR")
     cmd = [
         PYTHON_EXE,
         os.path.join(TOOLS_DIR, "chost_separate.py"),
@@ -135,10 +133,10 @@ def separate_audio(input_file, out_dir, level="finest"):
         "--out", out_dir,
         "--level", level
     ]
-    if os.path.exists(model_dir):
+    if model_dir:
         cmd.extend(["--model-dir", model_dir])
 
-    code, lines = run_command(cmd, "正在执行 RTX 3090 极速 14 轨 AI 细分分轨...")
+    code, lines = run_command(cmd, "正在执行 AI 细分分轨（最多 14 轨）...")
     stems = {}
     for l in lines:
         if l.startswith("STEM "):
@@ -205,6 +203,27 @@ def transcribe_stems(stems, tempo, out_dir):
     return midi_files
 
 
+def load_stereo(path, target_sr=None):
+    """A stem as float32 stereo frames, and its rate. Mono is spread to both sides, more than two channels
+    keep the first two, and with target_sr another rate is resampled to it, so stems separated or tuned at
+    different rates still line up sample for sample when they are summed."""
+    import numpy as np
+    import soundfile as sf
+
+    data, sr = sf.read(path, always_2d=True, dtype="float32")
+    if data.shape[1] == 1:
+        data = np.repeat(data, 2, axis=1)
+    elif data.shape[1] > 2:
+        data = data[:, :2]
+    if target_sr and sr != target_sr:
+        from math import gcd
+        from scipy.signal import resample_poly
+        g = gcd(int(sr), int(target_sr))
+        data = resample_poly(data, int(target_sr) // g, int(sr) // g, axis=0).astype(np.float32)
+        sr = target_sr
+    return np.ascontiguousarray(data), sr
+
+
 def mix_and_master(stems, tuned_stems, out_master_path):
     """Mixes all tuned/processed stems and masters the output to target LUFS."""
     import soundfile as sf
@@ -252,20 +271,18 @@ def mix_and_master(stems, tuned_stems, out_master_path):
         vol_db = 20.0 * np.log10(max(vol, 1e-4))
         print(f"BALANCE {name}\t{vol_db:.1f}\t{pan:.2f}", flush=True)
 
-    # Load audio files and sum
-    sr = 44100
+    # Load audio files and sum, all at the first stem's rate
+    sr = None
     max_len = 0
     audio_data = []
 
     for name, path, vol, pan in tracks_to_mix:
-        data, file_sr = sf.read(path, always_2d=True)
-        if file_sr != sr:
-            sr = file_sr
+        data, sr = load_stereo(path, sr)
         gain_l = np.cos((pan + 1.0) * np.pi / 4.0) * vol
         gain_r = np.sin((pan + 1.0) * np.pi / 4.0) * vol
-        processed = np.zeros_like(data)
+        processed = np.empty_like(data)
         processed[:, 0] = data[:, 0] * gain_l
-        processed[:, 1] = data[:, 1] * gain_r if data.shape[1] > 1 else data[:, 0] * gain_r
+        processed[:, 1] = data[:, 1] * gain_r
         audio_data.append(processed)
         if len(processed) > max_len:
             max_len = len(processed)
@@ -306,6 +323,7 @@ def main():
     parser.add_argument("--input", required=True, help="输入的原始音频文件路径")
     parser.add_argument("--output", help="输出的最终母带文件路径（默认在桌面生成）")
     parser.add_argument("--export-dir", help="导出目录，默认为桌面")
+    parser.add_argument("--model-dir", help="AI 分轨模型所在的文件夹（默认用 AUDIO_SEPARATOR_MODEL_DIR，或 chost_separate.py 自己的默认位置）")
     args = parser.parse_args()
 
     input_file = os.path.abspath(args.input)
@@ -333,9 +351,9 @@ def main():
     progress(15, f"音频分析完成: 速度 {bpm:.1f} BPM, 调性 {key}")
 
     # 2. Separate
-    progress(20, "正在启动 RTX 3090 显卡极速 14 轨 AI 细分分轨...")
+    progress(20, "正在启动 AI 细分分轨（最多 14 轨）...")
     stems_dir = os.path.join(work_dir, "stems")
-    stems = separate_audio(input_file, stems_dir, level="finest")
+    stems = separate_audio(input_file, stems_dir, level="finest", model_dir=args.model_dir)
     progress(45, f"14 轨细分完成，提取轨道: {', '.join(stems.keys())}")
 
     # 3. Tune

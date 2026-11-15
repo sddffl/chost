@@ -502,7 +502,7 @@ void MainWindow::buildTransport()
     auto* remaster = new QToolButton;
     remaster->setObjectName(QStringLiteral("aiHero"));
     remaster->setText(QStringLiteral("⚡ 全自动母带"));
-    remaster->setToolTip(QStringLiteral("一键全自动：分析测速定调、RTX 3090 GPU 14轨细分分轨、伴奏转MIDI、人声顶级修音、多轨平衡润色与商业级母带导出至桌面"));
+    remaster->setToolTip(QStringLiteral("一键全自动：分析测速定调、AI 14 轨细分分轨、伴奏转MIDI、人声顶级修音、多轨平衡润色与商业级母带导出至桌面"));
     bar->addWidget(remaster);
     connect(remaster, &QToolButton::clicked, this, [this] { autoRemaster(); });
     auto* stems = new QToolButton;

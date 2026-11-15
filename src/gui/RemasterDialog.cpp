@@ -30,7 +30,7 @@ RemasterDialog::RemasterDialog(const QString& trackName, const QString& audioFil
     auto* banner = new QLabel(QStringLiteral(
         "<b>一键全自动顶级音乐制作工作流：</b><br>"
         "① 音频分析（自动测速定调、节拍侦测）<br>"
-        "② RTX 3090 GPU 14 轨细分极速分轨（主唱/和声/底鼓/军鼓/通鼓/踩镲/吊镲/贝斯/吉他/钢琴等）<br>"
+        "② AI 14 轨细分分轨（主唱/和声/底鼓/军鼓/通鼓/踩镲/吊镲/贝斯/吉他/钢琴等，有 NVIDIA 显卡时用显卡）<br>"
         "③ 伴奏分轨高精度转谱 MIDI<br>"
         "④ 人声与和声智能修音与跑调纠偏（保持自然音准与颤音）<br>"
         "⑤ 空间声像排布与多轨响度声学混音平衡<br>"
@@ -225,6 +225,10 @@ void RemasterDialog::startRemaster()
     const QString exportDir = fExportDir->text().trimmed();
     if (!exportDir.isEmpty())
         args << QStringLiteral("--export-dir") << exportDir;
+    // the models AI stem separation already downloaded (StemDialog keeps them here too)
+    const QString models = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/models");
+    QDir().mkpath(models);
+    args << QStringLiteral("--model-dir") << models;
 
     fPending.clear();
     fProgress->setValue(0);
@@ -234,8 +238,6 @@ void RemasterDialog::startRemaster()
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
-    if (QDir(QStringLiteral("D:/AI_Models/audio_separator")).exists())
-        env.insert(QStringLiteral("AUDIO_SEPARATOR_MODEL_DIR"), QStringLiteral("D:/AI_Models/audio_separator"));
     fProcess.setProcessEnvironment(env);
 
     setBusy(true);

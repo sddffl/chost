@@ -196,6 +196,10 @@ These build on code chost already has; most only become possible once Phase 1 an
 | 2026-11-15 | #1 audio cache key: full path + modification time + size + engine rate; atomic write (`.part` file renamed into place) | done, tested |
 | 2026-11-15 | #2 seek reloads: only active audio file players are refreshed; repeated seeks (scrubbing) throttled to one refresh per 100 ms plus a final one | done, tested |
 | 2026-11-15 | #6 Scissors: cuts the clip in two (track keeps the part before the cut, a new track mixing identically gets the part after); one undo step | done, tested |
+| 2026-11-15 | #5 tempo to the transport: the session tempo goes to carla's transport live (`carla_transport_bpm`) and offline (`NativeTimeInfo` with bar, beat, tick and time signature for every block) | done, tested; see limits below |
+| 2026-11-15 | #12 remaster mixdown: every stem loaded as stereo (mono spread, extra channels dropped) at one sample rate (polyphase resampling) | done, tested |
+| 2026-11-15 | #13 (part) developer paths: `D:\AI_Models\audio_separator` removed from the remaster script, `RemasterDialog` and `StemDialog`; the remaster script takes `--model-dir` and chost passes the folder stem separation already uses; "RTX 3090" removed from UI text | done, tested |
+| — | #13 (rest): proxy port sniffing and the default export to the Desktop in `chost_workflow_remaster.py` | open |
 
 ### Phase 0 test results (2026-11-15)
 
@@ -209,6 +213,20 @@ Run on Linux with Carla 2.5.8 and Qt 6.4.2. The live tests use a headless JACK s
   - Null test through `chost-render` (project before vs after the cut, with a gain-0.37 insert, a bypassed gain-0 insert and a send): largest difference 3e-8 (−139 dB).
 - **Regression:** CI's multitrack suite (15 checks, run with `--driver JACK` instead of PulseAudio) and the GUI `--test-undo` self-test pass.
 
+- **Tempo (#5):** Carla's built-in tempo-synced LFO (sawtooth, 1 beat) was measured at session tempos of 90, 120 and 150 BPM, timed by the transport.
+  - Old code: the plugin hears about 120 BPM whatever the session says, both live and in `chost-render`.
+  - New code: it hears 90.0 / 120.1 / 150.0 BPM live and 90.0 / 119.9 / 150.0 offline.
+  - `barBeatAt` passes 9 unit checks (4/4, 3/4, 6/8, beat and bar boundaries, no drift after 10 hours).
+  - Switching carla to its internal transport mode turned out not to be needed for this and was left out, so chost still follows JACK transport like before.
+- **Tempo limits:**
+  - Live, Carla 2.5's transport takes only the tempo; its bars are always 4/4.
+  - The session has no time signature yet (4/4 is hard-coded in the GUI), so 4/4 is what gets passed. `HostEngine::setTempo(bpm, beatsPerBar, beatType)` already carries the time signature through to offline rendering, ready for the Phase 1 timebase.
+- **Remaster (#12):**
+  - HEAD crashes on a mono stem (`IndexError`).
+  - The fix mixes a mono 44.1 kHz vocal, a stereo 48 kHz drum stem and a 3-channel 48 kHz bass through the real mastering step; all three tones are present in the master and nothing smears between them (−106 dB).
+  - The model folder is taken in this order: `--model-dir`, then `AUDIO_SEPARATOR_MODEL_DIR`, then `chost_separate.py`'s default (6 checks).
+
 **Not covered:**
 - The Scissors mouse click in the GUI was not exercised by a test; only the code it calls was.
-- Carla 2.5's file player has a rare start-up race: a fresh player can stay silent at the first `play()`. It happened once in about 30 runs of the new build and in none of the next 28 runs of either build, on a code path the fixes don't touch.
+- Carla 2.5's file player has a rare start-up race: a freshly loaded player can stay silent at the first `play()` when no `relocate()` comes before it. It occurs in both the original and the fixed builds (seen in about 1 run in 40 of each) and the fixes don't touch that path. Phase 1's own disk streaming removes it.
+- The remaster pipeline's separation, tuning and transcription steps need the AI models and weren't run; the mixdown and mastering steps were.
