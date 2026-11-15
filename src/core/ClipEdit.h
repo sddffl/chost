@@ -25,6 +25,13 @@ ClipEditKind parseClipEditKind(const std::string& name, bool& ok); // "move", "s
 // An audio file edited into a new float WAV at its own rate. note: what a user should know (clipping).
 bool editAudioFile(const std::string& in, const std::string& out, const ClipEdit& edit, std::string& error, std::string* note = nullptr);
 
+// Cuts an audio file in two at `seconds` into new float WAVs at its own rate: `before` holds what comes before
+// the cut, `after` what comes after it. Both are as long as the original, silent elsewhere, so each still
+// plays at its place from the song's start (a track plays one file from 0:00). A 2 ms complementary
+// crossfade at the cut keeps either part from clicking when it is moved or muted on its own, and the two
+// add up to the original (to float rounding).
+bool splitAudioFile(const std::string& in, double seconds, const std::string& before, const std::string& after, std::string& error);
+
 // A MIDI part edited: moved, notes in (silence) or out of (keep) the range removed, velocities scaled
 // by the gain. Fades and normalising are for audio.
 bool editMidiClip(MidiClip& clip, const ClipEdit& edit, std::string& error);

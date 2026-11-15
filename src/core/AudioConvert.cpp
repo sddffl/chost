@@ -8,6 +8,7 @@
 #include "dr_wav.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -222,40 +223,38 @@ std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const
     if (info.sampleRate == engineRate && ascii && isWav)
         return path;
 
-    // Build a unique, pure-ASCII filename based on 64-bit hash
+    // The cache key (64-bit FNV-1a): the full path, when the file was last written, its size and the engine
+    // rate. Two files with the same name in different folders (every song has a "vocals" stem), a file
+    // rewritten in place (stems separated again, a re-export) and another engine rate each get a cached copy
+    // of their own; a stale copy is never played.
     uint64_t hash = 14695981039346656037ULL;
+    auto mix = [&hash](uint64_t value) {
+        for (int i = 0; i < 8; ++i)
+        {
+            hash ^= (value >> (8 * i)) & 0xFFu;
+            hash *= 1099511628211ULL;
+        }
+    };
     for (unsigned char c : path)
     {
         hash ^= c;
         hash *= 1099511628211ULL;
     }
-
     std::error_code ec;
-    auto lastWrite = fs::last_write_time(fs::u8path(path), ec);
-    if (!ec)
-    {
-        uint64_t timeVal = static_cast<uint64_t>(lastWrite.time_since_epoch().count());
-        hash ^= timeVal;
-        hash *= 1099511628211ULL;
-    }
-    hash ^= engineRate;
-    hash *= 1099511628211ULL;
+    const auto lastWrite = fs::last_write_time(fs::u8path(path), ec);
+    mix(ec ? 0 : static_cast<uint64_t>(lastWrite.time_since_epoch().count()));
+    const auto size = fs::file_size(fs::u8path(path), ec);
+    mix(ec ? 0 : static_cast<uint64_t>(size));
+    mix(engineRate);
 
     fs::create_directories(fs::u8path(cacheDir), ec);
 
-    // Keep original filename if ASCII (so Carla shows recognizable track/plugin names),
-    // otherwise use safe pure-ASCII hash for Chinese / multibyte paths.
-    fs::path outPath;
-    if (ascii)
-    {
-        outPath = fs::u8path(cacheDir) / (fs::u8path(path).stem().string() + ".wav");
-    }
-    else
-    {
-        char hexBuf[32];
-        std::snprintf(hexBuf, sizeof(hexBuf), "chost_%016llx.wav", static_cast<unsigned long long>(hash));
-        outPath = fs::u8path(cacheDir) / hexBuf;
-    }
+    // An ASCII name keeps its stem in front of the key, so Carla still shows a recognisable plugin name;
+    // other names (Chinese, ...) are the key alone, as Carla 2.5 on Windows can't open them.
+    char key[24];
+    std::snprintf(key, sizeof(key), "%016llx", static_cast<unsigned long long>(hash));
+    const fs::path outPath = fs::u8path(cacheDir) / (ascii ? fs::u8path(path).stem().string() + "." + key + ".wav"
+                                                           : std::string("chost_") + key + ".wav");
 
     // Cache hit: avoid re-decoding
     if (fs::exists(outPath, ec))
@@ -279,11 +278,15 @@ std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const
     format.sampleRate = engineRate;
     format.bitsPerSample = 32;
 
+    // written under a name of its own and renamed when complete: a crash (or another chost) in the middle
+    // of writing must not leave a half file that later looks like a cache hit
+    const fs::path partPath = fs::u8path(outPath.u8string() + ".part" +
+                                         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     drwav wav;
 #ifdef _WIN32
-    const bool opened = drwav_init_file_write_w(&wav, outPath.wstring().c_str(), &format, nullptr);
+    const bool opened = drwav_init_file_write_w(&wav, partPath.wstring().c_str(), &format, nullptr);
 #else
-    const bool opened = drwav_init_file_write(&wav, outPath.string().c_str(), &format, nullptr);
+    const bool opened = drwav_init_file_write(&wav, partPath.string().c_str(), &format, nullptr);
 #endif
     if (!opened)
     {
@@ -296,8 +299,21 @@ std::string prepareAudioFile(const std::string& path, uint32_t engineRate, const
 
     if (written != frames)
     {
+        fs::remove(partPath, ec);
         error = "could not write " + outPath.u8string();
         return {};
+    }
+    fs::rename(partPath, outPath, ec);
+    if (ec)
+    {
+        // another chost finished the same copy first (Windows won't rename over it): use that one
+        std::error_code ignored;
+        fs::remove(partPath, ignored);
+        if (!fs::exists(outPath, ignored))
+        {
+            error = "could not write " + outPath.u8string();
+            return {};
+        }
     }
     return outPath.u8string();
 }

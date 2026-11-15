@@ -564,14 +564,12 @@ void SampleEditor::mousePressEvent(QMouseEvent* event)
 
         if (fTool == Tool::Scissors)
         {
-            // Scissors tool -> split clip
+            // Scissors tool -> cut the clip in two at the (snapped) click
             if (fTrackIndex >= 0 && clickTime > 0.0 && clickTime < fDuration)
             {
                 const double splitSec = snapTime(clickTime);
-                chost::ClipEdit edit;
-                edit.kind = chost::ClipEditKind::Move; // or split
-                edit.seconds = splitSec;
-                emit clipEditRequested(fTrackIndex, edit, QStringLiteral("剪刀切割片段"));
+                if (splitSec > 0.0 && splitSec < fDuration)
+                    emit splitRequested(fTrackIndex, splitSec);
             }
         }
         else

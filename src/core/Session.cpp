@@ -127,6 +127,59 @@ int Session::addTrack(const std::string& name, TrackKind kind)
     return static_cast<int>(fTracks.size()) - 1;
 }
 
+int Session::duplicateTrack(int track, const std::string& name)
+{
+    if (!fReady || !valid(track) || fTracks[track].kind != TrackKind::Audio)
+    {
+        fError = "only an audio track can be duplicated";
+        return -1;
+    }
+    const Track source = fTracks[track];
+    Track t;
+    t.kind = TrackKind::Audio;
+    t.name = name;
+    t.uid = fNextUid++;
+    std::vector<uint> added; // every plugin made here, to take back on failure
+    auto fail = [&](const std::string& why) {
+        fError = why;
+        std::sort(added.rbegin(), added.rend());
+        for (uint id : added)
+            removePlugin(id);
+        reroute();
+        return -1;
+    };
+    if (!addFader(name, t.fader))
+        return fail(fError);
+    added.push_back(t.fader);
+    for (uint insert : source.inserts)
+    {
+        // a copy that sounds different would make the cut audible: all of them or nothing
+        if (!fHost.clonePlugin(insert))
+            return fail("could not copy the insert " + fHost.slot(insert).name + ": " + fHost.lastError());
+        registerAdded();
+        const uint id = fHost.pluginCount() - 1;
+        added.push_back(id);
+        fHost.setActive(id, fHost.slot(insert).active);
+        t.inserts.push_back(id);
+    }
+    t.volume = source.volume;
+    t.pan = source.pan;
+    t.muted = source.muted;
+    t.solo = source.solo;
+    t.colour = source.colour;
+    t.role = source.role;
+    t.output = source.output;
+    for (const Send& send : source.sends)
+    {
+        if (!addSendGain(t, send.bus, send.level))
+            return fail(fError);
+        added.push_back(t.sends.back().gain);
+    }
+    fTracks.insert(fTracks.begin() + track + 1, t);
+    reroute();
+    return track + 1;
+}
+
 bool Session::setTrackFile(int track, const std::string& path)
 {
     if (!valid(track))

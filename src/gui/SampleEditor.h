@@ -33,6 +33,7 @@ public:
 signals:
     void seekRequested(double seconds);
     void clipEditRequested(int trackIndex, const chost::ClipEdit& edit, const QString& description);
+    void splitRequested(int trackIndex, double seconds); // the scissors: cut the clip in two here
     void rangeChanged(double startSeconds, double endSeconds);
 
 protected:

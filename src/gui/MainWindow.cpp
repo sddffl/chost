@@ -719,6 +719,9 @@ QWidget* MainWindow::buildLowerZone()
     connect(fLowerZone->sampleEditor(), &SampleEditor::clipEditRequested, this, [this](int track, const chost::ClipEdit& edit, const QString& desc) {
         editClip(track, edit, desc);
     });
+    connect(fLowerZone->sampleEditor(), &SampleEditor::splitRequested, this, [this](int track, double seconds) {
+        splitClip(track, seconds);
+    });
     connect(fLowerZone->sampleEditor(), &SampleEditor::rangeChanged, this, [this](double s, double e) {
         if (fArrange)
             fArrange->setRange(s, e);
@@ -1794,6 +1797,71 @@ bool MainWindow::editClip(int track, const chost::ClipEdit& edit, const QString&
     }
     statusBar()->showMessage(note.empty() ? QStringLiteral("%1：完成（Ctrl+Z 撤销）").arg(what)
                                           : QStringLiteral("%1：完成，但片段峰值超过 0 dB，会削波，最好把音量调小一点").arg(what),
+                             8000);
+    return true;
+}
+
+bool MainWindow::splitClip(int track, double seconds)
+{
+    const QString what = QStringLiteral("剪刀切割片段");
+    const std::vector<chost::Track>& tracks = fSession.tracks();
+    if (track < 0 || track >= static_cast<int>(tracks.size()) || tracks[static_cast<size_t>(track)].kind != chost::TrackKind::Audio ||
+        tracks[static_cast<size_t>(track)].file.empty())
+    {
+        showError(QStringLiteral("只能切割音频轨上的片段"));
+        return false;
+    }
+    const QString name = QString::fromStdString(tracks[static_cast<size_t>(track)].name);
+    const QString in = QString::fromStdString(tracks[static_cast<size_t>(track)].file);
+    if (seconds <= 0.0 || seconds >= clip(in).seconds)
+    {
+        showError(QStringLiteral("切割点不在片段里"));
+        return false;
+    }
+
+    // two new files, as every clip edit makes, so undo can go back to the one before
+    const QString folder = editFolder();
+    QDir().mkpath(folder);
+    QString stem = QFileInfo(in).completeBaseName();
+    stem.remove(QRegularExpression(QStringLiteral("_编辑\\d+$")));
+    auto freshFile = [&](const QString& taken) {
+        QString out;
+        for (int n = 1; out.isEmpty() || out == taken || QFileInfo::exists(out); ++n)
+            out = QDir(folder).filePath(QStringLiteral("%1_编辑%2.wav").arg(stem).arg(n));
+        return out;
+    };
+    const QString before = freshFile({});
+    const QString after = freshFile(before);
+    std::string error;
+    if (!chost::splitAudioFile(in.toStdString(), seconds, before.toStdString(), after.toStdString(), error))
+    {
+        showError(QStringLiteral("%1没有做成：%2").arg(what, QString::fromStdString(error)));
+        return false;
+    }
+
+    const chost::SessionState previous = fSession.state();
+    closeEditors(); // plugin ids shift when the track's player is replaced
+    const int copy = fSession.duplicateTrack(track, QStringLiteral("%1（切割后）").arg(name).toStdString());
+    if (copy < 0 || !fSession.setTrackFile(track, before.toStdString()) || !fSession.setTrackFile(copy, after.toStdString()))
+    {
+        const QString why = QString::fromStdString(fSession.lastError());
+        fSession.restore(previous);
+        refreshTracks();
+        QFile::remove(before);
+        QFile::remove(after);
+        showError(QStringLiteral("%1没有做成：%2").arg(what, why));
+        return false;
+    }
+    fClips.remove(before);
+    fClips.remove(after);
+    refreshTracks();
+    selectTrack(track);
+    // the editor showed the file before the cut
+    if (fLowerZone && fLowerZone->sampleEditor() && fLowerZone->sampleEditor()->currentTrack() == track)
+        fLowerZone->sampleEditor()->setTrack(track, name, before, trackColour(track));
+    fHistory->record(what);
+    statusBar()->showMessage(QStringLiteral("%1：前段留在“%2”，后段在新轨道“%3”（Ctrl+Z 撤销）")
+                                 .arg(what, name, QString::fromStdString(fSession.tracks()[static_cast<size_t>(copy)].name)),
                              8000);
     return true;
 }

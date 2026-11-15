@@ -108,6 +108,10 @@ public:
     float masterVolume() const { return fMasterVolume; }
 
     int addTrack(const std::string& name, TrackKind kind = TrackKind::Audio); // the new track's index, -1 on error
+    // A new audio track right after `track` that mixes like it: fader, pan, mute and solo, colour, role, the
+    // bus it feeds, its sends, and copies of its inserts with their settings; no file yet. Its index, or -1
+    // with lastError() (nothing is left behind then). For the second half of a cut clip.
+    int duplicateTrack(int track, const std::string& name);
     bool setTrackFile(int track, const std::string& path);      // loads or replaces the track's audio or MIDI file
     bool reloadMidiFile(int track, const std::string& path);    // an edited MIDI file, without replacing the player
     bool setInstrument(int track, const std::string& spec);     // loads or replaces an instrument track's instrument

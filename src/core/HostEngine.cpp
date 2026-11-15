@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <sstream>
 
@@ -397,6 +398,9 @@ std::vector<PluginEntry> parseDiscovery(const std::string& output, const PluginE
 // ---------------------------------------------------------------------------------------------------------------------
 // engine
 
+// how often a run of transport jumps (scrubbing) may refresh the audio file players, see relocate()
+static constexpr auto kPlayerRefreshMs = std::chrono::milliseconds(100);
+
 HostEngine::HostEngine() = default;
 
 HostEngine::~HostEngine()
@@ -473,8 +477,11 @@ void HostEngine::idle()
         fOfflineIdle();
         return;
     }
-    if (isRunning())
-        carla_engine_idle(fHandle);
+    if (!isRunning())
+        return;
+    carla_engine_idle(fHandle);
+    if (fPlayersStale && std::chrono::steady_clock::now() - fLastPlayerRefresh >= kPlayerRefreshMs)
+        refreshPlayers();
 }
 
 std::string HostEngine::lastError() const
@@ -595,6 +602,12 @@ bool HostEngine::loadMidiFile(const std::string& path)
 }
 
 bool HostEngine::removePlugin(uint id) { return carla_remove_plugin(fHandle, id); }
+
+bool HostEngine::clonePlugin(uint id)
+{
+    fError.clear();
+    return fHandle != nullptr && carla_clone_plugin(fHandle, id);
+}
 bool HostEngine::removeAllPlugins() { return carla_remove_all_plugins(fHandle); }
 
 bool HostEngine::movePlugin(uint id, int delta)
@@ -727,20 +740,38 @@ bool HostEngine::isPlaying() const
 uint64_t HostEngine::transportFrame() const { return isRunning() ? carla_get_current_transport_frame(fHandle) : 0; }
 void HostEngine::relocate(uint64_t frame)
 {
-    if (fHandle == nullptr)
+    if (!isRunning())
         return;
+    // no shortcut when the transport is already there: a player that was just loaded sometimes stays silent
+    // until its file is set again, and relocate(0) before the first play() is what gets it going
     carla_transport_relocate(fHandle, frame);
 
-    // Refresh audiofile streaming pool buffers so seeking backward (or any jump)
-    // immediately flushes Carla's internal read pool and resumes playback at the new frame.
+    if (std::chrono::steady_clock::now() - fLastPlayerRefresh >= kPlayerRefreshMs)
+        refreshPlayers();
+    else
+        fPlayersStale = true; // scrubbing: idle() catches up once the jumps slow down
+}
+
+void HostEngine::refreshPlayers()
+{
+    fPlayersStale = false;
+    fLastPlayerRefresh = std::chrono::steady_clock::now();
+    // setting the file again flushes the player's read-ahead pool, so it plays from the new position. Only
+    // carla's audio file players need it: the MIDI file player seeks by itself, and a player set aside for
+    // undo (inactive) is silent anyway.
     const uint32_t count = carla_get_current_plugin_count(fHandle);
     for (uint32_t i = 0; i < count; ++i)
     {
+        const CarlaPluginInfo* info = carla_get_plugin_info(fHandle, i);
+        if (info == nullptr || info->label == nullptr || std::strcmp(info->label, "audiofile") != 0)
+            continue;
+        if (carla_get_internal_parameter_value(fHandle, i, PARAMETER_ACTIVE) < 0.5f)
+            continue;
         const char* file = carla_get_custom_data_value(fHandle, i, CUSTOM_DATA_TYPE_STRING, "file");
-        if (file != nullptr && *file != '\0')
-        {
-            carla_set_custom_data(fHandle, i, CUSTOM_DATA_TYPE_STRING, "file", file);
-        }
+        if (file == nullptr || *file == '\0')
+            continue;
+        const std::string path = file; // carla's string may go when the file is set
+        carla_set_custom_data(fHandle, i, CUSTOM_DATA_TYPE_STRING, "file", path.c_str());
     }
 }
 

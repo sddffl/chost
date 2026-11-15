@@ -12,6 +12,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kRamp = 0.005; // seconds: a gain change slides in this long, never a click
+constexpr double kSplitFade = 0.002; // seconds: the crossfade at a cut, centred on it
 
 double fromDb(double db)
 {
@@ -174,6 +175,41 @@ bool editAudioFile(const std::string& in, const std::string& out, const ClipEdit
         }
     }
     return writeWavFile(out, samples, info.channels, info.sampleRate, error);
+}
+
+bool splitAudioFile(const std::string& in, double seconds, const std::string& before, const std::string& after, std::string& error)
+{
+    std::vector<float> samples;
+    AudioFileInfo info;
+    if (!readAudioFile(in, samples, info))
+    {
+        error = "could not read " + in;
+        return false;
+    }
+    const size_t channels = info.channels;
+    const size_t frames = samples.size() / channels;
+    const double cut = seconds * info.sampleRate;
+    if (!(cut > 0.0) || cut >= static_cast<double>(frames))
+    {
+        error = "the cut is outside the clip";
+        return false;
+    }
+    const double half = kSplitFade * info.sampleRate / 2.0;
+    std::vector<float> first(samples.size()), second(samples.size());
+    for (size_t f = 0; f < frames; ++f)
+    {
+        // the share of the part after the cut: 0 before the crossfade, 1 after it, a straight line through it
+        const double x = (static_cast<double>(f) + 0.5 - (cut - half)) / (2.0 * half);
+        const float share = static_cast<float>(std::clamp(x, 0.0, 1.0));
+        for (size_t c = 0; c < channels; ++c)
+        {
+            const size_t i = f * channels + c;
+            second[i] = samples[i] * share;
+            first[i] = samples[i] - second[i];
+        }
+    }
+    return writeWavFile(before, first, info.channels, info.sampleRate, error) &&
+           writeWavFile(after, second, info.channels, info.sampleRate, error);
 }
 
 bool editMidiClip(MidiClip& clip, const ClipEdit& edit, std::string& error)

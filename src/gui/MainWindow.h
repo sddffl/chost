@@ -95,6 +95,10 @@ public:
     // a clip edit on a track (its range from the arrangement's), into a new file the track then plays;
     // false, said in an error, when it can't be done
     bool editClip(int track, const chost::ClipEdit& edit, const QString& what);
+    // the scissors: an audio track's clip cut in two at seconds. The track keeps what comes before the cut,
+    // a new track right below it, mixing the same way (inserts copied with their settings), gets the rest;
+    // one undo step. False, said in an error, when it can't be done.
+    bool splitClip(int track, double seconds);
     int addMarker(double seconds, const QString& name = {}); // its index
     void setRange(double start, double end);                  // the timeline's selection; equal: none
     double playhead() const;

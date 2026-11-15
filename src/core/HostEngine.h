@@ -5,6 +5,7 @@
 
 #include "CarlaHost.h"
 
+#include <chrono>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -108,6 +109,7 @@ public:
     bool loadAudioFile(const std::string& path); // in rack mode it is moved to the first slot
     bool loadMidiFile(const std::string& path);  // carla's MIDI file player, appended at the end
     bool removePlugin(uint id);
+    bool clonePlugin(uint id); // a copy with the same state (carla's clone), appended at the end
     bool removeAllPlugins();
     bool movePlugin(uint id, int delta);
     uint pluginCount() const;
@@ -155,6 +157,10 @@ public:
     void pause();
     bool isPlaying() const;
     uint64_t transportFrame() const;
+    // Moves the transport. Carla 2.5's audio file player goes silent after a jump backwards until its file
+    // is set again, so the audio players (only those, and only active ones) are refreshed: at once for a
+    // single jump, at most every kPlayerRefreshMs while jumps keep coming (scrubbing), and once more by
+    // idle() after the last one.
     void relocate(uint64_t frame);
     bool saveProject(const std::string& path);
     bool loadProject(const std::string& path);
@@ -173,6 +179,7 @@ private:
     bool connectGroups(uint fromGroup, uint toGroup);
     int groupOfPlugin(uint plugin) const;
     int groupNamed(const std::string& name) const;
+    void refreshPlayers();
 
     CarlaHostHandle fHandle = nullptr;
     Mode fMode = Mode::Rack;
@@ -185,6 +192,8 @@ private:
     std::string fDriver;
     std::string fError; // errors from chost itself, carla keeps its own
     HostEventFunc fEventFunc;
+    bool fPlayersStale = false;                                   // a jump not yet followed by a refresh
+    std::chrono::steady_clock::time_point fLastPlayerRefresh{};
 };
 
 } // namespace chost
