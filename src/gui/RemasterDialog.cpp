@@ -1,6 +1,7 @@
 #include "RemasterDialog.h"
 
 #include "Resources.h"
+#include "core/RemasterProtocol.h"
 
 #include <QCloseEvent>
 #include <QDesktopServices>
@@ -16,6 +17,8 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 RemasterDialog::RemasterDialog(const QString& trackName, const QString& audioFile, QWidget* parent)
     : QDialog(parent)
@@ -233,7 +236,10 @@ void RemasterDialog::startRemaster()
     fPending.clear();
     fProgress->setValue(0);
     fLog->clear();
-    log(QStringLiteral("> %1 %2").arg(python, args.join(QLatin1Char(' '))));
+    QStringList shown;
+    for (const QString& a : args)
+        shown << (a.contains(QLatin1Char(' ')) ? QLatin1Char('"') + a + QLatin1Char('"') : a);
+    log(QStringLiteral("> %1 %2").arg(python, shown.join(QLatin1Char(' '))));
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
@@ -263,75 +269,51 @@ void RemasterDialog::readOutput()
     int newline;
     while ((newline = fPending.indexOf('\n')) >= 0)
     {
-        const QString line = QString::fromUtf8(fPending.left(newline)).trimmed();
+        // not trimmed before parsing: the workflow indents the lines of the tools it runs, and those
+        // (chost_transcribe.py's "MIDI <file>\t<note count>"...) mean something else
+        const QByteArray raw = fPending.left(newline);
         fPending.remove(0, newline + 1);
+        const QString line = QString::fromUtf8(raw).trimmed();
         if (line.isEmpty())
             continue;
 
-        if (line.startsWith(QLatin1String("PROGRESS ")))
+        using Kind = chost::RemasterEvent::Kind;
+        const chost::RemasterEvent e = chost::parseRemasterLine(raw.toStdString());
+        const QString role = QString::fromStdString(e.role);
+        const QString path = QString::fromStdString(e.path);
+        switch (e.kind)
         {
-            const QString rest = line.mid(9).trimmed();
-            const int space = rest.indexOf(QLatin1Char(' '));
-            if (space > 0)
+        case Kind::Progress:
+            fProgress->setValue(e.percent);
+            fStatus->setText(QString::fromStdString(e.label));
+            emit progressUpdated(e.percent, QString::fromStdString(e.label));
+            break;
+        case Kind::Analyze:
+            emit songAnalyzed(e.number, QString::fromStdString(e.label));
+            break;
+        case Kind::Stem:
+            fDiscoveredStems.append(qMakePair(QString::fromStdString(e.label), path));
+            emit stemReady(role, QString::fromStdString(e.label), path);
+            break;
+        case Kind::Tuned:
+            emit vocalTuned(role, path);
+            break;
+        case Kind::Midi:
+            if (!std::any_of(fDiscoveredMidis.begin(), fDiscoveredMidis.end(), [&](const QPair<QString, QString>& m) { return m.second == path; }))
             {
-                const int pct = rest.left(space).toInt();
-                const QString msg = rest.mid(space + 1).trimmed();
-                fProgress->setValue(pct);
-                fStatus->setText(msg);
-                emit progressUpdated(pct, msg);
+                fDiscoveredMidis.append(qMakePair(role, path));
+                emit midiReady(role, path);
             }
-        }
-        else if (line.startsWith(QLatin1String("ANALYZE ")))
-        {
-            const QStringList parts = line.mid(8).trimmed().split(QLatin1Char('\t'));
-            if (!parts.isEmpty())
-            {
-                const double bpm = parts.value(0).toDouble();
-                const QString key = parts.value(1);
-                emit songAnalyzed(bpm, key);
-            }
-        }
-        else if (line.startsWith(QLatin1String("STEM ")))
-        {
-            const QStringList parts = line.mid(5).trimmed().split(QLatin1Char('\t'));
-            if (parts.size() >= 3)
-            {
-                const QString id = parts[0];
-                const QString label = parts[1];
-                const QString path = parts[2];
-                fDiscoveredStems.append(qMakePair(label, path));
-                emit stemReady(id, label, path);
-            }
-        }
-        else if (line.startsWith(QLatin1String("TUNED ")))
-        {
-            const QStringList parts = line.mid(6).trimmed().split(QLatin1Char('\t'));
-            if (parts.size() >= 2)
-            {
-                emit vocalTuned(parts[0], parts[1]);
-            }
-        }
-        else if (line.startsWith(QLatin1String("MIDI ")))
-        {
-            const QStringList parts = line.mid(5).trimmed().split(QLatin1Char('\t'));
-            if (parts.size() >= 2)
-            {
-                fDiscoveredMidis.append(qMakePair(parts[0], parts[1]));
-                emit midiReady(parts[0], parts[1]);
-            }
-        }
-        else if (line.startsWith(QLatin1String("BALANCE ")))
-        {
-            const QStringList parts = line.mid(8).trimmed().split(QLatin1Char('\t'));
-            if (parts.size() >= 3)
-            {
-                emit trackBalanced(parts[0], parts[1].toFloat(), parts[2].toFloat());
-            }
-        }
-        else if (line.startsWith(QLatin1String("MASTER ")))
-        {
-            fMasterPath = line.mid(7).trimmed();
+            break;
+        case Kind::Balance:
+            emit trackBalanced(role, static_cast<float>(e.number), static_cast<float>(e.pan));
+            break;
+        case Kind::Master:
+            fMasterPath = path;
             emit masterReady(fMasterPath);
+            break;
+        case Kind::None:
+            break;
         }
 
         log(line);

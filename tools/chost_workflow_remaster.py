@@ -81,7 +81,11 @@ def get_desktop_dir():
     return desktop
 
 
-def run_command(cmd, desc=""):
+def run_command(cmd, desc="", span=None):
+    """Runs one of the tools; returns (exit code, its lines). What it prints goes on to chost indented, as
+    log lines only: its own PROGRESS, MIDI, TUNED... lines mean something else than the workflow's (chost_
+    transcribe.py prints "MIDI <file>\t<note count>"), and chost reads only the workflow's. With span
+    (lo, hi) the tool's progress becomes the workflow's, between lo and hi."""
     if desc:
         log(f">>> {desc}")
     proc = subprocess.Popen(
@@ -95,9 +99,20 @@ def run_command(cmd, desc=""):
     lines = []
     for line in iter(proc.stdout.readline, ""):
         line_clean = line.strip()
-        if line_clean:
-            lines.append(line_clean)
-            print(line_clean, flush=True)
+        if not line_clean:
+            continue
+        lines.append(line_clean)
+        if line_clean.startswith("PROGRESS "):
+            if span:
+                parts = line_clean.split(" ", 2)
+                try:
+                    pct = float(parts[1])
+                except (IndexError, ValueError):
+                    continue
+                progress(span[0] + (span[1] - span[0]) * min(max(pct, 0.0), 100.0) / 100.0,
+                         f"{desc.rstrip('.。…')}：{parts[2] if len(parts) > 2 else ''}")
+            continue
+        print("    " + line_clean, flush=True)
     proc.wait()
     return proc.returncode, lines
 
@@ -136,7 +151,7 @@ def separate_audio(input_file, out_dir, level="finest", model_dir=None):
     if model_dir:
         cmd.extend(["--model-dir", model_dir])
 
-    code, lines = run_command(cmd, "正在执行 AI 细分分轨（最多 14 轨）...")
+    code, lines = run_command(cmd, "正在执行 AI 细分分轨（最多 14 轨）...", span=(20, 45))
     stems = {}
     for l in lines:
         if l.startswith("STEM "):
@@ -144,6 +159,8 @@ def separate_audio(input_file, out_dir, level="finest", model_dir=None):
             if len(parts) >= 3:
                 stem_id = parts[0].replace("STEM ", "").strip()
                 stems[stem_id] = parts[2].strip()
+                # the separation's line was passed on indented: say it again as the workflow's own
+                print(f"STEM {stem_id}\t{parts[1].strip() or STEM_LABELS.get(stem_id, stem_id)}\t{stems[stem_id]}", flush=True)
     # also scan directory in case
     for f in os.listdir(out_dir):
         if f.endswith(".wav"):
@@ -157,49 +174,56 @@ def separate_audio(input_file, out_dir, level="finest", model_dir=None):
     return stems
 
 
+def share(lo, hi, index, count):
+    """The index-th of count equal parts of the progress from lo to hi."""
+    width = (hi - lo) / max(count, 1)
+    return (lo + width * index, lo + width * (index + 1))
+
+
 def tune_vocals(stems, key, out_dir):
     tuned_stems = dict(stems)
-    for role in ["lead", "vocals", "backing"]:
-        if role in stems and os.path.exists(stems[role]):
-            in_file = stems[role]
-            out_file = os.path.join(out_dir, f"tuned_{role}.wav")
-            strength = "0.90" if role == "backing" else "0.85"
-            speed = "15" if role == "backing" else "20"
-            cmd = [
-                PYTHON_EXE,
-                os.path.join(TOOLS_DIR, "chost_tune.py"),
-                "--input", in_file,
-                "--output", out_file,
-                "--key", key,
-                "--scale", "smart",
-                "--strength", strength,
-                "--speed", speed
-            ]
-            code, lines = run_command(cmd, f"正在对 {role}（{'和声' if role == 'backing' else '主唱'}）进行智能修音（调性：{key}）...")
-            if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
-                tuned_stems[role] = out_file
-                print(f"TUNED {role}\t{out_file}", flush=True)
+    roles = [r for r in ["lead", "vocals", "backing"] if r in stems and os.path.exists(stems[r])]
+    for n, role in enumerate(roles):
+        in_file = stems[role]
+        out_file = os.path.join(out_dir, f"tuned_{role}.wav")
+        strength = "0.90" if role == "backing" else "0.85"
+        speed = "15" if role == "backing" else "20"
+        cmd = [
+            PYTHON_EXE,
+            os.path.join(TOOLS_DIR, "chost_tune.py"),
+            "--input", in_file,
+            "--output", out_file,
+            "--key", key,
+            "--scale", "smart",
+            "--strength", strength,
+            "--speed", speed
+        ]
+        code, lines = run_command(cmd, f"正在对 {role}（{'和声' if role == 'backing' else '主唱'}）进行智能修音（调性：{key}）...", span=share(50, 65, n, len(roles)))
+        if code == 0 and os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
+            tuned_stems[role] = out_file
+            print(f"TUNED {role}\t{out_file}", flush=True)
     return tuned_stems
 
 
 def transcribe_stems(stems, tempo, out_dir):
     midi_files = {}
-    for role in ["bass", "piano", "guitar"]:
-        if role in stems and os.path.exists(stems[role]):
-            in_file = stems[role]
-            out_mid = os.path.join(out_dir, f"{role}.mid")
-            cmd = [
-                PYTHON_EXE,
-                os.path.join(TOOLS_DIR, "chost_transcribe.py"),
-                "--input", in_file,
-                "--output", out_mid,
-                "--role", role,
-                "--tempo", str(tempo)
-            ]
-            code, lines = run_command(cmd, f"正在将伴奏 {role} 转为高精度 MIDI...")
-            if os.path.exists(out_mid) and os.path.getsize(out_mid) > 50:
-                midi_files[role] = out_mid
-                print(f"MIDI {role}\t{out_mid}", flush=True)
+    roles = [r for r in ["bass", "piano", "guitar"] if r in stems and os.path.exists(stems[r])]
+    for n, role in enumerate(roles):
+        in_file = stems[role]
+        out_mid = os.path.join(out_dir, f"{role}.mid")
+        cmd = [
+            PYTHON_EXE,
+            os.path.join(TOOLS_DIR, "chost_transcribe.py"),
+            "--input", in_file,
+            "--output", out_mid,
+            "--role", role,
+            "--tempo", str(tempo)
+        ]
+        code, lines = run_command(cmd, f"正在将伴奏 {role} 转为高精度 MIDI...", span=share(70, 80, n, len(roles)))
+        # code 0: a file left from an earlier run is not this run's result
+        if code == 0 and os.path.exists(out_mid) and os.path.getsize(out_mid) > 50:
+            midi_files[role] = out_mid
+            print(f"MIDI {role}\t{out_mid}", flush=True)
     return midi_files
 
 

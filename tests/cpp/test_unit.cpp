@@ -6,6 +6,7 @@
 #include "check.h"
 #include "core/AudioConvert.h"
 #include "core/ClipEdit.h"
+#include "core/RemasterProtocol.h"
 #include "core/Transport.h"
 
 #include <chrono>
@@ -155,6 +156,38 @@ void testSplit(const fs::path& root)
     CHECK(!splitAudioFile(in, 0.0, before, after, error) && !splitAudioFile(in, 9.0, before, after, error), "cuts at 0 and past the end are refused");
 }
 
+// What the remaster dialog takes from the workflow's output. The workflow passes on what the tools it runs
+// print, and chost_transcribe.py's "MIDI <file>\t<note count>" was read as a MIDI file named "1077".
+void testRemasterLines()
+{
+    std::printf("remaster workflow lines\n");
+    using Kind = RemasterEvent::Kind;
+    const std::string spaced = "C:\\Users\\A B\\My Song_remaster_work\\bass.mid";
+
+    RemasterEvent e = parseRemasterLine("MIDI bass\t" + spaced);
+    CHECK(e.kind == Kind::Midi && e.role == "bass" && e.path == spaced, "MIDI <role>\\t<path with spaces>: role %s, path %s", e.role.c_str(), e.path.c_str());
+    e = parseRemasterLine("MIDI " + spaced + "\t1077");
+    CHECK(e.kind == Kind::None, "chost_transcribe.py's MIDI <path>\\t<note count> is not a MIDI event");
+    e = parseRemasterLine("MIDI /home/a b/piano.mid\t360\r");
+    CHECK(e.kind == Kind::None, "... nor with a Unix path and a CR");
+    e = parseRemasterLine("    MIDI bass\t/x/bass.mid");
+    CHECK(e.kind == Kind::None, "an indented line (a tool's, passed on) is never an event");
+    e = parseRemasterLine("TUNED 0.0100\t0,0,60.12,60.20");
+    CHECK(e.kind == Kind::None, "chost_tune.py's TUNED <hop>\\t<curve> is not a tuned vocal");
+    e = parseRemasterLine("TUNED lead\t/tmp/my work/tuned_lead.wav");
+    CHECK(e.kind == Kind::Tuned && e.role == "lead" && e.path == "/tmp/my work/tuned_lead.wav", "TUNED <role>\\t<path with spaces>");
+    e = parseRemasterLine("STEM kick\t底鼓\t/tmp/my work/stems/song_kick.wav");
+    CHECK(e.kind == Kind::Stem && e.role == "kick" && e.label == "底鼓" && e.path == "/tmp/my work/stems/song_kick.wav", "STEM <id>\\t<label>\\t<path with spaces>");
+    e = parseRemasterLine("MASTER /home/a b/Desktop/My Song_顶级母带.wav");
+    CHECK(e.kind == Kind::Master && e.path == "/home/a b/Desktop/My Song_顶级母带.wav", "MASTER <path with spaces>, all of it");
+    e = parseRemasterLine("PROGRESS 45 14 轨细分完成");
+    CHECK(e.kind == Kind::Progress && e.percent == 45 && e.label == "14 轨细分完成", "PROGRESS <pct> <message>");
+    e = parseRemasterLine("BALANCE guitar\t-1.4\t-0.65");
+    CHECK(e.kind == Kind::Balance && e.role == "guitar" && std::abs(e.number + 1.4) < 1e-9 && std::abs(e.pan + 0.65) < 1e-9, "BALANCE <role>\\t<dB>\\t<pan>");
+    e = parseRemasterLine("ANALYZE 128.0\tA minor");
+    CHECK(e.kind == Kind::Analyze && e.number == 128.0 && e.label == "A minor", "ANALYZE <bpm>\\t<key>");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -165,5 +198,6 @@ int main(int argc, char** argv)
     testCache(root / "cache-test");
     testBarBeat();
     testSplit(root);
+    testRemasterLines();
     return check::failures();
 }

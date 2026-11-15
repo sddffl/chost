@@ -7,6 +7,8 @@
    crash (IndexError); every stem must reach the master, run through the real chost_master.py.
 3. The separation model folder: --model-dir, else AUDIO_SEPARATOR_MODEL_DIR, else the separator's default;
    no developer path is set when the script is imported.
+4. What chost reads: a tool's own lines (chost_transcribe.py's "MIDI <file>\t<note count>", which chost
+   took for a MIDI file named "1077") are passed on indented, its progress within the step's share.
 Needs numpy, scipy and soundfile (the parts of the AI environment these steps use).
 """
 import contextlib
@@ -80,7 +82,8 @@ except Exception as e:
 
 print("3. the separation model folder")
 calls = []
-wf.run_command = lambda cmd, desc="": (calls.append((cmd, desc)), (0, []))[1]
+real_run_command = wf.run_command
+wf.run_command = lambda cmd, desc="", span=None: (calls.append((cmd, desc)), (0, []))[1]
 flag = lambda cmd: cmd[cmd.index("--model-dir") + 1] if "--model-dir" in cmd else None
 check("AUDIO_SEPARATOR_MODEL_DIR" not in os.environ, "importing the script sets no model folder")
 wf.separate_audio("x.wav", os.path.join(work, "s1"), model_dir="/from/chost")
@@ -95,6 +98,21 @@ wf.separate_audio("x.wav", os.path.join(work, "s4"))
 check(flag(calls[-1][0]) is None, "else no flag: the separator's own default")
 source = open(os.path.join(tools, "chost_workflow_remaster.py"), encoding="utf-8").read()
 check("AI_Models" not in source and "3090" not in source, "no developer path or GPU name in the script")
+
+print("4. what chost reads from the workflow")
+fake = os.path.join(work, "fake_tool.py")
+with open(fake, "w", encoding="utf-8") as f:
+    f.write("print('PROGRESS 50 listening')\nprint('MIDI /home/a b/My Song_remaster_work/bass.mid\\t1077')\n"
+            "print('TUNED 0.0100\\t0,60.1')\nprint('STEM kick\\tkick\\t/a b/k.wav')\nprint('DONE')\n")
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    code, lines = real_run_command([sys.executable, fake], "正在转谱...", span=(70, 80))
+shown = out.getvalue().splitlines()
+check(code == 0 and "MIDI /home/a b/My Song_remaster_work/bass.mid\t1077" in lines, "the tool's lines come back to the workflow as they were")
+check(not any(l.startswith(("MIDI", "TUNED", "STEM", "DONE")) for l in shown), "none of them reaches chost as an event of its own")
+check("    MIDI /home/a b/My Song_remaster_work/bass.mid\t1077" in shown, "they are in the log, indented")
+check(any(l.startswith("PROGRESS 75 ") for l in shown) and not any(l.startswith("PROGRESS 50") for l in shown),
+      "the tool's 50 % is the step's 75 % (" + "; ".join(l for l in shown if l.startswith("PROGRESS")) + ")")
 
 print(f"{'ALL PASSED' if failures == 0 else 'FAILED'} ({failures} failure{'' if failures == 1 else 's'})")
 sys.exit(1 if failures else 0)
