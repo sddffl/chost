@@ -92,6 +92,10 @@ public:
     // renderBlock() drives it one block at a time, as fast as the computer can, with the transport playing.
     bool startOffline(double sampleRate, uint32_t bufferSize);
     void renderBlock(float* left, float* right, uint32_t frames);
+    // How long the first renderBlock() waited for carla to apply the session's connections (ms), and
+    // whether that was seen (false: the probe couldn't be wired or timed out, a fixed wait was used).
+    double settleMilliseconds() const { return fSettleMs; }
+    bool settleObserved() const { return fSettleObserved; }
     Mode mode() const { return fMode; }
     void stop();
     bool isRunning() const;
@@ -186,6 +190,7 @@ private:
     int groupOfPlugin(uint plugin) const;
     int groupNamed(const std::string& name) const;
     void refreshPlayers();
+    void settleOffline(); // OfflineEngine.cpp: waits until carla's graph holds every connection made
 
     CarlaHostHandle fHandle = nullptr;
     Mode fMode = Mode::Rack;
@@ -199,6 +204,8 @@ private:
     std::string fDriver;
     std::string fError; // errors from chost itself, carla keeps its own
     HostEventFunc fEventFunc;
+    double fSettleMs = 0.0;
+    bool fSettleObserved = false;
     double fTempo = 120.0;
     double fBeatsPerBar = 4.0;
     double fBeatType = 4.0;

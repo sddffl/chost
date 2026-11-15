@@ -3,8 +3,9 @@
 //   chost-render --session song.chost --output mix.wav [--seconds S] [--rate HZ] [--bits 16|24|32]
 //                [--no-dither] [--solo T]... [--mute T]...
 //
-// Prints "PROGRESS <percent>" while rendering and "DONE <file>\t<seconds>\t<peak dB>" at the end, or
-// "ERROR <message>". --solo renders only the given tracks, in place of the session's own solos; --mute
+// Prints "SETTLED <ms>" once carla has applied the session's connections (see HostEngine::settleOffline;
+// "SETTLED <ms> fixed" when that couldn't be seen and a fixed wait was used), "PROGRESS <percent>" while
+// rendering and "DONE <file>\t<seconds>\t<peak dB>" at the end, or "ERROR <message>". --solo renders only the given tracks, in place of the session's own solos; --mute
 // leaves tracks out. 16 and 24 bit files are dithered (TPDF, one bit) unless --no-dither: rounding to the
 // nearest step instead would turn quiet fades and reverb tails into distortion. Runs in its own process so a plugin crashing during the render can't take chost down.
 
@@ -214,6 +215,11 @@ int main(int argc, char* argv[])
     {
         const uint32_t frames = uint32_t(std::min<uint64_t>(block, total - done));
         host.renderBlock(left.data(), right.data(), block);
+        if (done == 0)
+        {
+            std::printf("SETTLED %.0f%s\n", host.settleMilliseconds(), host.settleObserved() ? "" : " fixed");
+            std::fflush(stdout);
+        }
         for (uint32_t i = 0; i < frames; ++i)
             peak = std::max({peak, std::fabs(left[i]), std::fabs(right[i])});
         wav.write(left.data(), right.data(), frames);

@@ -9,6 +9,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -34,6 +36,11 @@ struct Offline {
     std::atomic<double> beatsPerBar{4.0};
     std::atomic<double> beatType{4.0};
 
+    // what the engine's audio inputs get: silence, except while settleOffline() looks for its probe
+    std::atomic<float> inputLevel{0.0f};
+    bool settled = false; // settleOffline() has run
+    bool offline = false; // carla has been told it renders offline
+
     // Until the render starts a stand-in audio thread keeps the engine turning with the transport
     // stopped: carla waits for the audio thread to take every added plugin and connection.
     std::thread pump;
@@ -58,8 +65,8 @@ struct Offline {
     void process(float* left, float* right, uint32_t frames)
     {
         updateTime();
-        std::vector<float> silence(frames, 0.0f);
-        float* ins[2] = {silence.data(), silence.data()};
+        std::vector<float> input(frames, inputLevel.load());
+        float* ins[2] = {input.data(), input.data()};
         float* outs[2] = {left, right};
         desc->process(plugin, ins, outs, frames, nullptr, 0);
     }
@@ -77,14 +84,20 @@ struct Offline {
         });
     }
 
-    void stopPump()
+    void haltPump()
     {
         if (!pumping)
             return;
         pumping = false;
         pump.join();
-        // the patchbay applies connection changes on a timer of its own, give it time for the last ones
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+
+    void stopPump()
+    {
+        haltPump();
+        if (offline)
+            return;
+        offline = true;
         // offline: plugins wait for their locks and file readers read on the spot instead of skipping
         if (desc->dispatcher != nullptr)
             desc->dispatcher(plugin, NATIVE_PLUGIN_OPCODE_OFFLINE_CHANGED, 0, 1, nullptr, 0.0f);
@@ -197,6 +210,63 @@ bool HostEngine::startOffline(double sampleRate, uint32_t bufferSize)
     return true;
 }
 
+// Carla applies changes to its graph (the session's connections) on a timer of its own, some tens of
+// milliseconds after they are made; a render that starts before that is silent from start to end. Nothing in
+// carla's API says when it has happened, so it is watched for: a probe is wired last, the engine's audio
+// input into a gain of its own (going nowhere, so it never reaches the mix), and the input gets a steady
+// signal. Once the probe's output meter shows it, the graph holds that connection and every one made before
+// it. A slow computer or a heavy project simply takes longer; the old fixed wait is only the fallback.
+//
+// Nothing may process while carla rebuilds its graph: under heavy load its graph doesn't survive that (it
+// asserts and crashes). So once the probe is taken in, the stand-in audio thread stops, as it did for the
+// old fixed wait, and a single block every 15 ms shows whether the rebuild has happened.
+void HostEngine::settleOffline()
+{
+    using namespace std::chrono;
+    auto* o = static_cast<Offline*>(fOffline);
+    constexpr auto kTimeout = seconds(60);
+    const auto start = steady_clock::now();
+    fSettleObserved = false;
+    if (addInternalPlugin("audiogain_s", "chost-render settle probe"))
+    {
+        const uint probe = pluginCount() - 1;
+        refreshPatchbay();
+        const int input = groupNamed("Audio Input");
+        const int target = groupOfPlugin(probe);
+        if (input >= 0 && target >= 0 && connectGroups(static_cast<uint>(input), static_cast<uint>(target)))
+        {
+            o->inputLevel = 1.0f;
+            std::this_thread::sleep_for(milliseconds(5)); // the stand-in audio thread takes the probe in
+            o->haltPump();
+            std::vector<float> left(o->bufferSize), right(o->bufferSize);
+            while (steady_clock::now() - start < kTimeout)
+            {
+                std::this_thread::sleep_for(milliseconds(15));
+                o->process(left.data(), right.data(), o->bufferSize);
+                if (carla_get_output_peak_value(fHandle, probe, true) > 0.5f)
+                {
+                    fSettleObserved = true;
+                    break;
+                }
+            }
+            o->inputLevel = 0.0f;
+            // carla ramps every gain to its value after a rebuild (what made the old fixed wait fade the first
+            // 50 ms of every export in): 100 ms of silence lets the ramps finish (they take about 40) and the
+            // probe's signal go, so the render is right from its first sample
+            const auto tail = static_cast<int>(std::ceil(0.1 * o->sampleRate / o->bufferSize));
+            for (int i = 0; i < tail; ++i)
+                o->process(left.data(), right.data(), o->bufferSize);
+        }
+    }
+    if (!fSettleObserved)
+    {
+        std::fprintf(stderr, "chost-render: could not see carla apply the connections, waiting a fixed 500 ms instead\n");
+        o->haltPump();
+        std::this_thread::sleep_for(milliseconds(500));
+    }
+    fSettleMs = duration<double, std::milli>(steady_clock::now() - start).count();
+}
+
 void HostEngine::renderBlock(float* left, float* right, uint32_t frames)
 {
     auto* o = static_cast<Offline*>(fOffline);
@@ -205,6 +275,11 @@ void HostEngine::renderBlock(float* left, float* right, uint32_t frames)
         std::memset(left, 0, frames * sizeof(float));
         std::memset(right, 0, frames * sizeof(float));
         return;
+    }
+    if (!o->settled)
+    {
+        o->settled = true;
+        settleOffline();
     }
     o->stopPump(); // the render takes over as the audio thread
     o->time.playing = true;
