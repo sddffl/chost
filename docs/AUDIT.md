@@ -61,6 +61,8 @@ tools/*.py ── run as subprocesses (ScriptJob), line-based stdout protocol
 | 16 | Low | The `.chost` save is **not atomic** (the Carla project is written first, then the session file) and depends on Carla's plugin numbering. Names containing a newline would corrupt the file. | `Session::save` |
 | 17 | Low | `setEventCallback(nullptr)` is called while Carla's threads may still be calling the callback (a race on shutdown). | `MainWindow::~MainWindow` |
 | 18 | Low: maintainability | `MainWindow` (3.9k lines) and `Control` (a friend class reaching into its internals) mix view, model and commands. The UI text is hard-coded in Chinese with no translation system, so there's no English UI. | `src/gui` |
+| 20 | **High: crash** (found while testing Phase 0) | **Building a large project quickly crashes Carla 2.5's graph.** Pre-existing: the original code crashes 5 of 8 times making a 40-track project with inserts and sends through `chost-cli`, and 9 of 15 times doing the same in the offline engine. Carla asserts (`channelNumber < numChannels`, `dataToReferTo[i] != nullptr`) and segfaults. Every `addTrack`/`addInsert`/`setSend` calls `reroute()` (#4), which tears down and rebuilds all connections while audio is processing; 40 tracks means about 160 full rewires. Loading a saved project (one rewire) is reliable. Stem separation and auto-arrangement add many tracks in a row, so they are exposed. Likely interim mitigation (untested): batch structural changes into one `reroute()`. The real fix is Phase 1's own graph. | `Session::reroute` |
+| 21 | Medium: crash under load (found while testing Phase 0) | Under extreme CPU oversubscription (72 busy processes on 24 cores), `chost-render` crashes in about 1 run in 5, mostly while loading the project, in the original and the new code alike (21/124 vs 14/60, not a significant difference). It is the same Carla race as #20. Mitigation: the GUI could retry an export whose renderer crashed, since rendering runs in its own process. | `chost-render` |
 | 19 | Low: tests | CI has good end-to-end smoke tests (undo, autosave, MCP, separation self-test), but **no unit tests** for the core maths (clip edits, loudness, the MIDI parser, resampling) and no sanitizer builds. | `.github/workflows/build.yml` |
 
 ---
@@ -117,7 +119,10 @@ tools/*.py ── run as subprocesses (ScriptJob), line-based stdout protocol
 
 ## 3. Prioritized roadmap
 
-### Phase 0: stop the bleeding (1–2 weeks)
+### Phase 0: stop the bleeding (1–2 weeks) — done 2026-11-15, except #13's proxy/Desktop items
+
+New findings #20 and #21 (Carla graph crashes) move the Phase 1 graph rewrite up in priority.
+
 
 1. **Cache key (#1):** name cache files by a hash of the full path, modification time, size and engine rate. Keep a readable name prefix for the Carla rack display.
 2. **Scissors (#6):** make it actually split (until the Phase 1 timeline exists: into two tracks).
@@ -200,6 +205,9 @@ These build on code chost already has; most only become possible once Phase 1 an
 | 2026-11-15 | #12 remaster mixdown: every stem loaded as stereo (mono spread, extra channels dropped) at one sample rate (polyphase resampling) | done, tested |
 | 2026-11-15 | #13 (part) developer paths: `D:\AI_Models\audio_separator` removed from the remaster script, `RemasterDialog` and `StemDialog`; the remaster script takes `--model-dir` and chost passes the folder stem separation already uses; "RTX 3090" removed from UI text | done, tested |
 | — | #13 (rest): proxy port sniffing and the default export to the Desktop in `chost_workflow_remaster.py` | open |
+| 2026-11-15 | #11 render settling: the fixed 500 ms wait is replaced by watching Carla apply the connections (a probe wired last, see `HostEngine::settleOffline`), then 100 ms of silence so Carla's gain ramps finish. The old wait also **faded in the first ~50 ms of every export**; that is fixed too | done, tested |
+| 2026-11-15 | Phase 0 item 7: the Phase 0 checks run in CI (`CHOST_BUILD_TESTS`, step "Phase 0 regression tests"), each one confirmed to fail with its bug put back | done |
+| — | #20 and #21 (Carla graph crashes while building projects or under extreme load) | open; Phase 1, interim mitigations suggested above |
 
 ### Phase 0 test results (2026-11-15)
 
@@ -225,6 +233,13 @@ Run on Linux with Carla 2.5.8 and Qt 6.4.2. The live tests use a headless JACK s
   - HEAD crashes on a mono stem (`IndexError`).
   - The fix mixes a mono 44.1 kHz vocal, a stereo 48 kHz drum stem and a 3-channel 48 kHz bass through the real mastering step; all three tones are present in the master and nothing smears between them (−106 dB).
   - The model folder is taken in this order: `--model-dir`, then `AUDIO_SEPARATOR_MODEL_DIR`, then `chost_separate.py`'s default (6 checks).
+
+- **Render settling (#11):** in a 40-track project (each track its own tone, two inserts each, sends to a bus), a wait of 0–20 ms rendered silence or a damaged start, while 50 ms or more was enough. All connections were already confirmed by Carla *before* the wait, so they were not what it waited for: Carla applies graph changes on a timer of its own, which the probe now watches.
+  - Typical waits: 25–80 ms; under heavy load 60–320 ms, taken only when needed.
+  - Every render is bit-identical, and matches the ideal mix from the first sample to the last (error 3e-5, float rounding; with the overall gain fitted, 2e-7).
+  - The old renderer was 0.74 off in the first 5 ms (a 50 ms fade-in). Under load its output also varied from run to run (0.04–0.55); the new one's does not.
+  - A version that kept processing during the wait crashed more under load. The one shipped stops processing while Carla rebuilds, as the old wait did, and checks one block every 15 ms.
+- **CI:** five checks were confirmed to fail with their bugs put back: cache key, seek reloads, tempo (live and offline), settle, insert cloning, and the old remaster script. Four simulated runs of the CI step on a fresh Release build passed.
 
 **Not covered:**
 - The Scissors mouse click in the GUI was not exercised by a test; only the code it calls was.

@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(CHOST_BUILD_GUI "Build the Qt GUI" ON)
+option(CHOST_BUILD_TESTS "Build the C++ test programs (tests/cpp, Linux)" OFF)
 
 # libcarla: from pkg-config on Linux, or from a Carla install/build dir given with CARLA_ROOT
 # carla: the standalone host for chost and chost-cli; carla_render: carla's engine as a plugin, for chost-render
@@ -60,6 +61,24 @@ target_include_directories(chost-render PRIVATE src third_party/dr_libs)
 target_compile_definitions(chost-render PRIVATE REAL_BUILD)
 target_link_libraries(chost-render PRIVATE carla_render Threads::Threads)
 install(TARGETS chost-render RUNTIME DESTINATION bin)
+
+if(CHOST_BUILD_TESTS)
+    enable_testing()
+    # no audio engine needed: the cache key, bars and beats, cutting a clip
+    add_executable(chost-test-unit tests/cpp/test_unit.cpp)
+    target_link_libraries(chost-test-unit PRIVATE chost_core)
+    add_test(NAME unit COMMAND chost-test-unit ${CMAKE_CURRENT_BINARY_DIR}/test-unit)
+    # a running engine (e.g. JACK's dummy backend): seeking, the Scissors' second track, the tempo live.
+    # It counts carla's file loads by wrapping carla_set_custom_data, so it needs GNU ld.
+    add_executable(chost-test-engine tests/cpp/test_engine.cpp)
+    target_link_libraries(chost-test-engine PRIVATE chost_core)
+    target_link_options(chost-test-engine PRIVATE "LINKER:--wrap=carla_set_custom_data")
+    # the offline engine, as chost-render has it: the tempo in an export
+    add_executable(chost-test-offline tests/cpp/test_offline.cpp src/core/OfflineEngine.cpp $<TARGET_OBJECTS:chost_core_objects>)
+    target_include_directories(chost-test-offline PRIVATE src third_party/dr_libs)
+    target_compile_definitions(chost-test-offline PRIVATE REAL_BUILD)
+    target_link_libraries(chost-test-offline PRIVATE carla_render Threads::Threads)
+endif()
 
 add_executable(chost-cli src/cli/main.cpp)
 target_link_libraries(chost-cli PRIVATE chost_core)

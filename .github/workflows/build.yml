@@ -19,11 +19,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y carla carla-dev carla-vst qt6-base-dev cmake g++ pkg-config pulseaudio python3-numpy
+          # jackd2: the Phase 0 engine tests run on JACK's dummy backend; scipy, soundfile: the remaster checks
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y carla carla-dev carla-vst qt6-base-dev cmake g++ pkg-config \
+              pulseaudio python3-numpy python3-scipy python3-soundfile jackd2
 
       - name: Build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCHOST_BUILD_TESTS=ON
           cmake --build build -j
 
       - name: Smoke test
@@ -150,6 +152,26 @@ jobs:
           echo '{"mcpServers": {"other": {"command": "x"}}}' > claude.json
           QT_QPA_PLATFORM=offscreen ./build/chost --claude-config claude.json | grep -q 'CLAUDE CONFIG WRITTEN'
           python3 -c "import json; s = json.load(open('claude.json'))['mcpServers']; assert 'other' in s and s['chost']['command'].endswith('chost-mcp')"
+
+      - name: Phase 0 regression tests
+        run: |
+          # each check guards a bug fixed in Phase 0 (docs/AUDIT.md): with the bug put back, it fails
+          # the audio cache key, bars and beats, cutting a clip: no engine needed
+          (cd build && ctest --output-on-failure)
+          # seeking, the Scissors' second track and its undo, the tempo live: a running engine, on JACK's
+          # dummy backend (real-time processing without a sound card)
+          jackd --no-realtime -d dummy -r 48000 -p 256 > jackd.log 2>&1 &
+          JACKD=$!
+          sleep 2
+          python3 tests/make_tone.py p0-tone.wav 48000
+          ./build/chost-test-engine JACK $PWD/p0-tone.wav $PWD/resources/sounds/TimGM6mb.sf2 $PWD/tests/data/notes.mid $PWD/p0
+          kill $JACKD || true
+          # the tempo in an export
+          ./build/chost-test-offline
+          # chost-render: the Scissors null test, a 40-track project rendered whole from its first sample
+          python3 tests/check_render.py ./build/chost-test-offline ./build/chost-render $PWD/p0
+          # the remaster mixdown: mono and mixed-rate stems, the model folder
+          python3 tests/check_remaster.py $PWD/tools $PWD/p0-remaster
 
       - name: Stem separation test
         run: |
