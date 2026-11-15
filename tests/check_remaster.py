@@ -9,6 +9,10 @@
    no developer path is set when the script is imported.
 4. What chost reads: a tool's own lines (chost_transcribe.py's "MIDI <file>\t<note count>", which chost
    took for a MIDI file named "1077") are passed on indented, its progress within the step's share.
+5. Placement: kick, snare, bass and lead vocal in the centre, guitar and piano at L65 / R65, backing
+   vocals at L80 / R80, each part as loud as it went in.
+6. Mastering: the dynamic 250-400 Hz cut on a muddy mix (and not on a balanced one), the air shelf, the
+   Mid/Side widening above 200 Hz, through chost_master.py itself.
 Needs numpy, scipy and soundfile (the parts of the AI environment these steps use).
 """
 import contextlib
@@ -113,6 +117,68 @@ check(not any(l.startswith(("MIDI", "TUNED", "STEM", "DONE")) for l in shown), "
 check("    MIDI /home/a b/My Song_remaster_work/bass.mid\t1077" in shown, "they are in the log, indented")
 check(any(l.startswith("PROGRESS 75 ") for l in shown) and not any(l.startswith("PROGRESS 50") for l in shown),
       "the tool's 50 % is the step's 75 % (" + "; ".join(l for l in shown if l.startswith("PROGRESS")) + ")")
+
+print("5. placement")
+places = wf.places_for(["kick", "snare", "bass", "lead", "guitar", "piano", "backing"])
+centre = lambda p: (p[0] + p[1]) / 2
+check(all(abs(centre(places[n])) < 0.01 for n in ("kick", "snare", "bass", "lead")), "kick, snare, bass, lead vocal in the centre")
+check(abs(centre(places["guitar"]) + 0.65) < 0.01 and abs(centre(places["piano"]) - 0.65) < 0.01, "guitar at L65, piano at R65")
+check(places["backing"] == (-0.80, 0.80), "backing vocals spread to L80 / R80")
+check(wf.places_for(["guitar"])["guitar"] == (-0.65, 0.65), "a guitar alone spreads over L65 / R65")
+t = np.arange(48000) / 48000
+same = np.stack([np.sin(2 * np.pi * 220 * t)] * 2, 1)
+rms = lambda x: float(np.sqrt(np.mean(x ** 2)))
+for name in ("kick", "guitar", "backing"):
+    out = wf.place(same, *places[name])
+    l, r = rms(out[:, 0]), rms(out[:, 1])
+    check(abs(rms(out) - rms(same)) < 0.01 * rms(same), f"{name}: as loud as it went in ({20 * np.log10(rms(out) / rms(same)):+.2f} dB), L/R {20 * np.log10(max(l, 1e-9) / max(r, 1e-9)):+.1f} dB")
+left_only = np.stack([np.sin(2 * np.pi * 220 * t), np.zeros_like(t)], 1)
+out = wf.place(left_only, *places["backing"])
+check(rms(out[:, 0]) > 5 * rms(out[:, 1]), "backing vocals: what was on the left stays on the left (L80)")
+out = wf.place(left_only, *places["kick"])
+check(abs(rms(out[:, 0]) - rms(out[:, 1])) < 1e-6, "kick: folded into the centre")
+
+print("6. mastering: clarity and width")
+rng = np.random.default_rng(3)
+sr = 48000
+n = sr * 8
+def pink():
+    s = np.fft.rfft(rng.standard_normal(n)); f = np.fft.rfftfreq(n, 1 / sr); s[1:] /= np.sqrt(f[1:]); s[0] = 0
+    y = np.fft.irfft(s, n); return y / np.std(y) * 0.05
+a, b = pink(), pink()
+mix = np.stack([a + 0.4 * b, a - 0.4 * b], 1) # correlated, some width
+spec = importlib.util.spec_from_file_location("chost_master", os.path.join(tools, "chost_master.py"))
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+muddy = mix + (10 ** (6 / 20) - 1) * cm.zero_phase(mix, sr, "bandpass", (250, 400))
+def band(x, lo, hi, ch=None):
+    y = x.mean(axis=1) if ch is None else ch
+    s = np.abs(np.fft.rfft(y)) ** 2; f = np.fft.rfftfreq(len(y), 1 / sr)
+    return 10 * np.log10(s[(f >= lo) & (f < hi)].mean())
+for name, x, want in (("muddy mix", muddy, (-2.6, -1.8)), ("balanced mix", mix, (-0.5, 0.01))):
+    y, avg, most = cm.demud(x, sr, 2.5)
+    d = band(y, 280, 360) - band(x, 280, 360)
+    check(want[0] <= d <= want[1] and abs(band(y, 900, 1100) - band(x, 900, 1100)) < 0.05,
+          f"{name}: 300 Hz {d:+.2f} dB (cut at most {most:.1f} dB), 1 kHz untouched")
+y = cm.air(mix, sr, 2.0)
+d12, d10, d3 = (band(y, f * 0.95, f * 1.05) - band(mix, f * 0.95, f * 1.05) for f in (12000, 10000, 3000))
+check(1.9 <= d12 <= 2.05 and d10 >= 1.5 and abs(d3) < 0.05, f"air: {d10:+.2f} dB at 10 kHz, {d12:+.2f} at 12 kHz, {d3:+.2f} at 3 kHz")
+y = cm.widen(mix, sr, 1.3)
+side = lambda x: (x[:, 0] - x[:, 1]) / 2
+mid = lambda x: (x[:, 0] + x[:, 1]) / 2
+s2k = band(None, 1800, 2200, side(y)) - band(None, 1800, 2200, side(mix))
+s60 = band(None, 50, 70, side(y)) - band(None, 50, 70, side(mix))
+check(2.0 < s2k < 2.5 and abs(s60) < 0.1 and np.allclose(mid(y), mid(mix)), f"width: side {s2k:+.2f} dB at 2 kHz, {s60:+.2f} at 60 Hz, mid unchanged")
+wide = np.stack([pink(), pink()], 1)
+check(abs(cm.side_to_mid(cm.widen(wide, sr, 1.3)) - cm.side_to_mid(wide)) < 0.01, "an already wide mix is not widened further (mono stays safe)")
+src = os.path.join(work, "muddy.wav")
+sf.write(src, muddy.astype(np.float32), sr, subtype="FLOAT")
+import subprocess
+run = subprocess.run([sys.executable, os.path.join(tools, "chost_master.py"), "--input", src, "--output", os.path.join(work, "muddy_master.wav")],
+                     capture_output=True, text=True)
+said = dict(l.split(" ", 1) for l in run.stdout.splitlines() if " " in l)
+check(run.returncode == 0 and "CLARITY" in said and "WIDTH" in said, "chost_master.py reports CLARITY " + said.get("CLARITY", "?").replace("\t", " / ") +
+      " and WIDTH " + said.get("WIDTH", "?").replace("\t", " -> "))
 
 print(f"{'ALL PASSED' if failures == 0 else 'FAILED'} ({failures} failure{'' if failures == 1 else 's'})")
 sys.exit(1 if failures else 0)

@@ -248,72 +248,103 @@ def load_stereo(path, target_sr=None):
     return np.ascontiguousarray(data), sr
 
 
+# Where each part sits, as (left channel's pan, right channel's pan), -1 hard left .. 1 hard right: the
+# foundation (kick, snare, bass) and the lead vocal in the centre, the cymbals as the audience sees the kit,
+# a guitar and a piano facing each other at L65 / R65 (alone, one spreads over both), the backing vocals
+# wide at L80 / R80. Each channel of a stem is panned on its own, so a stereo part keeps its own image
+# inside its place.
+PLACES = {
+    "kick": (0.0, 0.0), "snare": (0.0, 0.0), "bass": (0.0, 0.0),
+    "lead": (-0.08, 0.08), "vocals": (-0.08, 0.08),
+    "drums": (-1.0, 1.0), "toms": (-0.55, 0.55), "hh": (0.15, 0.45), "ride": (0.35, 0.70), "crash": (-0.70, -0.20),
+    "backing": (-0.80, 0.80), "other": (-0.50, 0.50),
+}
+PAIR = {"guitar": (-0.80, -0.50), "piano": (0.50, 0.80)} # a guitar and a piano together: L65 and R65
+ALONE = (-0.65, 0.65)                                     # either one on its own
+VOLUMES = {"kick": 1.0, "snare": 1.0, "toms": 1.0, "hh": 1.0, "ride": 1.0, "crash": 1.0, "drums": 1.0,
+           "bass": 0.95, "guitar": 0.85, "piano": 0.85, "other": 0.75, "lead": 1.15, "vocals": 1.15, "backing": 0.78}
+# the parts that collect the boxy 250-400 Hz build-up of a dense arrangement
+MUDDY = {"guitar", "piano", "other", "backing", "lead", "vocals", "toms"}
+
+
+def places_for(names):
+    """name -> (left pan, right pan) for the parts in the mix."""
+    places = {}
+    both = "guitar" in names and "piano" in names
+    for name in names:
+        if name in PAIR:
+            places[name] = PAIR[name] if both else ALONE
+        else:
+            places[name] = PLACES.get(name, (-1.0, 1.0))
+    return places
+
+
+def place(data, left_pan, right_pan):
+    """A stereo stem with each channel panned on its own (constant power), scaled so that what is the same
+    in both channels (the part itself) comes out as loud as it went in."""
+    import numpy as np
+
+    def gains(p):
+        a = (p + 1.0) * np.pi / 4.0
+        return np.cos(a), np.sin(a)
+
+    ll, lr = gains(left_pan)
+    rl, rr = gains(right_pan)
+    scale = np.sqrt(2.0 / ((ll + rl) ** 2 + (lr + rr) ** 2))
+    out = np.empty_like(data)
+    out[:, 0] = (data[:, 0] * ll + data[:, 1] * rl) * scale
+    out[:, 1] = (data[:, 0] * lr + data[:, 1] * rr) * scale
+    return out
+
+
 def mix_and_master(stems, tuned_stems, out_master_path):
     """Mixes all tuned/processed stems and masters the output to target LUFS."""
     import soundfile as sf
     import numpy as np
 
+    sys.path.insert(0, TOOLS_DIR)
+    from chost_master import demud
+
     # Choose active audio tracks for mixdown
-    tracks_to_mix = []
-    # Drums
+    names = []
     drum_parts = ["kick", "snare", "hh", "toms", "ride", "crash"]
-    has_subdrums = any(p in tuned_stems for p in drum_parts)
-    if has_subdrums:
-        for p in drum_parts:
-            if p in tuned_stems:
-                tracks_to_mix.append((p, tuned_stems[p], 1.0, 0.0))  # (name, file, vol, pan)
+    if any(p in tuned_stems for p in drum_parts):
+        names += [p for p in drum_parts if p in tuned_stems]
     elif "drums" in tuned_stems:
-        tracks_to_mix.append(("drums", tuned_stems["drums"], 1.0, 0.0))
-
-    # Bass
-    if "bass" in tuned_stems:
-        tracks_to_mix.append(("bass", tuned_stems["bass"], 0.95, 0.0))
-
-    # Accompaniment
-    if "guitar" in tuned_stems:
-        tracks_to_mix.append(("guitar", tuned_stems["guitar"], 0.85, -0.35))
-    if "piano" in tuned_stems:
-        tracks_to_mix.append(("piano", tuned_stems["piano"], 0.85, 0.35))
-    if "other" in tuned_stems:
-        tracks_to_mix.append(("other", tuned_stems["other"], 0.75, 0.0))
-
-    # Vocals
-    has_subvocals = "lead" in tuned_stems and "backing" in tuned_stems
-    if has_subvocals:
-        tracks_to_mix.append(("lead", tuned_stems["lead"], 1.15, 0.0))
-        tracks_to_mix.append(("backing", tuned_stems["backing"], 0.78, 0.40))
+        names.append("drums")
+    names += [p for p in ["bass", "guitar", "piano", "other"] if p in tuned_stems]
+    if "lead" in tuned_stems and "backing" in tuned_stems:
+        names += ["lead", "backing"]
     elif "vocals" in tuned_stems:
-        tracks_to_mix.append(("vocals", tuned_stems["vocals"], 1.15, 0.0))
-
-    if not tracks_to_mix:
+        names.append("vocals")
+    if not names:
         raise RuntimeError("No tracks available to mix")
+    places = places_for(names)
+    tracks_to_mix = [(name, tuned_stems[name], VOLUMES.get(name, 0.85), places[name]) for name in names]
 
     log(f"正在进行多轨混音求和，共 {len(tracks_to_mix)} 条音轨...")
 
-    # Emit balance settings so the host mixer reflects them live
-    for name, path, vol, pan in tracks_to_mix:
+    # Emit balance settings so the host mixer reflects them live: one pan for a track, the middle of its place
+    for name, path, vol, (pl, pr) in tracks_to_mix:
         vol_db = 20.0 * np.log10(max(vol, 1e-4))
-        print(f"BALANCE {name}\t{vol_db:.1f}\t{pan:.2f}", flush=True)
+        print(f"BALANCE {name}\t{vol_db:.1f}\t{(pl + pr) / 2.0:.2f}", flush=True)
 
     # Load audio files and sum, all at the first stem's rate
     sr = None
-    max_len = 0
-    audio_data = []
-
-    for name, path, vol, pan in tracks_to_mix:
+    mix = None
+    for name, path, vol, (pl, pr) in tracks_to_mix:
         data, sr = load_stereo(path, sr)
-        gain_l = np.cos((pan + 1.0) * np.pi / 4.0) * vol
-        gain_r = np.sin((pan + 1.0) * np.pi / 4.0) * vol
-        processed = np.empty_like(data)
-        processed[:, 0] = data[:, 0] * gain_l
-        processed[:, 1] = data[:, 1] * gain_r
-        audio_data.append(processed)
-        if len(processed) > max_len:
-            max_len = len(processed)
-
-    mix = np.zeros((max_len, 2), dtype=np.float32)
-    for data in audio_data:
-        mix[: len(data), :] += data
+        if name in MUDDY:
+            data, avg_cut, most_cut = demud(data.astype(np.float64), sr, 2.5)
+            log(f"  {name}: 250-400 Hz 动态减浑浊 平均 -{avg_cut:.1f} dB，最多 -{most_cut:.1f} dB")
+        processed = place(data, pl, pr) * vol
+        log(f"  {name}: 声像 L/R {pl:+.2f} / {pr:+.2f}")
+        if mix is None:
+            mix = np.zeros((len(processed), 2), dtype=np.float64)
+        if len(processed) > len(mix):
+            mix = np.concatenate([mix, np.zeros((len(processed) - len(mix), 2))])
+        mix[: len(processed)] += processed
+    mix = mix.astype(np.float32)
 
     # Prevent clipping before master
     peak = np.max(np.abs(mix))
@@ -324,18 +355,21 @@ def mix_and_master(stems, tuned_stems, out_master_path):
     temp_mix = out_master_path + ".temp_mix.wav"
     sf.write(temp_mix, mix, sr, subtype="PCM_24")
 
-    # Run AI mastering
+    # Run AI mastering: the tone it needs, the mud out (where it still builds up), air, Mid/Side width
     progress(90, "正在进行总线顶级母带声学雕琢（-14 LUFS, True-Peak 限制）...")
     cmd = [
         PYTHON_EXE,
         os.path.join(TOOLS_DIR, "chost_master.py"),
         "--input", temp_mix,
         "--output", out_master_path,
-        "--style", "warm",
+        "--style", "natural",
         "--target", "-14",
-        "--ceiling", "-1.0"
+        "--ceiling", "-1.0",
+        "--demud", "2.5",
+        "--air", "2.0",
+        "--width", "1.3",
     ]
-    code, lines = run_command(cmd, "执行商业级母带处理...")
+    code, lines = run_command(cmd, "执行商业级母带处理...", span=(90, 99))
     try:
         os.remove(temp_mix)
     except Exception:

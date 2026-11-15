@@ -6,19 +6,25 @@ chost runs this script with the Python of its AI environment and reads stdout li
     BEFORE <integrated LUFS>\t<true peak dBTP>
     AFTER <integrated LUFS>\t<true peak dBTP>\t<most limiting, dB>\t<most compression, dB>
     EQ <Hz>:<dB>,<Hz>:<dB>,...          the tone changes it made
+    CLARITY <average mud cut dB>\t<most mud cut dB>\t<air dB>
+    WIDTH <side to mid before, dB>\t<after, dB>
     ERROR <message>
     DONE <output file>
 
     python chost_master.py --input mix.wav --output master.wav [--reference song.wav]
                            [--style natural|warm|bright|punchy] [--target -14 | --target reference]
-                           [--ceiling -1] [--no-mono-bass]
+                           [--ceiling -1] [--no-mono-bass] [--demud 2.5] [--air 2] [--width 1.3]
 
 The chain, as a mastering engineer would set it up:
   1. tone: a linear phase EQ that nudges the mix's long-term spectrum toward a reference song's, or
      without one toward a balanced tilt, then the style's flavour on top; gentle, at most a few dB
-  2. bass in mono below 120 Hz, so the low end stays solid on club systems and phones
-  3. glue: a slow stereo-linked compressor taking a dB or two off the loudest moments
-  4. loudness: gain to the target integrated loudness (ITU-R BS.1770 / EBU R128, the measure Spotify,
+  2. clarity: a dynamic cut of up to --demud dB between 250 and 400 Hz, only while that band stands out
+     of the music around it (the boxy, muffled "mud"), and an air shelf of --air dB above 10 kHz
+  3. width: the side signal (what differs between left and right) above 200 Hz up by --width, kept
+     below the mid so the mix still holds up in mono
+  4. bass in mono below 120 Hz, so the low end stays solid on club systems and phones
+  5. glue: a slow stereo-linked compressor taking a dB or two off the loudest moments
+  6. loudness: gain to the target integrated loudness (ITU-R BS.1770 / EBU R128, the measure Spotify,
      YouTube and Apple Music normalise with) into a true-peak limiter (4x oversampled) at the ceiling
 Writes a 24-bit WAV at the input's sample rate. Requires numpy, scipy and soundfile.
 """
@@ -189,7 +195,114 @@ def apply_eq(x, sr, curve):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# 2. bass in mono, 3. glue
+# 2. clarity: the mud dynamically out, air in
+
+
+def zero_phase(x, sr, kind, freq, order=2):
+    """x through a Butterworth filter run forwards and backwards: no phase shift, so it can be added to or
+    taken from x (a peak or a shelf without the comb a phase shift would make)."""
+    from scipy.signal import butter, sosfiltfilt
+
+    return sosfiltfilt(butter(order, freq, kind, fs=sr, output="sos"), x, axis=0)
+
+
+MUD = (250.0, 400.0)
+MUD_AROUND = (120.0, 2000.0)
+_balanced = {}
+
+
+def mud_share(x, sr):
+    """How much of the 120 Hz - 2 kHz power the 250-400 Hz band holds, in dB, per 10 ms step."""
+    mud = zero_phase(x, sr, "bandpass", MUD)
+    around = zero_phase(x, sr, "bandpass", MUD_AROUND)
+    step = max(1, int(sr * 0.01))
+    n = len(x) // step
+    def power(y):
+        p = (y[: n * step] ** 2).reshape(n, step, -1).mean(axis=(1, 2))
+        # a 100 ms average: the cut follows the music's phrases, not each cycle of a bass note
+        return np.convolve(p, np.ones(10) / 10.0, mode="same")
+    pm, pa = power(mud), power(around)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        share = 10.0 * np.log10(np.maximum(pm, 1e-20) / np.maximum(pa, 1e-20))
+    return share, mud, step, pa
+
+
+def balanced_share(sr):
+    """The share of a balanced spectrum (pink noise, as much power in every octave): the reference."""
+    if sr not in _balanced:
+        rng = np.random.default_rng(1)
+        n = int(sr * 4)
+        spectrum = np.fft.rfft(rng.standard_normal(n))
+        f = np.fft.rfftfreq(n, 1.0 / sr)
+        spectrum[1:] /= np.sqrt(f[1:])
+        spectrum[0] = 0.0
+        pink = np.fft.irfft(spectrum, n)[:, None]
+        share, _, _, _ = mud_share(pink, sr)
+        _balanced[sr] = float(np.median(share[20:-20]))
+    return _balanced[sr]
+
+
+def demud(x, sr, depth_db=2.5, margin_db=1.0):
+    """Takes up to depth_db out of 250-400 Hz while that band stands out of its neighbourhood by more than a
+    balanced mix's share (plus margin_db); a lean passage is left alone. Returns (signal, average cut dB
+    over the music, most cut dB)."""
+    if depth_db <= 0.0 or len(x) < sr // 5:
+        return x, 0.0, 0.0
+    share, mud, step, around = mud_share(x, sr)
+    excess = share - balanced_share(sr) - margin_db
+    cut = np.clip(excess, 0.0, depth_db) # a dB of cut for every dB of excess, up to the depth
+    cut[around < 1e-10] = 0.0 # silence: nothing to judge
+    # the gain glides: 20 ms into a cut, 200 ms back out of it
+    smooth = np.empty_like(cut)
+    level = 0.0
+    attack, release = np.exp(-1.0 / 2.0), np.exp(-1.0 / 20.0)
+    for i, c in enumerate(cut):
+        k = attack if c > level else release
+        level = k * level + (1.0 - k) * c
+        smooth[i] = level
+    centres = (np.arange(len(smooth)) + 0.5) * step
+    gain = 10.0 ** (-np.interp(np.arange(len(x)), centres, smooth) / 20.0)
+    music = around > 1e-10
+    return x + (gain - 1.0)[:, None] * mud, float(smooth[music].mean()) if music.any() else 0.0, float(smooth.max())
+
+
+def air(x, sr, gain_db=2.0, corner=8500.0):
+    """A high shelf for air: most of gain_db at 10 kHz, all of it from 12 kHz up, nothing below 5 kHz."""
+    if gain_db == 0.0 or corner >= sr * 0.45:
+        return x
+    return x + (10.0 ** (gain_db / 20.0) - 1.0) * zero_phase(x, sr, "highpass", corner, order=4)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 3. width
+
+
+def side_to_mid(x):
+    """The side signal's level against the mid's, in dB (-inf for mono)."""
+    mid = (x[:, 0] + x[:, 1]) / 2.0
+    side = (x[:, 0] - x[:, 1]) / 2.0
+    pm, ps = float(np.mean(mid ** 2)), float(np.mean(side ** 2))
+    return 10.0 * np.log10(max(ps, 1e-20) / max(pm, 1e-20))
+
+
+def widen(x, sr, amount=1.3, most=-3.0, corner=200.0):
+    """Mid/side widening: the side above corner Hz times amount (the bass stays as it is, mono_bass then
+    centres it), but never past `most` dB under the mid, so nothing gets phasey or falls apart in mono."""
+    if x.shape[1] != 2 or amount == 1.0:
+        return x
+    mid = (x[:, 0] + x[:, 1]) / 2.0
+    side = (x[:, 0] - x[:, 1]) / 2.0
+    high = zero_phase(side, sr, "highpass", corner)
+    pm = float(np.mean(mid ** 2))
+    # the most the side may grow by: the whole side at `most` dB under the mid
+    allowed = np.sqrt(pm * 10.0 ** (most / 10.0) / max(float(np.mean(side ** 2)), 1e-20))
+    amount = float(np.clip(amount, 0.0, max(1.0, allowed))) if amount > 1.0 else amount
+    side = side + (amount - 1.0) * high
+    return np.stack([mid + side, mid - side], axis=1)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 4. bass in mono, 5. glue
 
 
 def mono_bass(x, sr, cutoff=120.0):
@@ -232,7 +345,7 @@ def glue(x, sr, style):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# 4. loudness
+# 6. loudness
 
 
 def limit(x, sr, ceiling_db):
@@ -259,10 +372,17 @@ def limit(x, sr, ceiling_db):
     return np.clip(y, -ceiling, ceiling), most
 
 
-def master(x, sr, reference, style, target, ceiling, bass_mono):
+def master(x, sr, reference, style, target, ceiling, bass_mono, demud_db=2.5, air_db=2.0, width=1.3):
     curve = eq_curve(x, sr, reference, style)
     progress(25, "tone")
     y = apply_eq(x, sr, curve)
+    progress(30, "clarity")
+    y, mud_avg, mud_most = demud(y, sr, demud_db)
+    y = air(y, sr, air_db)
+    before_width = side_to_mid(y)
+    y = widen(y, sr, width)
+    print("CLARITY %.1f\t%.1f\t%.1f" % (mud_avg, mud_most, air_db), flush=True)
+    print("WIDTH %.1f\t%.1f" % (before_width, side_to_mid(y)), flush=True)
     if bass_mono:
         y = mono_bass(y, sr)
     progress(35, "glue")
@@ -302,6 +422,9 @@ def main():
     parser.add_argument("--target", default="-14", help="integrated loudness in LUFS, or 'reference'")
     parser.add_argument("--ceiling", type=float, default=-1.0, help="true peak ceiling in dBTP")
     parser.add_argument("--no-mono-bass", action="store_true")
+    parser.add_argument("--demud", type=float, default=2.5, help="most dB the dynamic 250-400 Hz cut takes, 0: off")
+    parser.add_argument("--air", type=float, default=2.0, help="dB of the high shelf above 10 kHz, 0: off")
+    parser.add_argument("--width", type=float, default=1.3, help="side gain above 200 Hz, 1: as it is")
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -335,7 +458,8 @@ def main():
             target = float(args.target)
         target = float(np.clip(target, -24.0, -6.0))
 
-        out, limited, glue_db, curve = master(x, sr, reference, args.style, target, args.ceiling, not args.no_mono_bass)
+        out, limited, glue_db, curve = master(x, sr, reference, args.style, target, args.ceiling, not args.no_mono_bass,
+                                              max(0.0, args.demud), args.air, max(0.0, args.width))
         progress(95, "writing")
         sf.write(args.output, out, sr, subtype="PCM_24")
         print("AFTER %.1f\t%.1f\t%.1f\t%.1f" % (loudness(out, sr), db(peak_envelope(out).max()), limited, glue_db), flush=True)
