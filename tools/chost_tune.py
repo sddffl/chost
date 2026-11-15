@@ -20,8 +20,13 @@ How it works, like Melodyne's note-based correction rather than a plain auto-tun
   2. each note's centre goes to the nearest note of the key: a note sung clearly off the key but in tune
      (a passing note, a blue note) stays, only the ambiguous ones are pulled into the key
   3. the note is shifted as a whole, so vibrato, scoops and the singer's expression stay; --drift also
-     straightens the slow wandering inside a note, --speed is how fast it glides from note to note
-  4. the shift itself is pitch-synchronous overlap-add (TD-PSOLA): one grain per vocal cord pulse, the
+     straightens some of the slow wandering inside a note (below 2 Hz, so a vibrato is never touched, and
+     less of it in a note that has one: it is the singer's expression, not a mistake). From one note's
+     correction to the next it glides on an S-curve over --speed ms (35 by default), never a step
+  4. consonants, "s" sounds and breaths (noise, not a pitch) are found by their spectrum and left exactly
+     as they are, and a vowel that pitch tracking loses for a moment keeps its note's correction instead
+     of dropping out of it and back (what made tuned singing stutter)
+  5. the shift itself is pitch-synchronous overlap-add (TD-PSOLA): one grain per vocal cord pulse, the
      grains closer together or further apart. The vowels keep their colour (no chipmunk), and wherever
      nothing moves the output is the input, sample for sample.
 --hard is the Auto-Tune effect: every moment straight onto the key's notes, no glide.
@@ -160,6 +165,155 @@ def smooth(values, frames):
     return np.convolve(padded, w, mode="same")[frames:-frames]
 
 
+def noise_frames(mono, sr, frames, hop_s):
+    """Frames that are noise rather than a voice's pitch: "s", "sh", "f", "t" and the like (most of their
+    energy above 4 kHz), breaths (quiet and noise-like) and other noise (a flat spectrum). pYIN now and
+    then hears a pitch in them; moving their "pitch" would only smear them."""
+    win = max(64, int(0.02 * sr) // 2 * 2)
+    half = win // 2
+    padded = np.pad(mono.astype(np.float64), (half, half + win))
+    starts = np.minimum(np.round(np.arange(frames) * hop_s * sr).astype(np.int64), len(mono))
+    f = np.fft.rfftfreq(win, 1.0 / sr)
+    high = f >= 4000.0
+    voice = (f >= 100.0) & (f <= min(8000.0, sr / 2.0))
+    hann = np.hanning(win)
+    hf = np.zeros(frames)
+    flat = np.zeros(frames)
+    level = np.zeros(frames)
+    for a in range(0, frames, 2048):
+        idx = starts[a:a + 2048]
+        block = padded[idx[:, None] + np.arange(win)[None, :]]
+        level[a:a + len(idx)] = 10.0 * np.log10(np.mean(block ** 2, axis=1) + 1e-20)
+        power = np.abs(np.fft.rfft(block * hann, axis=1)) ** 2 + 1e-20
+        hf[a:a + len(idx)] = power[:, high].sum(axis=1) / power.sum(axis=1) if high.any() else 0.0
+        band = power[:, voice]
+        flat[a:a + len(idx)] = np.exp(np.mean(np.log(band), axis=1)) / np.mean(band, axis=1)
+    loud = np.percentile(level, 95)
+    sibilant = hf > 0.45
+    breath = (flat > 0.25) & (level < loud - 24.0)
+    noisy = flat > 0.5
+    return sibilant | breath | noisy
+
+
+def bridge_dropouts(pitch, noise, longest=6):
+    """Fills short holes in the pitch where pYIN lost a vowel for a moment (up to longest frames, voiced on
+    both sides, no noise in it) by joining the two sides: the note goes on through it, its correction too."""
+    pitch = pitch.copy()
+    voiced = np.isfinite(pitch)
+    runs = np.flatnonzero(np.diff(np.concatenate([[1], voiced.astype(int), [1]])))
+    for s, e in zip(runs[::2], runs[1::2]): # unvoiced runs [s, e)
+        if s == 0 or e >= len(pitch) or e - s > longest or noise[s:e].any():
+            continue
+        if abs(pitch[e] - pitch[s - 1]) > 1.0: # a jump to another note is a new note, not a hole
+            continue
+        pitch[s:e] = np.interp(np.arange(s, e), [s - 1, e], [pitch[s - 1], pitch[e]])
+    return pitch
+
+
+def lowpass(values, cutoff, rate=100.0):
+    """Zero-phase low pass of a pitch curve (frames at rate per second)."""
+    from scipy.signal import butter, sosfiltfilt
+
+    if len(values) < 16:
+        return np.full_like(values, np.median(values))
+    return sosfiltfilt(butter(2, cutoff, fs=rate, output="sos"), values, padlen=min(len(values) - 1, 30))
+
+
+def vibrato_depth(values, rate=100.0):
+    """How wide a note's vibrato (4-8 Hz) swings, in semitones (RMS times 2*sqrt(2): peak to peak for a sine)."""
+    from scipy.signal import butter, sosfiltfilt
+
+    if len(values) < 30:
+        return 0.0
+    band = sosfiltfilt(butter(2, [4.0, 8.0], "bandpass", fs=rate, output="sos"), values - np.mean(values), padlen=min(len(values) - 1, 30))
+    inner = band[len(band) // 10:len(band) - len(band) // 10] if len(band) > 20 else band
+    return float(np.sqrt(np.mean(inner ** 2)) * 2.0 * np.sqrt(2.0))
+
+
+def note_drift(pitch, sung, drift):
+    """The part of a note's wandering --drift straightens: below 2 Hz, so vibrato (4-8 Hz) passes untouched;
+    in a note with a clear vibrato only half as much, and never more than a third of a semitone either way,
+    so the singer's drifts into and around a note keep their shape; the scoop into it and the fall off it are
+    left alone. Faded in and out over the note's first and last 50 ms."""
+    if drift <= 0.0:
+        return np.zeros(len(pitch))
+    # the scoop into the note and the fall off it are expression too: held at the note's middle, so the
+    # low pass doesn't spread them over the note (the same parts note_centre leaves out)
+    n = len(pitch)
+    a, b = int(n * 0.2), max(int(n * 0.2) + 1, int(n * 0.85))
+    held = pitch.copy()
+    held[:a] = pitch[a]
+    held[b:] = pitch[b - 1]
+    wander = lowpass(held, 2.0) - sung
+    amount = drift * (0.5 if vibrato_depth(pitch) > 0.15 else 1.0)
+    straighten = -np.clip(amount * wander, -0.33, 0.33)
+    fade = np.minimum(1.0, np.minimum(np.arange(len(pitch)) + 1, np.arange(len(pitch))[::-1] + 1) / 5.0)
+    return straighten * fade
+
+
+def s_curve(times, steps, transition_ms):
+    """A curve that starts at steps[0][1] and at every (time, value) of steps glides to that value on a
+    logistic S-curve, 2 % to 98 % of the way over transition_ms around the time."""
+    out = np.full(len(times), float(steps[0][1]) if steps else 0.0)
+    if len(steps) < 2 or len(times) == 0:
+        return out
+    tau = max(transition_ms, 1e-3) / 1000.0 / (2.0 * np.log(49.0))
+    reach = 8.0 * tau # beyond this the curve is within 0.04 % of where it goes
+    for (_, before), (at, after) in zip(steps[:-1], steps[1:]):
+        delta = after - before
+        if delta == 0.0:
+            continue
+        lo, hi = np.searchsorted(times, [at - reach, at + reach])
+        x = (times[lo:hi] - at) / tau
+        out[lo:hi] += delta / (1.0 + np.exp(-x))
+        out[hi:] += delta
+    return out
+
+
+def correction_at(times, plan, hop_s, transition_ms):
+    """The shift in semitones at times (seconds): each note's move, gliding on an S-curve from one note to
+    the next (in the middle of the gap between them, or where one note turns into the next), plus the
+    note's own straightening of its drift."""
+    notes, drift_frames = plan
+    if not notes:
+        return np.zeros(len(times))
+    steps = [(0.0, notes[0][3])]
+    for (s0, e0, _, m0), (s1, e1, _, m1) in zip(notes[:-1], notes[1:]):
+        steps.append(((e0 + s1) / 2.0 * hop_s, m1))
+    shift = s_curve(times, steps, transition_ms)
+    frame_times = np.arange(len(drift_frames)) * hop_s
+    return shift + np.interp(times, frame_times, drift_frames)
+
+
+def edge_envelope(times, voiced_at, transition_ms):
+    """1 inside the singing, 0 where the input passes through untouched (consonants, breaths, silence),
+    the correction fading in on an S-curve over the first transition_ms of the voice and out over its last:
+    where it starts and stops there is nothing for the correction to jump from or to."""
+    if len(voiced_at) == 0:
+        return np.zeros(0)
+    edges = np.flatnonzero(np.diff(voiced_at.astype(np.int8)))
+    half = transition_ms / 2000.0
+    steps = [(0.0, 1.0 if voiced_at[0] else 0.0)]
+    for i in edges:
+        on = bool(voiced_at[i + 1])
+        steps.append((times[i + 1] + (half if on else -half), 1.0 if on else 0.0))
+    return np.clip(s_curve_edges(times, steps, transition_ms), 0.0, 1.0)
+
+
+def s_curve_edges(times, steps, transition_ms):
+    """Like s_curve, but each step is an edge of a voiced stretch: on (+1) or off (-1), so stretches that
+    overlap after shifting their edges inwards add up instead of jumping."""
+    out = np.full(len(times), float(steps[0][1]))
+    tau = max(transition_ms, 1e-3) / 1000.0 / (2.0 * np.log(49.0))
+    reach = 8.0 * tau
+    for at, value in steps[1:]:
+        delta = 1.0 if value > 0.5 else -1.0
+        lo, hi = np.searchsorted(times, [at - reach, at + reach])
+        out[lo:hi] += delta / (1.0 + np.exp(-(times[lo:hi] - at) / tau))
+        out[hi:] += delta
+    return out
+
+
 def plan_correction(pitch, scale, off_key_cost, strength, drift, speed_ms, hard):
     """Semitones to move each frame by, and the notes as (start, end, sung, corrected) in frames."""
     n = len(pitch)
@@ -175,22 +329,28 @@ def plan_correction(pitch, scale, off_key_cost, strength, drift, speed_ms, hard)
             notes.append((s, e, sung, target))
         speed_frames = 1
     else:
+        # each note moved as a whole, an S-curve from one to the next (correction_at), the slow drift
+        # inside a note partly straightened; frame by frame here for the curve chost shows
+        moves, drifts = [], np.zeros(n)
         for s, e in find_notes(pitch):
             sung = note_centre(pitch[s:e])
             target = nearest_note(sung, scale, off_key_cost)
             move = (target - sung) * strength
-            # the slow wandering around the centre, vibrato (5-7 Hz) is too fast to count as wandering
-            wander = smooth(pitch[s:e], 21) - sung if drift > 0 else 0.0
-            shift[s:e] = move - drift * wander
+            drifts[s:e] = note_drift(pitch[s:e], sung, drift)
+            moves.append((s, e, sung, move))
             notes.append((s, e, sung, sung + move))
-        speed_frames = max(1, int(round(speed_ms / 10.0)))
+        hop_s = HOP / ANALYSIS_SR
+        plan = (moves, drifts)
+        shift = correction_at(np.arange(n) * hop_s, plan, hop_s, speed_ms)
+        shift[~voiced] = 0.0
+        return shift, notes, plan
     # in the gaps the shift glides from one note's to the next, so the smoothing has nothing to jump over
     idx = np.flatnonzero(voiced)
     if len(idx):
         shift = np.interp(np.arange(n), idx, shift[idx])
         shift = smooth(shift, speed_frames)
     shift[~voiced] = 0.0 # nothing pitched there: left exactly as it is
-    return shift, notes
+    return shift, notes, None
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -278,7 +438,7 @@ def main():
     parser.add_argument("--scale", choices=sorted(OFF_KEY_COST), default="smart")
     parser.add_argument("--strength", type=float, default=1.0, help="how far each note goes to its target, 0-1")
     parser.add_argument("--drift", type=float, default=0.3, help="how much of the wandering inside a note goes, 0-1")
-    parser.add_argument("--speed", type=float, default=40.0, help="milliseconds from one note's correction to the next")
+    parser.add_argument("--speed", type=float, default=35.0, help="milliseconds of the S-curve from one note's correction to the next")
     parser.add_argument("--hard", action="store_true", help="the Auto-Tune effect")
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
@@ -296,6 +456,11 @@ def main():
         drift = float(np.clip(args.drift, 0.0, 1.0))
 
         pitch, sure = track_pitch(mono, sr)
+        hop_s = HOP / ANALYSIS_SR
+        # consonants and breaths are left as they are; a vowel lost for a moment keeps its note
+        noise = noise_frames(mono, sr, len(pitch), hop_s)
+        pitch[noise] = np.nan
+        pitch = bridge_dropouts(pitch, noise)
         if sure < 0.3:
             # a single voice is clear (0.8 and up); chords, drums and whole mixes leave pYIN guessing
             print("WARN notsolo", flush=True)
@@ -308,8 +473,7 @@ def main():
             print("KEY", key, flush=True)
         scale = parse_key(key)
         off_key_cost = OFF_KEY_COST[args.scale] if scale is not None else 0.0
-        shift, notes = plan_correction(pitch, scale, off_key_cost, strength, drift, args.speed, args.hard)
-        hop_s = HOP / ANALYSIS_SR
+        shift, notes, plan = plan_correction(pitch, scale, off_key_cost, strength, drift, args.speed, args.hard)
 
         progress(60, "moving the notes")
         times = np.arange(len(audio)) / sr
@@ -320,7 +484,12 @@ def main():
         frame_of = np.minimum(np.round(times / hop_s).astype(np.int64), len(pitch) - 1)
         voiced_at = voiced_frames[frame_of]
         period = np.where(voiced_at, sr / np.maximum(hz[frame_of], 1.0), 0.0)
-        ratio_at = 2.0 ** (np.interp(times, frame_times, shift) / 12.0)
+        # the S-curves at every sample, not just every 10 ms frame
+        if plan is not None:
+            semitones = correction_at(times, plan, hop_s, args.speed) * edge_envelope(times, voiced_at, args.speed)
+        else:
+            semitones = np.interp(times, frame_times, shift)
+        ratio_at = 2.0 ** (semitones / 12.0)
         marks = pitch_marks(mono, sr, period)
         progress(75, "moving the notes")
         tuned = psola(audio, sr, marks, voiced_at, ratio_at)

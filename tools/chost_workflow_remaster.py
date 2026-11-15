@@ -187,7 +187,7 @@ def tune_vocals(stems, key, out_dir):
         in_file = stems[role]
         out_file = os.path.join(out_dir, f"tuned_{role}.wav")
         strength = "0.90" if role == "backing" else "0.85"
-        speed = "15" if role == "backing" else "20"
+        speed = "35" # a 35 ms S-curve from one note's correction to the next: no steps
         cmd = [
             PYTHON_EXE,
             os.path.join(TOOLS_DIR, "chost_tune.py"),

@@ -180,14 +180,14 @@ struct Preset {
     const char* name;
     int strength; // percent
     double drift;
-    int speed;    // ms
+    int speed;    // ms of the S-curve from one note's correction to the next
     bool hard;
 };
 // what a vocal producer would reach for
 const Preset kPresets[] = {
-    {"自然（推荐）：修准每个音，保留颤音和滑音", 100, 0.3, 40, false},
+    {"自然（推荐）：修准每个音，保留颤音和滑音", 100, 0.3, 35, false},
     {"轻微：只往准里推一些，听不出修过", 70, 0.0, 60, false},
-    {"精准：录音室级别，音内的漂移也拉直", 100, 0.7, 25, false},
+    {"精准：录音室级别，音内的漂移也拉直", 100, 0.7, 35, false},
     {"电音效果（Auto-Tune）：音高直接跳到音上", 100, 1.0, 0, true},
 };
 } // namespace
