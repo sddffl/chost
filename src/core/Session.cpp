@@ -648,6 +648,12 @@ void Session::setClickVolume(float volume)
 
 void Session::reroute()
 {
+    if (fRoutingHeld > 0)
+    {
+        fRerouteWanted = true;
+        return;
+    }
+    fRerouteWanted = false;
     if (!fReady || !isRouted())
     {
         applyGains();

@@ -174,6 +174,25 @@ public:
     // Rewires every track and the master; called after any change to the plugin layout.
     void reroute();
 
+    // Holds the rewiring back while many changes are made in a row (a channel strip on each of 14 stems):
+    // one reroute() when the last hold ends instead of one per change. Carla 2.5's graph doesn't survive a
+    // quick series of rebuilds (docs/AUDIT.md #20).
+    class RoutingHold {
+    public:
+        explicit RoutingHold(Session& session) : fSession(session) { ++fSession.fRoutingHeld; }
+        ~RoutingHold()
+        {
+            if (--fSession.fRoutingHeld == 0 && fSession.fRerouteWanted)
+                fSession.reroute();
+        }
+        RoutingHold(const RoutingHold&) = delete;
+        RoutingHold& operator=(const RoutingHold&) = delete;
+
+    private:
+        Session& fSession;
+    };
+    bool routingHeld() const { return fRoutingHeld > 0; }
+
 private:
     bool valid(int track) const { return track >= 0 && track < static_cast<int>(fTracks.size()); }
     bool addFader(const std::string& name, uint& id);
@@ -197,6 +216,8 @@ private:
     std::vector<Uid> fUids;              // per carla plugin id
     Uid fNextUid = 1;
     bool fKeepRemoved = false;
+    int fRoutingHeld = 0;
+    bool fRerouteWanted = false;
     std::vector<Track> fParkedTracks;    // removed tracks, their plugins still loaded
     std::vector<uint> fParkedPlugins;    // removed inserts and replaced instruments
     uint fMaster = 0;

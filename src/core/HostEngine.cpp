@@ -264,6 +264,8 @@ bool parseSpec(const std::string& spec, PluginSpec& out)
     // carla needs a label for sound fonts too: their name
     else if (kind == "sf2")  { out.type = PLUGIN_SF2;  out.filename = rest; out.label = fs::u8path(rest).stem().u8string(); }
     else if (kind == "sfz")  { out.type = PLUGIN_SFZ;  out.filename = rest; out.label = fs::u8path(rest).stem().u8string(); }
+    // carla's own plugins by label, e.g. "internal:audiogain_s": there on every system
+    else if (kind == "internal") { out.type = PLUGIN_INTERNAL; out.label = rest; }
     else if (kind == "ladspa")
     {
         const auto sep = rest.rfind(':');
@@ -657,6 +659,7 @@ RackSlot HostEngine::slot(uint id) const
 }
 
 void HostEngine::setActive(uint id, bool active) { carla_set_active(fHandle, id, active); }
+void HostEngine::renamePlugin(uint id, const std::string& name) { carla_rename_plugin(fHandle, id, name.c_str()); }
 void HostEngine::setVolume(uint id, float volume) { carla_set_volume(fHandle, id, volume); }
 
 void HostEngine::setPan(uint id, float pan)

@@ -119,6 +119,7 @@ public:
     uint pluginCount() const;
     RackSlot slot(uint id) const;
     void setActive(uint id, bool active);
+    void renamePlugin(uint id, const std::string& name);
     void setVolume(uint id, float volume);
     void setPan(uint id, float pan); // a stereo plugin's output balance, -1 left .. 1 right
     std::string audioFilePath(uint id) const; // file played by an "audiofile" or "midifile" slot

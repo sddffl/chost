@@ -5,6 +5,7 @@
 
 #include "check.h"
 #include "core/AudioConvert.h"
+#include "core/AutoStrip.h"
 #include "core/ClipEdit.h"
 #include "core/RemasterProtocol.h"
 #include "core/Transport.h"
@@ -188,6 +189,99 @@ void testRemasterLines()
     CHECK(e.kind == Kind::Analyze && e.number == 128.0 && e.label == "A minor", "ANALYZE <bpm>\\t<key>");
 }
 
+ParamInfo param(uint32_t index, const char* name, float lo, float hi, const char* unit = "", bool boolean = false)
+{
+    ParamInfo p;
+    p.index = index;
+    p.name = name;
+    p.unit = unit;
+    p.min = lo;
+    p.max = hi;
+    p.isBoolean = boolean;
+    return p;
+}
+
+float valueOf(const std::vector<std::pair<uint32_t, float>>& values, uint32_t index, float missing = -9999.0f)
+{
+    for (const auto& [i, v] : values)
+        if (i == index)
+            return v;
+    return missing;
+}
+
+// The automatic channel strip: what goes on each part, which of the user's plugins, set how.
+void testAutoStrip()
+{
+    std::printf("automatic channel strip\n");
+    auto kinds = [](const std::vector<StripSlot>& strip) {
+        std::string s;
+        for (const StripSlot& slot : strip)
+            s += std::to_string(static_cast<int>(slot.kind));
+        return s;
+    };
+    const auto lead = channelStrip("lead", 0.0);
+    CHECK(kinds(lead) == "0123", "lead vocal: trim, EQ, compressor, de-esser (%s)", kinds(lead).c_str());
+    CHECK(lead[1].param("highpass_hz") == 90.0f, "lead vocal high pass at 90 Hz");
+    CHECK(kinds(channelStrip("bass", 0.0)) == "012" && kinds(channelStrip("hh", 0.0)) == "01" && kinds(channelStrip("", 0.0)) == "0",
+          "bass: EQ and compressor; hi-hat: EQ; an unknown part: just the trim");
+    // a part twice as loud as the working level gets thresholds 6 dB higher
+    const float at18 = channelStrip("bass", 0.0, -18.0)[2].param("threshold_db");
+    const float at12 = channelStrip("bass", 0.0, -12.0)[2].param("threshold_db");
+    CHECK(std::abs(at12 - at18 - 6.0f) < 1e-4f, "thresholds follow the part's level (%.1f at -18 LUFS, %.1f at -12)", at18, at12);
+    CHECK(trimFor(-30.0, false) == 12.0 && trimFor(-24.0, false) == 6.0 && trimFor(-10.0, false) == 0.0 && trimFor(-80.0, true) == 0.0,
+          "trim: quiet parts up to the working level (at most +12 dB), loud and silent ones left alone");
+    const auto bus = mixBusStrip();
+    CHECK(bus.size() == 2 && bus[0].kind == StripKind::Compressor && bus[1].kind == StripKind::Limiter && bus[1].param("ceiling_db") == -1.0f,
+          "mix bus: glue compressor, then a limiter at -1 dB");
+
+    auto entry = [](const char* name, const char* spec, uint32_t ins = 2, bool synth = false) {
+        PluginEntry p;
+        p.name = name;
+        p.spec = spec;
+        p.audioIns = ins;
+        p.audioOuts = ins;
+        p.isSynth = synth;
+        return p;
+    };
+    const std::vector<PluginEntry> library{entry("MIDI Sequencer", "lv2:seq"), entry("Calf Multiband Compressor", "lv2:mb"),
+                                           entry("x42-eq - Parametric Equalizer Mono", "lv2:eqm", 1),
+                                           entry("x42-eq - Parametric Equalizer Stereo", "lv2:eqs"),
+                                           entry("ZamComp", "lv2:zamcomp"), entry("Pro-L 2", "vst3:prol"),
+                                           entry("Compressor Synth", "lv2:synth", 2, true)};
+    CHECK(stripPlugin(StripKind::Trim, library) == "internal:audiogain_s", "the trim is carla's own gain, always there");
+    CHECK(stripPlugin(StripKind::Eq, library) == "lv2:eqs", "EQ: the stereo parametric one, not the mono one or a \"Sequencer\" (%s)",
+          stripPlugin(StripKind::Eq, library).c_str());
+    CHECK(stripPlugin(StripKind::Compressor, library) == "lv2:zamcomp", "compressor: not the multiband one (%s)", stripPlugin(StripKind::Compressor, library).c_str());
+    CHECK(stripPlugin(StripKind::Limiter, library) == "vst3:prol", "limiter: the user's Pro-L");
+    CHECK(stripPlugin(StripKind::DeEsser, library).empty(), "no de-esser in the library: none");
+
+    // carla's gain: a factor 0..4
+    const auto trim = stripValues(channelStrip("hh", 6.0)[0], {param(0, "Gain", 0, 4), param(1, "Apply Left", 0, 1, "", true)});
+    CHECK(std::abs(valueOf(trim, 0) - 1.9953f) < 1e-3f && valueOf(trim, 1) == -9999.0f, "trim +6 dB on carla's gain: x%.3f", valueOf(trim, 0));
+    // an LV2 compressor with units, a meter and a side chain filter in the way
+    const std::vector<ParamInfo> zam{param(0, "Attack", 0.1f, 100, "ms"), param(1, "Release", 1, 500, "ms"),
+                                     param(2, "Knee", 0, 8, "dB"), param(3, "Ratio", 1, 20), param(4, "Sidechain Threshold", -80, 0, "dB"),
+                                     param(5, "Threshold", -80, 0, "dB"), param(6, "Output", -60, 0, "dB"), param(7, "Makeup", 0, 30, "dB")};
+    StripSlot c = channelStrip("bass", 0.0)[2];
+    const auto cv = stripValues(c, zam);
+    CHECK(valueOf(cv, 0) == 15.0f && valueOf(cv, 1) == 150.0f && valueOf(cv, 3) == 4.0f && valueOf(cv, 5) == -22.0f && valueOf(cv, 7) == 3.0f,
+          "bass compressor: attack 15 ms, release 150 ms, ratio 4, threshold -22 dB, make-up 3 dB");
+    CHECK(valueOf(cv, 4) == -9999.0f && valueOf(cv, 6) == -9999.0f && valueOf(cv, 2) == -9999.0f, "the side chain threshold, the output meter and the knee are left alone");
+    // times in seconds, a VST2 plugin's 0..1 controls
+    const auto secs = stripValues(c, {param(0, "Attack", 0.0001f, 1, "s"), param(1, "Release", 0, 1), param(2, "Threshold", 0, 1)});
+    CHECK(std::abs(valueOf(secs, 0) - 0.015f) < 1e-6f && valueOf(secs, 1) == -9999.0f && valueOf(secs, 2) == -9999.0f,
+          "attack in seconds converted; unitless 0..1 controls (VST2) are not guessed at");
+    // an EQ's high pass: frequency and its switch
+    const auto hp = stripValues(channelStrip("lead", 0.0)[1], {param(0, "Highpass", 0, 1, "", true), param(1, "Highpass Frequency", 5, 1250, "Hz"),
+                                                              param(2, "Lowpass Frequency", 500, 20000, "Hz")});
+    CHECK(valueOf(hp, 1) == 90.0f && valueOf(hp, 0) == 1.0f && valueOf(hp, 2) == -9999.0f, "vocal EQ: high pass switched on at 90 Hz, low pass left alone");
+    // a limiter with only a threshold: that is its ceiling
+    const auto lim = stripValues(bus[1], {param(0, "Threshold", -30, 0, "dB"), param(1, "Release", 1, 1000, "ms")});
+    CHECK(valueOf(lim, 0) == -1.0f && valueOf(lim, 1) == 60.0f, "limiter without a ceiling control: threshold at the -1 dB ceiling");
+    const auto lim2 = stripValues(bus[1], {param(0, "Threshold", -30, 0, "dB"), param(1, "Output Ceiling", -30, 0, "dB")});
+    CHECK(valueOf(lim2, 1) == -1.0f && valueOf(lim2, 0) == -3.0f, "limiter with a ceiling: ceiling -1 dB, driven from -3 dB");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -199,5 +293,6 @@ int main(int argc, char** argv)
     testBarBeat();
     testSplit(root);
     testRemasterLines();
+    testAutoStrip();
     return check::failures();
 }

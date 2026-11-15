@@ -6,6 +6,7 @@
 
 #include "check.h"
 #include "core/AudioConvert.h"
+#include "core/AutoStrip.h"
 #include "core/ClipEdit.h"
 #include "core/HostEngine.h"
 #include "core/Session.h"
@@ -185,6 +186,52 @@ void testTempo(chost::HostEngine& host, chost::Session& s)
     host.pause();
 }
 
+// The automatic channel strip on a live engine: carla's own gain as the trim ("internal:" spec), its value
+// read from the real plugin's controls, the whole strip put on in one rewiring (Session::RoutingHold), the
+// trim's boost heard and the fader taking it back.
+void testAutoStrip(chost::HostEngine& host, chost::Session& s, const std::string& tone)
+{
+    std::printf("the automatic channel strip (AutoStrip.h) on a live track\n");
+    const int t = s.addTrack("hh");
+    s.setTrackFile(t, tone);
+    s.setRole(t, "hh");
+    host.relocate(0);
+    host.play();
+    // JACK's dummy backend runs at its own pace: a change reaches the meters some hundred ms later, so
+    // every level is read after the one before it has settled
+    auto settled = [&] { listen(host, s, 700); return listen(host, s, 400); };
+    const float plain = settled();
+
+    const std::vector<chost::StripSlot> strip = chost::channelStrip("hh", 6.0);
+    const size_t before = host.pluginCount();
+    {
+        chost::Session::RoutingHold hold(s);
+        for (const chost::StripSlot& slot : strip)
+        {
+            const std::string spec = chost::stripPlugin(slot.kind, {}); // no plugins of the user's: only the trim
+            if (spec.empty())
+                continue;
+            CHECK(s.addInsert(t, spec), "insert %s", spec.c_str());
+            const uint id = s.tracks()[t].inserts.back();
+            host.renamePlugin(id, "Trim +6.0 dB");
+            for (const auto& [index, value] : chost::stripValues(slot, host.parameters(id)))
+                host.setParameter(id, index, value);
+        }
+        CHECK(s.routingHeld(), "the rewiring is held while the strip goes on");
+    }
+    CHECK(!s.routingHeld() && host.pluginCount() == before + 1 && s.tracks()[t].inserts.size() == 1,
+          "one insert (the trim; no EQ without an EQ plugin), rewired once when the hold ends");
+    const uint trim = s.tracks()[t].inserts[0];
+    const float gain = host.parameters(trim)[static_cast<size_t>(host.findParameter(trim, "Gain"))].value;
+    CHECK(std::fabs(gain - 1.9953f) < 1e-3f && host.slot(trim).name == "Trim +6.0 dB", "carla's gain set to x%.3f (+6 dB), named \"%s\"", gain, host.slot(trim).name.c_str());
+    const float boosted = settled();
+    CHECK(std::fabs(boosted / plain - 1.9953f) < 0.05f, "heard +%.2f dB louder through the trim", 20 * std::log10(boosted / plain));
+    s.setVolume(t, s.tracks()[t].volume * std::pow(10.0f, -6.0f / 20.0f));
+    const float back = settled();
+    CHECK(std::fabs(back / plain - 1.0f) < 0.05f, "the fader takes it back: %+.2f dB from before", 20 * std::log10(back / plain));
+    host.pause();
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -213,5 +260,6 @@ int main(int argc, char** argv)
     run([&](chost::HostEngine& h, chost::Session& s) { testSeek(h, s, argv[2], argv[3], argv[4]); });
     run([&](chost::HostEngine& h, chost::Session& s) { testDuplicate(h, s, dir); });
     run([&](chost::HostEngine& h, chost::Session& s) { testTempo(h, s); });
+    run([&](chost::HostEngine& h, chost::Session& s) { testAutoStrip(h, s, argv[2]); });
     return check::failures();
 }

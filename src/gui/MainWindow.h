@@ -192,6 +192,11 @@ private:
 
     void addInsert();
     void editInsert(int index);
+    // the automatic channel strip (core/AutoStrip.h) on separated parts: queued as they arrive, put on all
+    // together once they stop arriving (one rewiring, carla's graph doesn't like a series of them), then a
+    // mix bus with glue compression and a limiter that they all go through
+    void queueAutoStrip(int track);
+    void applyAutoStrips();
     void setInsertActive(int index, bool active);
     void removeInsert(int index);
     void moveInsert(int index, int delta);
@@ -309,4 +314,7 @@ private:
     QSplitter* fMainSplitter = nullptr;
 
     QTimer* fTimer = nullptr;
+    QTimer* fAutoStripTimer = nullptr;
+    std::vector<chost::Uid> fAutoStripQueue;
+    std::map<chost::Uid, float> fTrimCompensation; // the fader factor that takes a track's trim back
 };

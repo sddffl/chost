@@ -29,6 +29,8 @@
 #include "LowerZone.h"
 #include "SampleEditor.h"
 #include "core/AudioConvert.h"
+#include "core/AutoStrip.h"
+#include "core/Loudness.h"
 #include "core/Click.h"
 
 #include <QApplication>
@@ -2017,6 +2019,153 @@ bool MainWindow::addPluginSpec(const QString& spec)
     return true;
 }
 
+void MainWindow::queueAutoStrip(int track)
+{
+    if (track < 0 || track >= static_cast<int>(fSession.tracks().size()))
+        return;
+    fAutoStripQueue.push_back(fSession.tracks()[static_cast<size_t>(track)].uid);
+    if (fAutoStripTimer == nullptr)
+    {
+        fAutoStripTimer = new QTimer(this);
+        fAutoStripTimer->setSingleShot(true);
+        fAutoStripTimer->setInterval(800);
+        connect(fAutoStripTimer, &QTimer::timeout, this, &MainWindow::applyAutoStrips);
+    }
+    fAutoStripTimer->start(); // a part that arrives restarts the wait
+}
+
+void MainWindow::applyAutoStrips()
+{
+    std::vector<chost::Uid> queue;
+    queue.swap(fAutoStripQueue);
+    std::sort(queue.begin(), queue.end());
+    queue.erase(std::unique(queue.begin(), queue.end()), queue.end());
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    History::Group step(*fHistory, QStringLiteral("自动通道条"));
+    int inserted = 0;
+    QStringList used, missing;
+    auto note = [](QStringList& list, const QString& text) {
+        if (!list.contains(text))
+            list << text;
+    };
+    // puts one slot on a track: the plugin, its settings; false without a plugin for it
+    auto place = [&](int track, const chost::StripSlot& slot, const QString& trimName) {
+        const std::string spec = chost::stripPlugin(slot.kind, fPlugins);
+        if (spec.empty())
+        {
+            note(missing, QString::fromUtf8(chost::stripKindName(slot.kind)));
+            return false;
+        }
+        if (!fSession.addInsert(track, spec))
+        {
+            note(missing, QString::fromUtf8(chost::stripKindName(slot.kind)));
+            return false;
+        }
+        const uint id = fSession.tracks()[static_cast<size_t>(track)].inserts.back();
+        if (!trimName.isEmpty())
+            fHost.renamePlugin(id, trimName.toStdString());
+        for (const auto& [index, value] : chost::stripValues(slot, fHost.parameters(id)))
+            fHost.setParameter(id, index, value);
+        if (slot.kind != chost::StripKind::Trim)
+            note(used, QStringLiteral("%1 %2").arg(QString::fromUtf8(chost::stripKindName(slot.kind)), QString::fromStdString(fHost.slot(id).name)));
+        ++inserted;
+        return true;
+    };
+
+    std::vector<chost::Uid> done;
+    {
+        chost::Session::RoutingHold hold(fSession);
+        for (const chost::Uid uid : queue)
+        {
+            const int t = fSession.trackOf(uid);
+            if (t < 0)
+                continue;
+            const chost::Track& track = fSession.tracks()[static_cast<size_t>(t)];
+            // the parts you hear: not the original mix or a group the finer parts replaced, not twice
+            if (track.kind != chost::TrackKind::Audio || track.file.empty() || track.muted || !track.inserts.empty())
+                continue;
+            std::vector<float> samples;
+            chost::AudioFileInfo info;
+            chost::Loudness loudness;
+            const bool read = chost::readAudioFile(track.file, samples, info);
+            if (read)
+                loudness = chost::measureLoudness(samples, info.channels, info.sampleRate);
+            samples = {};
+            const double trim = chost::trimFor(loudness.integrated, !read || loudness.silent);
+            const double level = !read || loudness.silent ? chost::kStripLevel : loudness.integrated + trim;
+            for (const chost::StripSlot& slot : chost::channelStrip(track.role, trim, level))
+                place(t, slot, slot.kind == chost::StripKind::Trim ? QStringLiteral("Trim %1 %2%3 dB").arg(QString::fromStdString(track.role.empty() ? track.name : track.role), trim >= 0 ? QStringLiteral("+") : QString()).arg(trim, 0, 'f', 1) : QString());
+            if (trim > 0.0)
+            {
+                // the fader takes the trim back: the part reaches the strip at a working level, the mix
+                // hears it as loud as before
+                const float back = static_cast<float>(std::pow(10.0, -trim / 20.0));
+                fSession.setVolume(t, fSession.tracks()[static_cast<size_t>(t)].volume * back);
+                fTrimCompensation[uid] = back;
+            }
+            done.push_back(uid);
+        }
+
+        // the mix bus: the parts (or the groups they are in) that go straight to Stereo Out go through it
+        const std::vector<chost::StripSlot> busStrip = chost::mixBusStrip();
+        const bool anyBusPlugin = std::any_of(busStrip.begin(), busStrip.end(), [&](const chost::StripSlot& s) { return !chost::stripPlugin(s.kind, fPlugins).empty(); });
+        if (!done.empty() && anyBusPlugin)
+        {
+            const QString busName = QStringLiteral("混音总线");
+            std::vector<chost::Uid> members;
+            for (const chost::Uid uid : done)
+            {
+                const chost::Track& track = fSession.tracks()[static_cast<size_t>(fSession.trackOf(uid))];
+                chost::Uid member = uid;
+                if (track.output != 0)
+                {
+                    const int group = fSession.trackOf(track.output);
+                    if (group < 0 || fSession.tracks()[static_cast<size_t>(group)].output != 0 ||
+                        QString::fromStdString(fSession.tracks()[static_cast<size_t>(group)].name) == busName)
+                        continue;
+                    member = track.output;
+                }
+                if (std::find(members.begin(), members.end(), member) == members.end())
+                    members.push_back(member);
+            }
+            int bus = -1;
+            for (size_t i = 0; i < fSession.tracks().size(); ++i)
+                if (fSession.tracks()[i].kind == chost::TrackKind::Bus && QString::fromStdString(fSession.tracks()[i].name) == busName)
+                    bus = static_cast<int>(i);
+            if (bus < 0 && !members.empty())
+            {
+                std::vector<int> indexes;
+                for (const chost::Uid uid : members)
+                    indexes.push_back(fSession.trackOf(uid));
+                bus = addBus(BusKind::Group, indexes, busName);
+                if (bus >= 0)
+                    for (const chost::StripSlot& slot : busStrip)
+                        place(bus, slot, {});
+            }
+            else if (bus >= 0)
+            {
+                const chost::Uid busUid = fSession.tracks()[static_cast<size_t>(bus)].uid;
+                for (const chost::Uid uid : members)
+                    if (fSession.setOutput(fSession.trackOf(uid), busUid))
+                        placeInGroup(fSession.trackOf(uid), busUid);
+            }
+        }
+    } // the rewiring, once
+    QApplication::restoreOverrideCursor();
+    refreshTracks();
+    refreshInserts();
+    refreshMixState();
+    if (done.empty())
+        return;
+    QString message = QStringLiteral("自动通道条：%1 条轨道，插入 %2 个效果").arg(done.size()).arg(inserted);
+    if (!used.isEmpty())
+        message += QStringLiteral("（%1）").arg(used.join(QStringLiteral("，")));
+    if (!missing.isEmpty())
+        message += QStringLiteral("；插件库里没有%1，这几格空着：装好插件并扫描后可以手动添加").arg(missing.join(QStringLiteral("、")));
+    statusBar()->showMessage(message, 15000);
+}
+
 void MainWindow::editInsert(int index)
 {
     const std::vector<uint> ids = selectedInserts();
@@ -2468,6 +2617,7 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
             fSession.setRole(track, id.toStdString());
             refreshTracks();
             refreshMixState();
+            queueAutoStrip(track);
         }
     });
 
@@ -2499,7 +2649,9 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
         {
             if (tracks[i].role == role.toStdString())
             {
-                const float lin = std::pow(10.0f, volumeDb / 20.0f);
+                // the fader also takes back what the automatic channel strip's trim added
+                const auto trim = fTrimCompensation.find(tracks[i].uid);
+                const float lin = std::pow(10.0f, volumeDb / 20.0f) * (trim != fTrimCompensation.end() ? trim->second : 1.0f);
                 fSession.setVolume(static_cast<int>(i), lin);
                 fSession.setPan(static_cast<int>(i), pan);
                 break;
@@ -2541,7 +2693,13 @@ RemasterDialog* MainWindow::autoRemaster(int trackIndex, bool autoStart)
                 const int underscore = label.lastIndexOf(QLatin1Char('_'));
                 if (underscore >= 0)
                     label = label.mid(underscore + 1);
-                addAudioTrack(fullPath, label);
+                const int track = addAudioTrack(fullPath, label);
+                if (track >= 0 && track < static_cast<int>(fSession.tracks().size()))
+                {
+                    if (fSession.tracks()[static_cast<size_t>(track)].role.empty())
+                        fSession.setRole(track, label.toLower().toStdString());
+                    queueAutoStrip(track);
+                }
             }
         }
 
@@ -2622,6 +2780,7 @@ void MainWindow::separateStems(bool autoStart)
         if (track < 0)
             return;
         fSession.setRole(track, id.toStdString());
+        queueAutoStrip(track);
         // the finer parts go right below their group and share its colour, like a folder in Cubase
         if (const int parent = group.isEmpty() ? -1 : trackOf(stems->value(group)); parent >= 0)
         {
