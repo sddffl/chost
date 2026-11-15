@@ -3,6 +3,8 @@
 
 #include "HostEngine.h"
 
+#include "Transport.h"
+
 #include "CarlaNativePlugin.h"
 
 #include <atomic>
@@ -26,13 +28,36 @@ struct Offline {
     uint32_t bufferSize = 512;
     std::string resources;
 
+    // the song's tempo and time signature, set from the main thread, read by whichever thread processes
+    static constexpr double kTicksPerBeat = 1920.0;
+    std::atomic<double> bpm{120.0};
+    std::atomic<double> beatsPerBar{4.0};
+    std::atomic<double> beatType{4.0};
+
     // Until the render starts a stand-in audio thread keeps the engine turning with the transport
     // stopped: carla waits for the audio thread to take every added plugin and connection.
     std::thread pump;
     std::atomic<bool> pumping{false};
 
+    // the bar and beat of the block about to be processed: what tempo-synced plugins lock to
+    void updateTime()
+    {
+        const double tempo = bpm, perBar = beatsPerBar;
+        const BarBeat at = barBeatAt(time.frame, sampleRate, tempo, perBar, kTicksPerBeat);
+        time.bbt.valid = true;
+        time.bbt.bar = at.bar;
+        time.bbt.beat = at.beat;
+        time.bbt.tick = at.tick;
+        time.bbt.barStartTick = at.barStartTick;
+        time.bbt.beatsPerBar = static_cast<float>(perBar);
+        time.bbt.beatType = static_cast<float>(beatType.load());
+        time.bbt.ticksPerBeat = kTicksPerBeat;
+        time.bbt.beatsPerMinute = tempo;
+    }
+
     void process(float* left, float* right, uint32_t frames)
     {
+        updateTime();
         std::vector<float> silence(frames, 0.0f);
         float* ins[2] = {silence.data(), silence.data()};
         float* outs[2] = {left, right};
@@ -119,6 +144,9 @@ bool HostEngine::startOffline(double sampleRate, uint32_t bufferSize)
     h.ui_save_file = uiSaveFile;
     h.dispatcher = dispatcher;
     o->time.playing = false;
+    o->bpm = fTempo;
+    o->beatsPerBar = fBeatsPerBar;
+    o->beatType = fBeatType;
 
     o->desc = carla_get_native_patchbay_plugin();
     o->plugin = o->desc != nullptr ? o->desc->instantiate(&o->host) : nullptr;
@@ -138,6 +166,11 @@ bool HostEngine::startOffline(double sampleRate, uint32_t bufferSize)
 
     fOffline = o;
     fDriver = "Offline";
+    fOfflineTempo = [this, o] {
+        o->bpm = fTempo;
+        o->beatsPerBar = fBeatsPerBar;
+        o->beatType = fBeatType;
+    };
     fOfflineIdle = [o] {
         if (o->desc->dispatcher != nullptr)
             o->desc->dispatcher(o->plugin, NATIVE_PLUGIN_OPCODE_IDLE, 0, 0, nullptr, 0.0f);
@@ -158,6 +191,7 @@ bool HostEngine::startOffline(double sampleRate, uint32_t bufferSize)
         fHandle = nullptr;
         fOffline = nullptr;
         fOfflineIdle = nullptr;
+        fOfflineTempo = nullptr;
         fDriver.clear();
     };
     return true;

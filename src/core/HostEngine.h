@@ -162,6 +162,12 @@ public:
     // single jump, at most every kPlayerRefreshMs while jumps keep coming (scrubbing), and once more by
     // idle() after the last one.
     void relocate(uint64_t frame);
+    // The song's tempo and time signature, for plugins that follow the host (tempo-synced delays, LFOs,
+    // arpeggiators); kept across engine restarts. Live, carla 2.5's transport takes the tempo only, its bars
+    // are always 4/4; offline (chost-render) the time signature and every block's bar and beat go along too.
+    void setTempo(double bpm, double beatsPerBar = 4.0, double beatType = 4.0);
+    double tempo() const { return fTempo; }
+    double transportTempo() const; // what carla's transport says, 0 when it says nothing
     bool saveProject(const std::string& path);
     bool loadProject(const std::string& path);
 
@@ -185,6 +191,7 @@ private:
     Mode fMode = Mode::Rack;
     std::function<void()> fOfflineStop; // tears down the offline engine
     std::function<void()> fOfflineIdle; // the offline engine's idle work (file reading, graph changes)
+    std::function<void()> fOfflineTempo; // hands fTempo and the time signature to the offline engine
     void* fOffline = nullptr;           // OfflineEngine.cpp's state
     mutable std::mutex fPatchbayMutex;
     std::map<uint, Group> fGroups;
@@ -192,6 +199,9 @@ private:
     std::string fDriver;
     std::string fError; // errors from chost itself, carla keeps its own
     HostEventFunc fEventFunc;
+    double fTempo = 120.0;
+    double fBeatsPerBar = 4.0;
+    double fBeatType = 4.0;
     bool fPlayersStale = false;                                   // a jump not yet followed by a refresh
     std::chrono::steady_clock::time_point fLastPlayerRefresh{};
 };

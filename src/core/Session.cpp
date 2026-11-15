@@ -26,6 +26,7 @@ bool Session::init()
     fParkedTracks.clear();
     fParkedPlugins.clear();
     fTempo = 120.0;
+    fHost.setTempo(fTempo);
     fKey.clear();
     fMarkers.clear();
     fClick = fClickInstrument = fClickGain = -1;
@@ -732,6 +733,7 @@ void Session::setMarkers(std::vector<Marker> markers)
 void Session::setTempo(double bpm)
 {
     fTempo = bpm >= 20.0 && bpm <= 400.0 ? bpm : 120.0;
+    fHost.setTempo(fTempo); // tempo-synced plugins follow; a session's bars are 4/4
 }
 
 bool Session::save(const std::string& path)

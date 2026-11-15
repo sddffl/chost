@@ -448,7 +448,27 @@ bool HostEngine::start(const std::string& driver, Mode mode, const std::string& 
         return false;
 
     fDriver = driver;
+    carla_transport_bpm(fHandle, fTempo);
     return true;
+}
+
+void HostEngine::setTempo(double bpm, double beatsPerBar, double beatType)
+{
+    if (!(bpm > 0.0) || !(beatsPerBar > 0.0) || !(beatType > 0.0))
+        return;
+    fTempo = bpm;
+    fBeatsPerBar = beatsPerBar;
+    fBeatType = beatType;
+    if (fOfflineTempo)
+        fOfflineTempo();
+    else if (isRunning())
+        carla_transport_bpm(fHandle, bpm);
+}
+
+double HostEngine::transportTempo() const
+{
+    const CarlaTransportInfo* info = isRunning() ? carla_get_transport_info(fHandle) : nullptr;
+    return info != nullptr ? info->bpm : 0.0;
 }
 
 void HostEngine::stop()
