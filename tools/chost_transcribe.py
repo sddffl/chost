@@ -13,6 +13,11 @@ separated part (kick, snare, ...), or kick/snare/hi-hat by frequency band for a 
 
     python chost_transcribe.py --input bass.wav --output bass.mid --role bass [--tempo 120]
 
+Timing and dynamics, so the MIDI plays like the recording: every pitched note's start is snapped to the
+attack in the audio near it (the model hears in 11.6 ms frames and is often a frame or two off), and its
+velocity follows how loud the note is in the audio (the energy at its pitch and overtones as it starts),
+on a curve from 30 (some 30 dB under the part's loud notes) to 115 (its loud notes); drum hits too.
+
 Roles: vocals lead backing bass guitar piano other mix, drums kick snare toms hh ride crash.
 Requires numpy, scipy, librosa and onnxruntime (all part of audio-separator's dependencies).
 """
@@ -213,7 +218,11 @@ def transcribe_pitched(path, role):
         notes = split_at_attacks(monophonic(notes), attacks)
     else:
         notes = drop_ghost_notes(notes)
-    notes = [(s, e, p, velocity(a)) for s, e, p, a in notes if e > s]
+    notes = [n for n in notes if n[1] > n[0]]
+    # onsets onto the attacks in the audio, velocities from the audio's loudness at each note's pitch
+    notes = snap_onsets(audio, AUDIO_SAMPLE_RATE, notes, mono)
+    levels = note_levels(audio, AUDIO_SAMPLE_RATE, notes)
+    notes = [(s, e, p, v) for (s, e, p, _), v in zip(notes, velocity_curve(levels))]
     return notes, program, False
 
 
@@ -287,8 +296,156 @@ def drop_ghost_notes(notes):
     return kept
 
 
-def velocity(amplitude):
-    return int(np.clip(np.round(127 * min(1.0, amplitude * 1.6)), 20, 127))
+VELOCITY_LOW, VELOCITY_HIGH = 30, 115
+VELOCITY_RANGE_DB = 30.0 # from a part's loud notes down to its softest ones
+
+
+def attack_envelope(audio, sr, hop_ms=1.0):
+    """The level in dB every hop_ms of the signal's changes (first difference): attacks are broadband, a
+    held note's hum hardly shows, so its rises are the attacks. For a part that plays one note at a time."""
+    d = np.diff(audio.astype(np.float64), prepend=float(audio[0]) if len(audio) else 0.0)
+    hop = max(1, int(sr * hop_ms / 1000.0))
+    n = len(d) // hop
+    if n == 0:
+        return np.zeros(0), hop / sr
+    e = (d[: n * hop] ** 2).reshape(n, hop).mean(axis=1)
+    e = np.convolve(e, np.ones(3) / 3.0, mode="same")
+    return 10.0 * np.log10(e + 1e-12), hop / sr
+
+
+def level_attacks(audio, sr, rise_db=9.0, lookback_ms=12, spacing_ms=15):
+    """Attacks of a part playing one note at a time: where the level rises by rise_db within lookback_ms;
+    (times, dB risen). The time is where the rise is half done (in dB), what is heard as the start."""
+    from scipy.ndimage import maximum_filter1d, minimum_filter1d
+
+    env, step = attack_envelope(audio, sr)
+    if len(env) < lookback_ms + 2:
+        return np.zeros(0), np.zeros(0)
+    low = minimum_filter1d(env, lookback_ms + 1, origin=lookback_ms // 2) # the lowest in the last lookback_ms
+    rise = env - low
+    peaks = (rise == maximum_filter1d(rise, 2 * spacing_ms + 1)) & (rise >= rise_db) & (env > env.max() - 50.0)
+    times, rises = [], []
+    for k in np.flatnonzero(peaks):
+        m = max(0, k - lookback_ms) + int(np.argmin(env[max(0, k - lookback_ms):k + 1]))
+        top = k + int(np.argmax(env[k:k + 10]))
+        half = (env[m] + env[top]) / 2.0
+        cross = m + int(np.argmax(env[m:top + 1] >= half))
+        at = float(cross)
+        if cross > m and env[cross] != env[cross - 1]:
+            at = cross - 1 + (half - env[cross - 1]) / (env[cross] - env[cross - 1])
+        times.append((at + 0.5) * step)
+        rises.append(float(rise[k]) / rise_db) # 1: just enough
+    return np.asarray(times), np.asarray(rises)
+
+
+def onset_flux(audio, sr, n_fft=512, hop=32):
+    """Spectral flux: the new energy in every frequency bin from one 1.5 ms step to the next, summed. A note
+    struck while others ring shows up in its own bins, where the ringing ones only fade; frame k is centred
+    on sample k * hop, so the flux of a struck note peaks when its attack is in the middle of the window."""
+    x = audio.astype(np.float64)
+    peak = np.max(np.abs(x)) if len(x) else 0.0
+    if peak <= 0.0:
+        return np.zeros(1 + len(x) // hop), hop / sr
+    x = np.pad(x / peak, (n_fft // 2, n_fft // 2))
+    count = 1 + (len(x) - n_fft) // hop
+    window = np.hanning(n_fft)
+    flux = np.zeros(count)
+    previous = None
+    for a in range(0, count, 4096):
+        idx = np.arange(a, min(count, a + 4096))
+        mag = np.abs(np.fft.rfft(x[idx[:, None] * hop + np.arange(n_fft)] * window, axis=1))
+        before = np.vstack([mag[:1] if previous is None else previous, mag[:-1]])
+        flux[idx] = np.maximum(0.0, mag - before).sum(axis=1)
+        previous = mag[-1:]
+    return flux, hop / sr
+
+
+def flux_attacks(audio, sr, spacing_ms=20, context_s=0.4, ratio=2.0):
+    """Attacks of a part playing chords and overlapping notes: peaks of the spectral flux at least ratio
+    times the median around them, one per spacing_ms; (times, how many times the median)."""
+    from scipy.ndimage import maximum_filter1d, median_filter
+
+    flux, step = onset_flux(audio, sr)
+    if len(flux) < 8 or flux.max() <= 0.0:
+        return np.zeros(0), np.zeros(0)
+    spacing = max(1, int(spacing_ms / 1000.0 / step))
+    background = median_filter(flux, size=max(3, int(context_s / step)) | 1, mode="nearest") + 1e-3 * flux.max()
+    strength = flux / background
+    peaks = (flux == maximum_filter1d(flux, 2 * spacing + 1)) & (strength >= ratio) & (flux > 0.02 * flux.max())
+    times, strengths = [], []
+    for k in np.flatnonzero(peaks):
+        at = float(k)
+        if 0 < k < len(flux) - 1: # the top of a parabola through the peak and its neighbours
+            y0, y1, y2 = flux[k - 1], flux[k], flux[k + 1]
+            curve = y0 - 2.0 * y1 + y2
+            if curve < 0.0:
+                at += float(np.clip(0.5 * (y0 - y2) / curve, -0.5, 0.5))
+        times.append(at * step)
+        strengths.append(float(strength[k]) / ratio)
+    return np.asarray(times), np.asarray(strengths)
+
+
+def snap_onsets(audio, sr, notes, monophonic_part, window=0.04):
+    """Each note's start moved onto the attack in the audio near it (within window seconds); the clearest
+    one, of two alike the nearer. A note with no attack near keeps its start: a slow swell, and in a voice
+    or a bass line a legato change to another note (no rise in level). Notes of a chord snap together."""
+    times, strengths = (level_attacks if monophonic_part else flux_attacks)(audio, sr)
+    out = []
+    for start, end, pitch, amp in notes:
+        lo, hi = np.searchsorted(times, [start - window, start + window])
+        if hi > lo:
+            score = np.log(strengths[lo:hi]) - 10.0 * np.abs(times[lo:hi] - start)
+            at = float(times[lo + int(np.argmax(score))])
+            if at < end - 0.03:
+                start = at
+        out.append((max(0.0, start), end, pitch, amp))
+    out.sort(key=lambda n: n[0])
+    if monophonic_part:
+        # one note at a time: a note that now starts earlier cuts the one before it
+        for i in range(1, len(out)):
+            if out[i - 1][1] > out[i][0]:
+                s, _, p, a = out[i - 1]
+                out[i - 1] = (s, out[i][0], p, a)
+        out = [n for n in out if n[1] - n[0] >= 0.03]
+    return out
+
+
+def note_levels(audio, sr, notes, seconds=0.2):
+    """How loud each note starts, in dB: the energy at its pitch and its octave (half a semitone either
+    side) over its first 200 ms (or the note, if shorter), so a chord's loud and soft notes, and a soft note
+    under a loud one, are told apart. Higher overtones are left out: in a chord they fall on the other
+    notes' overtones (a C#'s 5th is an E's 4th)."""
+    n_fft = 8192
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    levels = []
+    for start, end, pitch, _ in notes:
+        a = int(start * sr)
+        length = int(max(0.06, min(seconds, end - start)) * sr)
+        seg = audio[a:a + length].astype(np.float64)
+        if len(seg) < 32:
+            levels.append(-120.0)
+            continue
+        spectrum = np.abs(np.fft.rfft(seg * np.hanning(len(seg)), n=max(n_fft, len(seg)))) ** 2
+        f = freqs if len(spectrum) == len(freqs) else np.fft.rfftfreq(max(n_fft, len(seg)), 1.0 / sr)
+        f0 = 440.0 * 2 ** ((pitch - 69) / 12.0)
+        band = np.zeros(len(f), dtype=bool)
+        for h in (1, 2):
+            band |= (f >= h * f0 * 2 ** (-0.5 / 12)) & (f <= h * f0 * 2 ** (0.5 / 12))
+        energy = spectrum[band].sum() / np.sum(np.hanning(len(seg)) ** 2)
+        levels.append(10.0 * np.log10(energy + 1e-20))
+    return np.asarray(levels)
+
+
+def velocity_curve(levels_db):
+    """Velocities from levels: the part's loud notes (95th percentile) at 115, VELOCITY_RANGE_DB under them
+    at 30, in between on a gently bowed curve (a synth or sampler's velocity response is close to linear
+    in dB; the bow keeps soft passages from all sinking to the bottom)."""
+    levels_db = np.asarray(levels_db, dtype=np.float64)
+    if len(levels_db) == 0:
+        return []
+    ref = np.percentile(levels_db, 95) if len(levels_db) >= 5 else levels_db.max()
+    x = np.clip((levels_db - (ref - VELOCITY_RANGE_DB)) / VELOCITY_RANGE_DB, 0.0, 1.0) ** 0.85
+    return [int(v) for v in np.round(VELOCITY_LOW + (VELOCITY_HIGH - VELOCITY_LOW) * x)]
 
 
 def onsets_of(audio, sr, min_gap=0.05, gate=0.12):
@@ -317,7 +474,9 @@ def onsets_of(audio, sr, min_gap=0.05, gate=0.12):
 
 
 def hit_velocity(level):
-    return int(np.clip(np.round(30 + 97 * level ** 0.6), 1, 127))
+    """A hit's velocity from its peak (1: the part's loudest hit), on the same 30-115 curve as the notes."""
+    x = np.clip(1.0 + 20.0 * np.log10(max(level, 1e-6)) / VELOCITY_RANGE_DB, 0.0, 1.0) ** 0.85
+    return int(np.round(VELOCITY_LOW + (VELOCITY_HIGH - VELOCITY_LOW) * x))
 
 
 def transcribe_drum_part(path, role):
