@@ -330,7 +330,7 @@ jobs:
           cd dist/chost
           ./chost-cli.exe drivers
           ./chost-cli.exe run --driver Dummy --file ../../tone.wav --seconds 2 | tee ../../run.log
-          grep -E '^\[0\] tone .*peak L/R: 0\.4' ../../run.log
+          grep -E '^\[0\] tone.*peak L/R: 0\.4' ../../run.log
           ./chost.exe --file ../../tone.wav --screenshot ../../windows.png
           ls -la ../../windows.png
           # no sound card on the runner: multitrack falls back to the Dummy driver's rack
