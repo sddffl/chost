@@ -170,8 +170,13 @@ jobs:
           ./build/chost-test-offline
           # chost-render: the Scissors null test, a 40-track project rendered whole from its first sample
           python3 tests/check_render.py ./build/chost-test-offline ./build/chost-render $PWD/p0
-          # the remaster mixdown: mono and mixed-rate stems, the model folder
+          # the remaster mixdown: mono and mixed-rate stems, the model folder, what chost reads, placement,
+          # mastering's de-mud, air and width
           python3 tests/check_remaster.py $PWD/tools $PWD/p0-remaster
+          # pitch correction without steps: 35 ms S-curves, consonants and breaths untouched, vibrato kept
+          python3 tests/check_tune_smooth.py $PWD/tools $PWD/p0-tune
+          # audio to MIDI: onsets on the attacks, velocities 30-115 from the audio
+          python3 tests/check_transcribe_timing.py $PWD/tools
 
       - name: Stem separation test
         run: |
