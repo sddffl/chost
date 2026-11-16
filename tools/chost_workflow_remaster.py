@@ -365,9 +365,9 @@ def mix_and_master(stems, tuned_stems, out_master_path):
         "--style", "natural",
         "--target", "-14",
         "--ceiling", "-1.0",
-        "--demud", "2.5",
-        "--air", "2.0",
-        "--width", "1.3",
+        "--demud", "3.0",
+        "--air", "2.5",
+        "--width", "1.35",
     ]
     code, lines = run_command(cmd, "执行商业级母带处理...", span=(90, 99))
     try:

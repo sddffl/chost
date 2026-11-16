@@ -42,7 +42,19 @@ StripSlot slot(StripKind kind, std::vector<StripParam> params)
     return s;
 }
 
-StripSlot eq(float highpass) { return slot(StripKind::Eq, {{"highpass_hz", highpass}}); }
+StripSlot eq(float highpass, float presenceHz = 0.0f, float presenceDb = 0.0f, float airHz = 0.0f, float airDb = 0.0f)
+{
+    std::vector<StripParam> p{{"highpass_hz", highpass}};
+    if (presenceHz > 0.0f) {
+        p.push_back({"presence_hz", presenceHz});
+        p.push_back({"presence_db", presenceDb});
+    }
+    if (airHz > 0.0f) {
+        p.push_back({"air_hz", airHz});
+        p.push_back({"air_db", airDb});
+    }
+    return slot(StripKind::Eq, std::move(p));
+}
 
 StripSlot comp(float threshold, float ratio, float attack, float release, float makeup)
 {
@@ -180,13 +192,13 @@ std::vector<StripSlot> channelStrip(const std::string& role, double trimDb, doub
     };
     if (role == "lead" || role == "vocals")
     {
-        add(eq(90.0f));
+        add(eq(90.0f, 3500.0f, 2.0f));
         add(comp(-22.0f, 3.0f, 5.0f, 80.0f, 3.0f));
         add(slot(StripKind::DeEsser, {{"threshold_db", -26.0f}, {"frequency_hz", 6500.0f}}));
     }
     else if (role == "backing")
     {
-        add(eq(150.0f));
+        add(eq(150.0f, 5000.0f, 1.5f));
         add(comp(-24.0f, 4.0f, 10.0f, 120.0f, 2.0f));
         add(slot(StripKind::DeEsser, {{"threshold_db", -28.0f}, {"frequency_hz", 6500.0f}}));
     }
@@ -292,8 +304,137 @@ std::string stripPlugin(StripKind kind, const std::vector<PluginEntry>& plugins)
     return {};
 }
 
+static const ParamInfo* findParamByName(const std::vector<ParamInfo>& params, const std::string& name)
+{
+    for (const ParamInfo& p : params)
+        if (lower(p.name) == lower(name))
+            return &p;
+    return nullptr;
+}
+
+static bool hasParamByName(const std::vector<ParamInfo>& params, const std::string& name)
+{
+    return findParamByName(params, name) != nullptr;
+}
+
 std::vector<std::pair<uint32_t, float>> stripValues(const StripSlot& slot, const std::vector<ParamInfo>& params)
 {
+    // 1. FabFilter Pro-Q (Pro-Q, Pro-Q 2, Pro-Q 3, Pro-Q 4)
+    const bool isProQ = hasParamByName(params, "Band 1 Frequency") &&
+                        (hasParamByName(params, "Num Active Bands") || hasParamByName(params, "Band 1 Shape") || hasParamByName(params, "Band 1 Enabled"));
+    if (isProQ && slot.kind == StripKind::Eq)
+    {
+        std::vector<std::pair<uint32_t, float>> values;
+        auto setP = [&](const std::string& name, float v) {
+            if (const ParamInfo* p = findParamByName(params, name))
+                values.emplace_back(p->index, v);
+        };
+        auto normFreq = [](float f) {
+            return std::clamp(std::log10(std::max(10.0f, f) / 10.0f) / std::log10(3000.0f), 0.0f, 1.0f);
+        };
+        auto normGain = [](float db) {
+            return std::clamp(0.5f + (db / 60.0f), 0.0f, 1.0f);
+        };
+
+        const float hp = slot.param("highpass_hz", 80.0f);
+        const float presenceHz = slot.param("presence_hz", 0.0f);
+        const float airHz = slot.param("air_hz", 0.0f);
+        const bool hasBand2 = presenceHz > 0.0f || airHz > 0.0f;
+
+        setP("Num Active Bands", hasBand2 ? 2.0f : 1.0f);
+
+        // Band 1: Low Cut / High Pass
+        setP("Band 1 Enabled", 1.0f);
+        setP("Band 1 Shape", 0.4f); // Low Cut
+        setP("Band 1 Frequency", normFreq(hp));
+        setP("Band 1 Q", 0.5f);
+        setP("Band 1 LP/HP Slope", 0.25f); // 12 dB/oct
+
+        if (hasBand2)
+        {
+            setP("Band 2 Enabled", 1.0f);
+            if (presenceHz > 0.0f)
+            {
+                setP("Band 2 Shape", 0.0f); // Bell
+                setP("Band 2 Frequency", normFreq(presenceHz));
+                setP("Band 2 Gain", normGain(slot.param("presence_db", 2.0f)));
+                setP("Band 2 Q", 0.5f);
+            }
+            else
+            {
+                setP("Band 2 Shape", 0.6f); // High Shelf
+                setP("Band 2 Frequency", normFreq(airHz));
+                setP("Band 2 Gain", normGain(slot.param("air_db", 2.0f)));
+                setP("Band 2 Q", 0.5f);
+            }
+        }
+        return values;
+    }
+
+    // 2. FabFilter Pro-C (Pro-C, Pro-C 2, Pro-C 3)
+    const bool isProC = hasParamByName(params, "Characteristic") ||
+                        (hasParamByName(params, "Threshold") && hasParamByName(params, "Knee Shape"));
+    if (isProC && slot.kind == StripKind::Compressor)
+    {
+        std::vector<std::pair<uint32_t, float>> values;
+        auto setP = [&](const std::string& name, float v) {
+            if (const ParamInfo* p = findParamByName(params, name))
+                values.emplace_back(p->index, v);
+        };
+        const float thDb = slot.param("threshold_db", -20.0f);
+        setP("Threshold", std::clamp((thDb + 60.0f) / 60.0f, 0.0f, 1.0f));
+
+        const float r = slot.param("ratio", 3.0f);
+        setP("Ratio", std::clamp((r - 1.0f) / 10.0f * 0.5f + 0.1f, 0.0f, 1.0f));
+
+        const float atkMs = slot.param("attack_ms", 10.0f);
+        setP("Attack", std::clamp(std::log10(std::max(0.1f, atkMs) / 0.005f) / std::log10(250.0f / 0.005f), 0.0f, 1.0f));
+
+        const float relMs = slot.param("release_ms", 100.0f);
+        setP("Release", std::clamp(std::log10(std::max(10.0f, relMs) / 10.0f) / std::log10(2500.0f / 10.0f), 0.0f, 1.0f));
+
+        const float makeup = slot.param("makeup_db", 0.0f);
+        setP("Output Level", std::clamp(0.5f + (makeup / 48.0f), 0.0f, 1.0f));
+        setP("Auto Gain", 0.0f);
+        return values;
+    }
+
+    // 3. FabFilter Pro-DS
+    const bool isProDS = hasParamByName(params, "Audition Triggering") ||
+                         (hasParamByName(params, "Band Processing") && hasParamByName(params, "Threshold"));
+    if (isProDS && slot.kind == StripKind::DeEsser)
+    {
+        std::vector<std::pair<uint32_t, float>> values;
+        auto setP = [&](const std::string& name, float v) {
+            if (const ParamInfo* p = findParamByName(params, name))
+                values.emplace_back(p->index, v);
+        };
+        const float thDb = slot.param("threshold_db", -26.0f);
+        setP("Threshold", std::clamp((thDb + 40.0f) / 40.0f, 0.0f, 1.0f));
+        setP("Range", 0.5f);
+        setP("Band Processing", 1.0f);
+        setP("High-Pass Frequency", 0.65f);
+        return values;
+    }
+
+    // 4. FabFilter Pro-L (Pro-L, Pro-L 2)
+    const bool isProL = hasParamByName(params, "Lookahead") &&
+                        (hasParamByName(params, "Oversampling") || hasParamByName(params, "Output Level") || hasParamByName(params, "ISP"));
+    if (isProL && slot.kind == StripKind::Limiter)
+    {
+        std::vector<std::pair<uint32_t, float>> values;
+        auto setP = [&](const std::string& name, float v) {
+            if (const ParamInfo* p = findParamByName(params, name))
+                values.emplace_back(p->index, v);
+        };
+        const float ceilDb = slot.param("ceiling_db", -1.0f);
+        const float thDb = slot.param("threshold_db", -2.0f);
+        setP("Output Level", std::clamp(1.0f + (ceilDb / 24.0f), 0.0f, 1.0f));
+        setP("Ceiling", std::clamp(1.0f + (ceilDb / 24.0f), 0.0f, 1.0f));
+        setP("Threshold", std::clamp((thDb + 30.0f) / 30.0f, 0.0f, 1.0f));
+        return values;
+    }
+
     std::vector<std::pair<uint32_t, float>> values;
     std::vector<uint32_t> used;
     auto set = [&](const ParamInfo& p, float v) {

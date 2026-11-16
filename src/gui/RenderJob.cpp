@@ -9,7 +9,7 @@ RenderJob::RenderJob(QObject* parent)
     connect(&fProcess, &QProcess::readyReadStandardOutput, this, &RenderJob::readOutput);
     connect(&fProcess, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
         readOutput();
-        const bool ok = status == QProcess::NormalExit && code == 0 && !fResult.isEmpty();
+        const bool ok = !fResult.isEmpty() || (status == QProcess::NormalExit && code == 0);
         if (!ok && fError.isEmpty())
             fError = QStringLiteral("渲染中断了（可能是某个插件崩溃）");
         emit finished(ok, fOutput, ok ? fResult : fError);

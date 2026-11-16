@@ -280,6 +280,42 @@ void testAutoStrip()
     CHECK(valueOf(lim, 0) == -1.0f && valueOf(lim, 1) == 60.0f, "limiter without a ceiling control: threshold at the -1 dB ceiling");
     const auto lim2 = stripValues(bus[1], {param(0, "Threshold", -30, 0, "dB"), param(1, "Output Ceiling", -30, 0, "dB")});
     CHECK(valueOf(lim2, 1) == -1.0f && valueOf(lim2, 0) == -3.0f, "limiter with a ceiling: ceiling -1 dB, driven from -3 dB");
+
+    // FabFilter Pro-Q profile
+    const std::vector<ParamInfo> proQParams{
+        param(0, "Num Active Bands", 0, 1),
+        param(1, "Band 1 Frequency", 0, 1),
+        param(2, "Band 1 Gain", 0, 1),
+        param(3, "Band 1 Q", 0, 1),
+        param(4, "Band 1 Shape", 0, 1),
+        param(5, "Band 1 LP/HP Slope", 0, 1),
+        param(7, "Band 1 Enabled", 0, 1),
+        param(9, "Band 2 Frequency", 0, 1),
+        param(10, "Band 2 Gain", 0, 1),
+        param(11, "Band 2 Q", 0, 1),
+        param(12, "Band 2 Shape", 0, 1),
+        param(15, "Band 2 Enabled", 0, 1),
+    };
+    const auto pq = stripValues(lead[1], proQParams);
+    CHECK(valueOf(pq, 0) == 2.0f && valueOf(pq, 7) == 1.0f && valueOf(pq, 4) == 0.4f, "Pro-Q Band 1: 2 active bands, enabled Low Cut");
+    CHECK(valueOf(pq, 1) > 0.25f && valueOf(pq, 1) < 0.30f, "Pro-Q Band 1 frequency: 90 Hz mapped correctly (%.3f)", valueOf(pq, 1));
+    CHECK(valueOf(pq, 15) == 1.0f && valueOf(pq, 12) == 0.0f && valueOf(pq, 10) > 0.52f, "Pro-Q Band 2: enabled Bell curve with vocal presence boost (gain %.3f)", valueOf(pq, 10));
+
+    // FabFilter Pro-C profile
+    const std::vector<ParamInfo> proCParams{
+        param(0, "Characteristic", 0, 1),
+        param(1, "Threshold", 0, 1),
+        param(2, "Ratio", 0, 1),
+        param(3, "Knee Shape", 0, 1),
+        param(4, "Attack", 0, 1),
+        param(5, "Release", 0, 1),
+        param(12, "Output Level", 0, 1),
+        param(16, "Auto Gain", 0, 1),
+    };
+    const auto pc = stripValues(lead[2], proCParams);
+    CHECK(valueOf(pc, 1) > 0.60f && valueOf(pc, 1) < 0.66f, "Pro-C Threshold: -22 dB mapped correctly (%.3f)", valueOf(pc, 1));
+    CHECK(valueOf(pc, 2) > 0.15f && valueOf(pc, 2) < 0.25f, "Pro-C Ratio: 3:1 mapped correctly (%.3f)", valueOf(pc, 2));
+    CHECK(valueOf(pc, 12) > 0.55f, "Pro-C Makeup gain: applied (%.3f)", valueOf(pc, 12));
 }
 
 } // namespace

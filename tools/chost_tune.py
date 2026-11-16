@@ -121,6 +121,14 @@ def track_pitch(mono, sr):
     for s, e in zip(runs[::2], runs[1::2]):
         if e - s < 4:
             pitch[s:e] = np.nan
+        else:
+            # remove isolated 1-2 frame octave jump spikes that cause audible stuttering
+            from scipy.ndimage import median_filter
+            seg = pitch[s:e].copy()
+            filtered = median_filter(seg, size=5, mode="nearest")
+            octave_err = np.abs(seg - filtered) > 8.0
+            seg[octave_err] = filtered[octave_err]
+            pitch[s:e] = seg
     return pitch, float(np.mean(sure)) if sure else 0.0
 
 

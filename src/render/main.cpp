@@ -234,10 +234,18 @@ int main(int argc, char* argv[])
     }
     if (!wav.close())
         return fail("cannot write " + output);
-    host.stop();
 
     const double peakDb = peak > 0.0f ? 20.0 * std::log10(peak) : -120.0;
     std::printf("DONE %s\t%.2f\t%.1f\n", output.c_str(), seconds, peakDb);
     std::fflush(stdout);
+
+#ifdef _WIN32
+    // Some complex VST3/VST2 plugins crash or throw access violations during teardown
+    // when freeing dozens of instances at process termination. The output audio is already
+    // completely flushed and closed, so exit cleanly immediately without crashing.
+    std::_Exit(0);
+#else
+    host.stop();
     return 0;
+#endif
 }

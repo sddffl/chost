@@ -142,12 +142,15 @@ def bell(f, fc, gain, octaves):
 
 
 def style_curve(style, f):
+    if style == "natural":
+        # clean lower midrange mud, open vocal presence, smooth air
+        return bell(f, 320.0, -1.0, 0.7) + bell(f, 3500.0, 0.8, 1.0) + shelf(f, 9000.0, 1.5, True)
     if style == "warm":
         return shelf(f, 150.0, 1.5, False) + shelf(f, 7000.0, -1.5, True)
     if style == "bright":
-        return shelf(f, 8000.0, 2.0, True) + bell(f, 300.0, -1.0, 0.7) + bell(f, 3000.0, 0.5, 1.0)
+        return shelf(f, 8000.0, 2.5, True) + bell(f, 300.0, -1.2, 0.7) + bell(f, 3000.0, 1.0, 1.0)
     if style == "punchy":
-        return bell(f, 70.0, 1.0, 0.6) + bell(f, 350.0, -1.0, 0.7) + bell(f, 4000.0, 1.0, 1.0)
+        return bell(f, 70.0, 1.2, 0.6) + bell(f, 350.0, -1.2, 0.7) + bell(f, 4000.0, 1.0, 1.0)
     return np.zeros_like(f)
 
 
@@ -176,7 +179,7 @@ def eq_curve(x, sr, reference, style):
         diff = np.clip(tilt + smooth(residual) * 0.35, -3.0, 3.0)
     diff = diff + style_curve(style, BANDS)
     diff = np.where(BANDS < 35.0, np.minimum(diff, 0.0), diff) # never boost the rumble
-    diff = np.where(BANDS > 14000.0, np.minimum(diff, 2.0), diff)
+    diff = np.where(BANDS > 14000.0, np.minimum(diff, 3.5), diff)
     most = 6.0 if reference is not None else 4.0
     return np.clip(diff - diff[mids].mean(), -most, most) # tone only: the loudness stage sets the level
 
@@ -242,7 +245,7 @@ def balanced_share(sr):
     return _balanced[sr]
 
 
-def demud(x, sr, depth_db=2.5, margin_db=1.0):
+def demud(x, sr, depth_db=3.0, margin_db=0.2):
     """Takes up to depth_db out of 250-400 Hz while that band stands out of its neighbourhood by more than a
     balanced mix's share (plus margin_db); a lean passage is left alone. Returns (signal, average cut dB
     over the music, most cut dB)."""
